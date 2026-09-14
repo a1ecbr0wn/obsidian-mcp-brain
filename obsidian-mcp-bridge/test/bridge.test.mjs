@@ -805,6 +805,104 @@ describe('move-binary-file', () => {
   });
 });
 
+// ── find-backlinks ────────────────────────────────────────────────────────
+
+describe('find-backlinks', () => {
+  it('finds notes linking to a target note', async () => {
+    await writeVaultNote('backlink-target/note.md', '# Target');
+    await writeVaultNote('backlink-linker/linker.md', 'See [[note]] for details.');
+    const result = await callTool('find-backlinks', { folder: 'backlink-target', filename: 'note.md' });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('backlink-linker/linker.md'));
+  });
+
+  it('finds notes embedding a target binary file', async () => {
+    const abs = path.join(vaultDir, 'backlink-img/photo.png');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, Buffer.from([0x01]));
+    await writeVaultNote('backlink-embedder/embedder.md', 'See ![[photo.png]] below.');
+    const result = await callTool('find-backlinks', { folder: 'backlink-img', filename: 'photo.png' });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('backlink-embedder/embedder.md'));
+  });
+
+  it('returns "No backlinks found" when nothing references the target', async () => {
+    await writeVaultNote('lonely-backlink-target.md', '# Lonely');
+    const result = await callTool('find-backlinks', { filename: 'lonely-backlink-target.md' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[0].text, 'No backlinks found');
+  });
+
+  it('returns isError when target is in denied path', async () => {
+    await writeVaultNote(`${DENY_DIR}/backlink-secret.md`, 'secret');
+    const result = await callTool('find-backlinks', { folder: DENY_DIR, filename: 'backlink-secret.md' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+
+  it('excludes denied notes from the results', async () => {
+    await writeVaultNote('backlink-target2/note2.md', '# Target 2');
+    await writeVaultNote(`${DENY_DIR}/refs-note2.md`, 'See [[note2]].');
+    const result = await callTool('find-backlinks', { folder: 'backlink-target2', filename: 'note2.md' });
+    assert.ok(!result.content[0].text.includes(`${DENY_DIR}/refs-note2.md`));
+  });
+});
+
+// ── resolve-wikilink ──────────────────────────────────────────────────────
+
+describe('resolve-wikilink', () => {
+  it('resolves a bare basename to its full path', async () => {
+    await writeVaultNote('resolve-target/unique-note.md', '# Unique');
+    const result = await callTool('resolve-wikilink', { target: 'unique-note' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[0].text, 'resolve-target/unique-note.md');
+  });
+
+  it('resolves a binary file target with its extension', async () => {
+    const abs = path.join(vaultDir, 'resolve-img/unique-photo.png');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, Buffer.from([0x01]));
+    const result = await callTool('resolve-wikilink', { target: 'unique-photo.png' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[0].text, 'resolve-img/unique-photo.png');
+  });
+
+  it('returns a clear message when the target does not resolve', async () => {
+    const result = await callTool('resolve-wikilink', { target: 'no-such-target-anywhere' });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('No file resolves wikilink target'));
+  });
+
+  it('returns multiple lines when the target is ambiguous', async () => {
+    await writeVaultNote('ambig-a/dup-note.md', '# A');
+    await writeVaultNote('ambig-b/dup-note.md', '# B');
+    const result = await callTool('resolve-wikilink', { target: 'dup-note' });
+    assert.ok(!result.isError);
+    const lines = result.content[0].text.split('\n');
+    assert.equal(lines.length, 2);
+    assert.ok(lines.includes('ambig-a/dup-note.md'));
+    assert.ok(lines.includes('ambig-b/dup-note.md'));
+  });
+
+  it('returns isError when target string itself looks like a denied path', async () => {
+    const result = await callTool('resolve-wikilink', { target: `${DENY_DIR}/whatever` });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+
+  it('excludes denied files from resolution results', async () => {
+    await writeVaultNote(`${DENY_DIR}/hidden-unique-note.md`, '# Hidden');
+    const result = await callTool('resolve-wikilink', { target: 'hidden-unique-note' });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('No file resolves'));
+  });
+
+  it('returns isError when target is missing', async () => {
+    const result = await callTool('resolve-wikilink', {});
+    assert.ok(result.isError);
+  });
+});
+
 // ── create-directory ──────────────────────────────────────────────────────
 
 describe('create-directory', () => {

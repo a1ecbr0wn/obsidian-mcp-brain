@@ -200,6 +200,40 @@ describe('checkAccess', () => {
     });
   });
 
+  describe('find-backlinks', () => {
+    it('blocks denied target path', () => {
+      const r = checkAccess(DENY, 'find-backlinks', { folder: 'people', filename: 'alice.md' });
+      assert.ok(r?.includes('restricted'));
+    });
+
+    it('allows permitted target path', () => {
+      assert.equal(checkAccess(DENY, 'find-backlinks', { folder: 'projects', filename: 'alpha.md' }), null);
+    });
+
+    it('handles missing folder (filename only)', () => {
+      assert.equal(checkAccess(DENY, 'find-backlinks', { filename: 'inbox.md' }), null);
+    });
+  });
+
+  describe('resolve-wikilink', () => {
+    it('blocks a target string that itself looks like a denied path', () => {
+      const r = checkAccess(DENY, 'resolve-wikilink', { target: 'people/alice' });
+      assert.ok(r?.includes('restricted'));
+    });
+
+    it('allows a permitted target string', () => {
+      assert.equal(checkAccess(DENY, 'resolve-wikilink', { target: 'projects/alpha' }), null);
+    });
+
+    it('allows a bare basename target', () => {
+      assert.equal(checkAccess(DENY, 'resolve-wikilink', { target: 'alpha' }), null);
+    });
+
+    it('handles missing target gracefully', () => {
+      assert.equal(checkAccess(DENY, 'resolve-wikilink', {}), null);
+    });
+  });
+
   describe('add-tags / remove-tags', () => {
     it('blocks when any file is in denied path', () => {
       const r = checkAccess(DENY, 'add-tags', { files: ['inbox/a.md', 'people/alice.md'] });
