@@ -250,6 +250,7 @@ Blocked requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
 Affected tools: `read-note`, `create-note`, `edit-note`, `delete-note`, `move-note`
+(source and destination), `create-binary-file`, `delete-binary-file`, `move-binary-file`
 (source and destination), `add-tags`, `remove-tags`, `create-directory`, `search-vault`
 (when a `path` scope is given).
 

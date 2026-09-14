@@ -584,6 +584,201 @@ describe('move-note', () => {
   });
 });
 
+// ── create-binary-file ────────────────────────────────────────────────────
+
+describe('create-binary-file', () => {
+  it('creates a new binary file from base64 content', async () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const result = await callTool('create-binary-file', {
+      filename: 'create-bin-1.png', content: bytes.toString('base64'),
+    });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('Created'));
+    const content = await fs.readFile(path.join(vaultDir, 'create-bin-1.png'));
+    assert.deepEqual(content, bytes);
+  });
+
+  it('creates binary files in subdirectories', async () => {
+    const bytes = Buffer.from([0x01, 0x02, 0x03]);
+    const result = await callTool('create-binary-file', {
+      folder: 'attachments', filename: 'deep.png', content: bytes.toString('base64'),
+    });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'attachments/deep.png'));
+    assert.deepEqual(content, bytes);
+  });
+
+  it('returns isError if file already exists', async () => {
+    const abs = path.join(vaultDir, 'create-bin-exists.png');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, Buffer.from([0xaa]));
+    const result = await callTool('create-binary-file', {
+      filename: 'create-bin-exists.png', content: Buffer.from([0xbb]).toString('base64'),
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('already exists'));
+    // Verify original content is untouched
+    const content = await fs.readFile(abs);
+    assert.deepEqual(content, Buffer.from([0xaa]));
+  });
+
+  it('returns isError when file is in denied path', async () => {
+    const result = await callTool('create-binary-file', {
+      folder: DENY_DIR, filename: 'blocked.png', content: Buffer.from([0x01]).toString('base64'),
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+
+  it('returns isError for a .md filename', async () => {
+    const result = await callTool('create-binary-file', {
+      filename: 'not-binary.md', content: Buffer.from([0x01]).toString('base64'),
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('create-note'));
+  });
+
+  it('returns isError when content is not a string', async () => {
+    const result = await callTool('create-binary-file', { filename: 'bad-content.png', content: 12345 });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('base64-encoded string'));
+  });
+
+  it('returns isError for malformed base64 content', async () => {
+    const result = await callTool('create-binary-file', {
+      filename: 'malformed.png', content: 'not valid base64!!! @#$',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('not valid base64'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'malformed.png')));
+  });
+});
+
+// ── delete-binary-file ────────────────────────────────────────────────────
+
+describe('delete-binary-file', () => {
+  it('moves binary file to .trash by default', async () => {
+    const abs = path.join(vaultDir, 'deletable-bin/to-trash.png');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, Buffer.from([0x01]));
+    const result = await callTool('delete-binary-file', { folder: 'deletable-bin', filename: 'to-trash.png' });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('trash'));
+    await assert.rejects(fs.access(abs));
+    const trashEntries = await fs.readdir(path.join(vaultDir, '.trash'));
+    assert.ok(trashEntries.some(e => e.includes('to-trash')));
+  });
+
+  it('permanently deletes when permanent=true', async () => {
+    const abs = path.join(vaultDir, 'deletable-bin/permanent.png');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, Buffer.from([0x01]));
+    const result = await callTool('delete-binary-file', { folder: 'deletable-bin', filename: 'permanent.png', permanent: true });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('Deleted'));
+    await assert.rejects(fs.access(abs));
+  });
+
+  it('returns isError when file is in denied path', async () => {
+    const abs = path.join(vaultDir, `${DENY_DIR}/delete-blocked.png`);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, Buffer.from([0x01]));
+    const result = await callTool('delete-binary-file', { folder: DENY_DIR, filename: 'delete-blocked.png' });
+    assert.ok(result.isError);
+  });
+
+  it('returns isError for missing file', async () => {
+    const result = await callTool('delete-binary-file', { filename: 'ghost.png' });
+    assert.ok(result.isError);
+  });
+
+  it('returns isError for a .md filename', async () => {
+    await writeVaultNote('not-binary-del.md', 'content');
+    const result = await callTool('delete-binary-file', { filename: 'not-binary-del.md' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('delete-note'));
+  });
+});
+
+// ── move-binary-file ──────────────────────────────────────────────────────
+
+describe('move-binary-file', () => {
+  it('moves a binary file to a new location', async () => {
+    const src = path.join(vaultDir, 'moveable-bin/source.png');
+    await fs.mkdir(path.dirname(src), { recursive: true });
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const result = await callTool('move-binary-file', {
+      folder: 'moveable-bin', filename: 'source.png',
+      newFolder: 'moved-bin', newFilename: 'destination.png',
+    });
+    assert.ok(!result.isError);
+    await assert.rejects(fs.access(src));
+    const content = await fs.readFile(path.join(vaultDir, 'moved-bin/destination.png'));
+    assert.deepEqual(content, Buffer.from([0x01]));
+  });
+
+  it('rewrites wikilink embeds in other notes after move', async () => {
+    const src = path.join(vaultDir, 'embed-src/original.png');
+    await fs.mkdir(path.dirname(src), { recursive: true });
+    await fs.writeFile(src, Buffer.from([0x01]));
+    await writeVaultNote('embed-ref/linker.md', 'See ![[original.png]] for details.');
+    await callTool('move-binary-file', {
+      folder: 'embed-src', filename: 'original.png',
+      newFolder: 'embed-dst', newFilename: 'renamed.png',
+    });
+    const linker = await fs.readFile(path.join(vaultDir, 'embed-ref/linker.md'), 'utf8');
+    assert.ok(linker.includes('![[embed-dst/renamed.png]]') || linker.includes('![[renamed.png]]'),
+      `linker should point to new name, got: ${linker}`);
+  });
+
+  it('returns isError if destination already exists', async () => {
+    const a = path.join(vaultDir, 'collision-bin/a.png');
+    const b = path.join(vaultDir, 'collision-bin/b.png');
+    await fs.mkdir(path.dirname(a), { recursive: true });
+    await fs.writeFile(a, Buffer.from([0x01]));
+    await fs.writeFile(b, Buffer.from([0x02]));
+    const result = await callTool('move-binary-file', {
+      folder: 'collision-bin', filename: 'a.png',
+      newFolder: 'collision-bin', newFilename: 'b.png',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.toLowerCase().includes('exist'));
+  });
+
+  it('returns isError when source is in denied path', async () => {
+    const src = path.join(vaultDir, `${DENY_DIR}/move-src.png`);
+    await fs.mkdir(path.dirname(src), { recursive: true });
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const result = await callTool('move-binary-file', {
+      folder: DENY_DIR, filename: 'move-src.png',
+      newFolder: 'inbox', newFilename: 'move-src.png',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+
+  it('returns isError when destination is in denied path', async () => {
+    const src = path.join(vaultDir, 'move-allowed-src.png');
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const result = await callTool('move-binary-file', {
+      filename: 'move-allowed-src.png',
+      newFolder: DENY_DIR, newFilename: 'move-allowed-src.png',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+
+  it('returns isError for a .md destination filename', async () => {
+    const src = path.join(vaultDir, 'move-md-src.png');
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const result = await callTool('move-binary-file', {
+      filename: 'move-md-src.png', newFilename: 'destination.md',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('move-note'));
+  });
+});
+
 // ── create-directory ──────────────────────────────────────────────────────
 
 describe('create-directory', () => {

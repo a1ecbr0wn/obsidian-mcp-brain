@@ -25,6 +25,9 @@ import {
   moveNote as libMoveNote,
   searchContent as libSearchContent,
   searchFilename as libSearchFilename,
+  writeBinaryFile as libWriteBinaryFile,
+  deleteBinaryFile as libDeleteBinaryFile,
+  moveBinaryFile as libMoveBinaryFile,
 } from './lib/vault.mjs';
 
 const ts = () => new Date().toISOString();
@@ -429,6 +432,49 @@ const BRIDGE_TOOLS = [
         newFolder:   { type: 'string', description: 'Optional destination vault-relative folder' },
       },
       required: ['vault', 'filename', 'newFilename'],
+    },
+  },
+  {
+    name: 'create-binary-file',
+    description: 'Create a new binary file (e.g. an image) from base64-encoded content. Fails if the file already exists.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        filename: { type: 'string', description: 'Filename including extension' },
+        folder:   { type: 'string', description: 'Optional vault-relative folder' },
+        content:  { type: 'string', description: 'Base64-encoded file content' },
+      },
+      required: ['vault', 'filename', 'content'],
+    },
+  },
+  {
+    name: 'move-binary-file',
+    description: 'Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:       { type: 'string', description: 'Vault name' },
+        filename:    { type: 'string', description: 'Source filename including extension' },
+        folder:      { type: 'string', description: 'Optional source vault-relative folder' },
+        newFilename: { type: 'string', description: 'Destination filename including extension' },
+        newFolder:   { type: 'string', description: 'Optional destination vault-relative folder' },
+      },
+      required: ['vault', 'filename', 'newFilename'],
+    },
+  },
+  {
+    name: 'delete-binary-file',
+    description: 'Delete a binary file, moving it to .trash by default.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:     { type: 'string', description: 'Vault name' },
+        filename:  { type: 'string', description: 'Filename including extension' },
+        folder:    { type: 'string', description: 'Optional vault-relative folder' },
+        permanent: { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
+      },
+      required: ['vault', 'filename'],
     },
   },
   {
@@ -1029,6 +1075,69 @@ async function route(req, res, url, sid) {
     if (isDenied(dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
     try {
       await libMoveNote(VAULT, path.join(VAULT, srcRel), path.join(VAULT, dstRel), DENY_PATHS);
+      return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'create-binary-file') {
+    const args = msg.params.arguments ?? {};
+    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
+    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (typeof args.content !== 'string') return toolErr(res, sid, msgId, 'content must be a base64-encoded string');
+    const b64Body = args.content.replace(/\s/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64Body) || b64Body.length % 4 !== 0) {
+      return toolErr(res, sid, msgId, 'content is not valid base64');
+    }
+    const absPath = path.join(VAULT, relPath);
+    try {
+      await fs.access(absPath);
+      return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+    try {
+      const buffer = Buffer.from(args.content, 'base64');
+      await libWriteBinaryFile(absPath, buffer);
+      return toolOk(res, sid, msgId, `Created: ${relPath}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'delete-binary-file') {
+    const args = msg.params.arguments ?? {};
+    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use delete-note for .md files');
+    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    try {
+      const permanent = args.permanent === true;
+      await libDeleteBinaryFile(path.join(VAULT, relPath), permanent, VAULT);
+      return toolOk(res, sid, msgId, permanent ? `Deleted: ${relPath}` : `Moved to trash: ${relPath}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'move-binary-file') {
+    const args = msg.params.arguments ?? {};
+    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const srcRel = normPath(args.folder, args.filename);
+    const dstRel = normPath(args.newFolder, args.newFilename);
+    if (!srcRel) return toolErr(res, sid, msgId, 'filename is required');
+    if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
+    if (srcRel.toLowerCase().endsWith('.md') || dstRel.toLowerCase().endsWith('.md'))
+      return toolErr(res, sid, msgId, 'Use move-note for .md files');
+    if (isDenied(srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
+    if (isDenied(dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
+    try {
+      await libMoveBinaryFile(VAULT, path.join(VAULT, srcRel), path.join(VAULT, dstRel), DENY_PATHS);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
