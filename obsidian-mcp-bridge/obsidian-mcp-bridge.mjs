@@ -82,7 +82,7 @@ const SERVER_CAPS = {
 const BRIDGE_TOOLS = [
   {
     name: 'list-notes',
-    description: 'List all notes in the vault, or scoped to a folder. Returns sorted vault-relative paths.',
+    description: 'List all notes in the vault, or scoped to a folder. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -150,7 +150,7 @@ const BRIDGE_TOOLS = [
   },
   {
     name: 'read-note',
-    description: 'Read the content of a note.',
+    description: 'Read the content of a note. Returns the raw markdown, followed by a second content item with the note\'s ISO 8601 last-modified timestamp.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -648,8 +648,13 @@ async function route(req, res, url, sid) {
         notes.push(rel);
       });
       notes.sort();
+      const lines = [];
+      for (const rel of notes) {
+        const stat = await fs.stat(path.join(VAULT, rel));
+        lines.push(`${rel}\t${stat.mtime.toISOString()}`);
+      }
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: notes.length ? notes.join('\n') : 'No notes found' }],
+        content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No notes found' }],
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
@@ -786,8 +791,15 @@ async function route(req, res, url, sid) {
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
     try {
-      const content = await libReadNote(path.join(VAULT, relPath));
-      return toolOk(res, sid, msgId, content);
+      const absPath = path.join(VAULT, relPath);
+      const content = await libReadNote(absPath);
+      const stat = await fs.stat(absPath);
+      return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
+        content: [
+          { type: 'text', text: content },
+          { type: 'text', text: `Last-Modified: ${stat.mtime.toISOString()}` },
+        ],
+      } }]);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
     }
