@@ -24,6 +24,28 @@ export function extractLinks(content) {
 }
 
 /**
+ * Parses all wikilinks and embeds in content and returns their components.
+ * Handles both [[target#heading|alias]] and ![[target#heading|alias]] (embed), heading
+ * and alias optional. Unlike extractLinks, this also reports whether each match was an
+ * embed — used by backlink/resolution lookups that must treat both forms as a reference.
+ * @returns {Array<{target: string, heading: string, alias: string, embed: boolean}>}
+ */
+export function extractReferences(content) {
+  const re = /(!)?\[\[([^\]#|]+?)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]/g;
+  const refs = [];
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    refs.push({
+      target: m[2].trim(),
+      heading: m[3] ?? '',
+      alias: m[4] ?? '',
+      embed: Boolean(m[1]),
+    });
+  }
+  return refs;
+}
+
+/**
  * Rewrites wikilinks pointing to oldPath to point to newPath instead (vault-relative, no .md).
  * Preserves heading anchors and aliases. Also rewrites embeds (![[target]]), used to reference
  * binary files such as images, preserving the leading '!'.

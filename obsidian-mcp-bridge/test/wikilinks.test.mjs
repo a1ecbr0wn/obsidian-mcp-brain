@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { rewriteLinks, extractLinks } from '../lib/wikilinks.mjs';
+import { rewriteLinks, extractLinks, extractReferences } from '../lib/wikilinks.mjs';
 
 // ── extractLinks ─────────────────────────────────────────────────────────────
 
@@ -40,6 +40,37 @@ describe('extractLinks', () => {
 
   it('returns empty array when no links', () => {
     assert.deepEqual(extractLinks('No links here.'), []);
+  });
+});
+
+// ── extractReferences ────────────────────────────────────────────────────────
+
+describe('extractReferences', () => {
+  it('extracts a plain link with embed: false', () => {
+    const refs = extractReferences('See [[note]] for details.');
+    assert.deepEqual(refs, [{ target: 'note', heading: '', alias: '', embed: false }]);
+  });
+
+  it('extracts an embed with embed: true', () => {
+    const refs = extractReferences('See ![[image.png]] for details.');
+    assert.deepEqual(refs, [{ target: 'image.png', heading: '', alias: '', embed: true }]);
+  });
+
+  it('extracts heading and alias on both links and embeds', () => {
+    const refs = extractReferences('[[note#section|Label]] and ![[image.png|Alt]]');
+    assert.deepEqual(refs, [
+      { target: 'note', heading: 'section', alias: 'Label', embed: false },
+      { target: 'image.png', heading: '', alias: 'Alt', embed: true },
+    ]);
+  });
+
+  it('extracts multiple mixed references in order', () => {
+    const refs = extractReferences('[[a]] then ![[b.png]] then [[c]]');
+    assert.deepEqual(refs.map(r => [r.target, r.embed]), [['a', false], ['b.png', true], ['c', false]]);
+  });
+
+  it('returns empty array when no references', () => {
+    assert.deepEqual(extractReferences('No links here.'), []);
   });
 });
 

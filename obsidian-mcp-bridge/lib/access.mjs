@@ -64,6 +64,23 @@ export function checkAccess(denyPaths, toolName, args) {
       break;
     }
 
+    case 'find-backlinks': {
+      const p = normPath(args.folder, args.filename);
+      if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
+      break;
+    }
+
+    case 'resolve-wikilink': {
+      // The target is a free-text string, not a known path — this is a cheap upfront
+      // check on the literal string; walkAllFiles's own per-candidate filtering is what
+      // actually keeps denied files out of the result regardless.
+      if (args.target) {
+        const p = normPath(args.target);
+        if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
+      }
+      break;
+    }
+
     case 'add-tags':
     case 'remove-tags': {
       const files = Array.isArray(args.files) ? args.files : [];

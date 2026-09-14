@@ -15,6 +15,9 @@ import {
   writeBinaryFile,
   deleteBinaryFile,
   moveBinaryFile,
+  walkAllFiles,
+  findBacklinks,
+  resolveWikilink,
 } from '../lib/vault.mjs';
 
 // ── test vault setup ─────────────────────────────────────────────────────────
@@ -302,6 +305,115 @@ describe('moveBinaryFile', () => {
     const dst = path.join(vault, 'brand-new-folder', 'new-image.png');
     await moveBinaryFile(vault, src, dst, []);
     await assert.doesNotReject(() => fs.access(dst));
+  });
+});
+
+// ── walkAllFiles ──────────────────────────────────────────────────────────────
+
+describe('walkAllFiles', () => {
+  before(async () => {
+    await setup();
+    await fs.writeFile(path.join(vault, 'food', 'photo.png'), Buffer.from([0x01]));
+  });
+  after(teardown);
+
+  it('visits both markdown and binary files', async () => {
+    const visited = [];
+    await walkAllFiles(vault, f => visited.push(path.relative(vault, f)));
+    visited.sort();
+    assert.deepEqual(visited, [
+      'food/pasta.md', 'food/photo.png', 'food/sauce.md', 'inbox.md', 'private/journal.md',
+    ]);
+  });
+
+  it('handles non-existent directory gracefully', async () => {
+    await assert.doesNotReject(() => walkAllFiles(path.join(vault, 'missing'), () => {}));
+  });
+});
+
+// ── findBacklinks ─────────────────────────────────────────────────────────────
+
+describe('findBacklinks', () => {
+  before(setup);
+  after(teardown);
+
+  it('finds notes linking to a note by bare basename', async () => {
+    // food/pasta.md links [[sauce]], which matches food/sauce.md by basename
+    const results = await findBacklinks(vault, 'food/sauce.md', []);
+    assert.deepEqual(results, ['food/pasta.md']);
+  });
+
+  it('finds notes linking to a note by full path', async () => {
+    // inbox.md links [[private/journal]]
+    const results = await findBacklinks(vault, 'private/journal.md', []);
+    assert.deepEqual(results, ['inbox.md']);
+  });
+
+  it('finds embeds referencing a binary file', async () => {
+    await fs.writeFile(path.join(vault, 'food', 'diagram.png'), Buffer.from([0x01]));
+    await fs.writeFile(path.join(vault, 'notes-with-embed.md'), 'See ![[diagram.png]] below.\n');
+    const results = await findBacklinks(vault, 'food/diagram.png', []);
+    assert.deepEqual(results, ['notes-with-embed.md']);
+  });
+
+  it('does not include the target itself', async () => {
+    await fs.writeFile(path.join(vault, 'self-ref.md'), 'See [[self-ref]] (itself).\n');
+    const results = await findBacklinks(vault, 'self-ref.md', []);
+    assert.deepEqual(results, []);
+  });
+
+  it('returns empty array when nothing links to the target', async () => {
+    await fs.writeFile(path.join(vault, 'lonely.md'), '# Lonely\n');
+    const results = await findBacklinks(vault, 'lonely.md', []);
+    assert.deepEqual(results, []);
+  });
+
+  it('excludes denied notes from the results', async () => {
+    await fs.writeFile(path.join(vault, 'private', 'refs-sauce.md'), 'See [[sauce]].\n');
+    const results = await findBacklinks(vault, 'food/sauce.md', ['private']);
+    assert.ok(!results.includes('private/refs-sauce.md'));
+  });
+});
+
+// ── resolveWikilink ───────────────────────────────────────────────────────────
+
+describe('resolveWikilink', () => {
+  before(async () => {
+    await setup();
+    await fs.writeFile(path.join(vault, 'food', 'photo.png'), Buffer.from([0x01]));
+  });
+  after(teardown);
+
+  it('resolves a bare basename to its full path', async () => {
+    const results = await resolveWikilink(vault, 'sauce', []);
+    assert.deepEqual(results, ['food/sauce.md']);
+  });
+
+  it('resolves a full path target', async () => {
+    const results = await resolveWikilink(vault, 'private/journal', []);
+    assert.deepEqual(results, ['private/journal.md']);
+  });
+
+  it('resolves a binary file target with its extension', async () => {
+    const results = await resolveWikilink(vault, 'photo.png', []);
+    assert.deepEqual(results, ['food/photo.png']);
+  });
+
+  it('returns empty array when nothing resolves', async () => {
+    const results = await resolveWikilink(vault, 'no-such-file', []);
+    assert.deepEqual(results, []);
+  });
+
+  it('returns multiple matches when the basename is ambiguous', async () => {
+    await fs.mkdir(path.join(vault, 'other'), { recursive: true });
+    await fs.writeFile(path.join(vault, 'other', 'sauce.md'), '# Other Sauce\n');
+    const results = await resolveWikilink(vault, 'sauce', []);
+    assert.deepEqual(results, ['food/sauce.md', 'other/sauce.md']);
+  });
+
+  it('excludes denied files from the results', async () => {
+    const results = await resolveWikilink(vault, 'journal', ['private']);
+    assert.deepEqual(results, []);
   });
 });
 

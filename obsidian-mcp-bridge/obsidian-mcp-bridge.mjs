@@ -27,6 +27,8 @@ import {
   writeBinaryFile as libWriteBinaryFile,
   deleteBinaryFile as libDeleteBinaryFile,
   moveBinaryFile as libMoveBinaryFile,
+  findBacklinks as libFindBacklinks,
+  resolveWikilink as libResolveWikilink,
 } from './lib/vault.mjs';
 
 const ts = () => new Date().toISOString();
@@ -258,6 +260,31 @@ const BRIDGE_TOOLS = [
         permanent: { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
       },
       required: ['vault', 'filename'],
+    },
+  },
+  {
+    name: 'find-backlinks',
+    description: 'Find all notes that link to or embed a given note or binary file. Returns sorted vault-relative paths.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        filename: { type: 'string', description: 'Target filename including extension' },
+        folder:   { type: 'string', description: 'Optional vault-relative folder of the target' },
+      },
+      required: ['vault', 'filename'],
+    },
+  },
+  {
+    name: 'resolve-wikilink',
+    description: 'Resolve a wikilink target string (e.g. the "folder/note" portion of [[folder/note#heading|alias]]) to the vault-relative file(s) it points to. Zero results means it doesn\'t resolve; more than one means it\'s ambiguous.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:  { type: 'string', description: 'Vault name' },
+        target: { type: 'string', description: 'Raw wikilink target string, without [[ ]], heading, or alias' },
+      },
+      required: ['vault', 'target'],
     },
   },
   {
@@ -902,6 +929,33 @@ async function route(req, res, url, sid) {
     try {
       await libMoveBinaryFile(VAULT, path.join(VAULT, srcRel), path.join(VAULT, dstRel), DENY_PATHS);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'find-backlinks') {
+    const args = msg.params.arguments ?? {};
+    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    try {
+      const results = await libFindBacklinks(VAULT, relPath, DENY_PATHS);
+      return toolOk(res, sid, msgId, results.length ? results.join('\n') : 'No backlinks found');
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'resolve-wikilink') {
+    const args = msg.params.arguments ?? {};
+    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    if (!args.target) return toolErr(res, sid, msgId, 'target is required');
+    if (isDenied(normPath(args.target))) return toolErr(res, sid, msgId, 'Access denied');
+    try {
+      const results = await libResolveWikilink(VAULT, args.target, DENY_PATHS);
+      return toolOk(res, sid, msgId, results.length ? results.join('\n') : `No file resolves wikilink target: ${args.target}`);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
     }

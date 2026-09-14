@@ -3,7 +3,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { rewriteLinks } from './wikilinks.mjs';
+import { rewriteLinks, extractReferences } from './wikilinks.mjs';
 import { isDenied } from './access.mjs';
 
 /**
@@ -28,6 +28,103 @@ export async function walkVault(dir, cb) {
       await cb(full);
     }
   }
+}
+
+/**
+ * Recursively walks vault directories, calling callback for every file regardless of
+ * extension. Skips directories and files starting with '.' (e.g., .trash, .obsidian, .git).
+ * Unlike walkVault, this visits binary files too — needed since a wikilink can resolve to one.
+ * @param {string} dir - Directory to walk
+ * @param {Function} cb - Async callback receiving absolute path of each file
+ */
+export async function walkAllFiles(dir, cb) {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue; // skip .trash, .obsidian, .git, etc.
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await walkAllFiles(full, cb);
+    } else if (entry.isFile()) {
+      await cb(full);
+    }
+  }
+}
+
+/**
+ * Computes the match key for a vault-relative path: the .md extension is stripped for
+ * notes (so links match their extensionless target), kept for everything else (so embeds,
+ * which reference the full filename, match exactly).
+ */
+function matchKeyFor(relPath) {
+  return relPath.endsWith('.md') ? relPath.replace(/\.md$/, '') : relPath;
+}
+
+/**
+ * Finds every note that links to or embeds the given target file (a note or binary file),
+ * matching by the target's match key or bare basename — the same rule rewriteLinks uses.
+ * Basename matching can over-attribute when the basename is ambiguous elsewhere in the
+ * vault (e.g. a `[[sauce]]` link is reported against every file named "sauce", the same
+ * limitation rewriteLinks/moveNote already have) — use resolve-wikilink first to check
+ * whether a target is unambiguous.
+ * @param {string} vaultPath - Absolute path to vault root
+ * @param {string} targetRelPath - Vault-relative path of the target file
+ * @param {string[]} denyPaths - Vault-relative paths excluded from the results
+ * @returns {Promise<string[]>} Sorted vault-relative paths of notes referencing the target
+ */
+export async function findBacklinks(vaultPath, targetRelPath, denyPaths) {
+  const matchKey = matchKeyFor(targetRelPath);
+  const basename = path.posix.basename(matchKey);
+  const results = [];
+
+  await walkVault(vaultPath, async filePath => {
+    const rel = path.relative(vaultPath, filePath);
+    if (isDenied(denyPaths, rel)) return;
+    if (rel === targetRelPath) return; // a note doesn't "backlink" to itself
+    let content;
+    try {
+      content = await fs.readFile(filePath, 'utf8');
+    } catch {
+      return;
+    }
+    const refs = extractReferences(content);
+    if (refs.some(r => r.target === matchKey || r.target === basename)) {
+      results.push(rel);
+    }
+  });
+
+  results.sort();
+  return results;
+}
+
+/**
+ * Resolves a raw wikilink target string (as passed to rewriteLinks — no [[ ]], heading,
+ * or alias) to the vault file(s) whose match key or basename equals it. Zero results
+ * means the target doesn't resolve; more than one means it's ambiguous.
+ * @param {string} vaultPath - Absolute path to vault root
+ * @param {string} target - Raw wikilink target string
+ * @param {string[]} denyPaths - Vault-relative paths excluded from the results
+ * @returns {Promise<string[]>} Sorted vault-relative paths matching the target
+ */
+export async function resolveWikilink(vaultPath, target, denyPaths) {
+  const results = [];
+
+  await walkAllFiles(vaultPath, async filePath => {
+    const rel = path.relative(vaultPath, filePath);
+    if (isDenied(denyPaths, rel)) return;
+    const matchKey = matchKeyFor(rel);
+    const basename = path.posix.basename(matchKey);
+    if (matchKey === target || basename === target) {
+      results.push(rel);
+    }
+  });
+
+  results.sort();
+  return results;
 }
 
 /**
