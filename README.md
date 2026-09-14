@@ -4,34 +4,31 @@ A couple of tools to enable remote https access to an Obsidian MCP server.
 
 ## obsidian-mcp-bridge
 
-A thin Node.js HTTP bridge that makes [`obsidian-mcp`](https://github.com/StevenStavrakis/obsidian-mcp)
-accessible to remote MCP clients such as Claude Code and Claude Desktop.
+A thin Node.js HTTP bridge that provides remote MCP access to an Obsidian vault.
+It implements all MCP tools natively and exposes them to remote clients such as Claude Code and Claude Desktop via HTTP.
 
 ## Why this bridge is needed
 
-`obsidian-mcp` is a stdio-only MCP server — it reads and writes newline-delimited
-JSON-RPC over standard input/output. That works fine for local clients that can
-spawn a child process, but breaks down in two ways when you want to connect remotely:
+Remote MCP clients (Claude Code 2.x, Claude Desktop) connect over HTTP, not stdio,
+and the standard approaches have issues:
 
-### No HTTP transport
+### No HTTP transport for local MCP servers
 
-Remote MCP clients (Claude Code 2.x, Claude Desktop) connect over HTTP, not stdio.
-The standard solution is [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy),
-which wraps a stdio server and exposes it over HTTP. However, mcp-proxy has a
-session-management bug: when Claude Code opens its GET `/mcp` notification stream
-at the same time as sending tool-list requests (which it always does), mcp-proxy's
-response routing gets confused and `tools/list` silently times out. This bridge
-owns the HTTP transport layer directly, which eliminates that class of bug.
+Existing solutions like [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) wrap
+stdio MCP servers and expose them over HTTP. However, mcp-proxy has a session-management
+bug: when Claude Code opens its GET `/mcp` notification stream at the same time as
+sending tool-list requests (which it always does), mcp-proxy's response routing gets
+confused and `tools/list` silently times out. This bridge implements the MCP HTTP
+transport layer directly and implements all tools natively, eliminating that class of bug.
 
-### No OAuth 2.0 discovery\*\*
+### No OAuth 2.0 discovery
 
 The [MCP 2025-03-26 spec](https://spec.modelcontextprotocol.io) requires every
 non-localhost remote MCP server to expose OAuth 2.0 discovery endpoints
 (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`,
-`/authorize`, `/token`, `/register`). `obsidian-mcp` has none of these, and neither
-does `mcp-proxy`. Without them, Claude Code refuses to connect. This bridge serves
-a public (no credentials required) OAuth flow so that Claude Code's auth handshake
-completes without needing real credentials.
+`/authorize`, `/token`, `/register`). Without them, Claude Code refuses to connect.
+This bridge serves a public (no credentials required) OAuth flow so that Claude Code's
+auth handshake completes without needing real credentials.
 
 ### What this bridge does
 
@@ -43,10 +40,7 @@ obsidian-mcp-bridge  :3002
   ├─ OAuth 2.0 discovery endpoints
   ├─ MCP Streamable HTTP transport (POST /mcp, GET /mcp)
   ├─ Path deny list (access control)
-  └─ spawns obsidian-mcp over stdio
-        │
-        ▼
-obsidian-mcp (child process, stdio)
+  └─ Vault access (node:fs/promises)
         │
         ▼
 Obsidian vault (filesystem)
@@ -57,8 +51,6 @@ Obsidian vault (filesystem)
 ### Prerequisites
 
 - Node.js 18+
-- [`obsidian-mcp`](https://www.npmjs.com/package/obsidian-mcp) installed (or
-  accessible via `npx`)
 - A way to expose the bridge over HTTPS to your remote client —
   [Tailscale Serve](https://tailscale.com/kb/1312/serve) is what I use, but any
   HTTPS reverse proxy works
@@ -131,8 +123,6 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
     <string>https://your-hostname:4001</string>
     <key>VAULT</key>
     <string>/path/to/your/obsidian/vault</string>
-    <key>CHILD_BIN</key>
-    <string>/usr/local/bin/obsidian-mcp</string>
     <key>DENY_PATHS</key>
     <string></string>
   </dict>
@@ -204,32 +194,7 @@ All configuration is via environment variables.
 | `LISTEN_PORT`  | `3002`    | Local port the bridge listens on                                                      |
 | `MCP_BASE_URL` | —         | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events) |
 | `VAULT`        | —         | Absolute path to the Obsidian vault directory. **Required.**                          |
-| `CHILD_BIN`    | —         | Path to the `obsidian-mcp` binary. **Required.** See note below.                      |
 | `DENY_PATHS`   | _(empty)_ | Comma-separated vault-relative paths to block. See below.                             |
-
-### `CHILD_BIN` and keeping it stable
-
-The default value of `CHILD_BIN` is whatever path `npx` cached `obsidian-mcp` to
-the first time it ran. That path contains a content hash that changes every time
-the package is updated, so after an `npx`-triggered update the default will point
-at a stale binary.
-
-The simplest fix is to install `obsidian-mcp` globally and point `CHILD_BIN` at
-the global binary:
-
-```bash
-npm install -g obsidian-mcp
-```
-
-Then set in your service config:
-
-```ini
-Environment=CHILD_BIN=/usr/local/bin/obsidian-mcp
-# or wherever `which obsidian-mcp` reports
-```
-
-Updates then just require `npm update -g obsidian-mcp` followed by a service
-restart, with no path changes needed.
 
 ### Path deny list (`DENY_PATHS`)
 
@@ -245,7 +210,7 @@ Environment=DENY_PATHS=private
 Environment=DENY_PATHS=private,people,journal/personal
 ```
 
-The deny list is enforced in the bridge before any request reaches `obsidian-mcp`.
+The deny list is enforced in the bridge before any tool handler executes.
 Blocked requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
@@ -264,22 +229,18 @@ Tools that operate vault-wide without a path argument (`list-available-vaults`,
 The bridge implements the [MCP Streamable HTTP transport (2024-11-05)](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http):
 
 - **`POST /mcp`** — receives JSON-RPC requests from the client. `initialize` creates
-  a session and returns capabilities from the child process. Notifications return
-  202 code. All other requests are forwarded to the `obsidian-mcp` child over stdin
-  and the response is returned as an inline SSE event.
+  a session and returns server capabilities. Notifications return 202 code. All other
+  requests are dispatched to the corresponding tool handler and the response is
+  returned as an inline SSE event.
 
 - **`GET /mcp`** — keeps a long-lived SSE stream open per session for server-to-client
   notifications (e.g. `tools/list_changed`).
 
-The child process is initialised once at startup and shared across all HTTP sessions.
-Request IDs are remapped to UUIDs before being forwarded so that concurrent requests
-from multiple sessions don't collide. If the child hangs (15 s timeout), it is killed
-and restarted automatically.
+All MCP tools are implemented natively in the bridge and operate directly on the vault
+via `node:fs/promises`. Each tool validates access control (DENY_PATHS) before executing.
 
-`resources/list` and `prompts/list` are short-circuited to return empty results
-immediately — `obsidian-mcp` scans the entire vault to build the resource list,
-which on large vaults can take long enough to block the shared stdio pipe and cause
-all subsequent requests to time out.
+`resources/list` and `prompts/list` return empty results — the bridge does not expose
+vault files as resources or prompts, only as tools.
 
 ---
 
