@@ -44,6 +44,26 @@ export function checkAccess(denyPaths, toolName, args) {
       break;
     }
 
+    case 'create-binary-file': {
+      const p = normPath(args.folder, args.filename);
+      if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
+      break;
+    }
+
+    case 'delete-binary-file': {
+      const p = normPath(args.folder, args.filename);
+      if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
+      break;
+    }
+
+    case 'move-binary-file': {
+      const src = normPath(args.folder, args.filename);
+      const dst = normPath(args.newFolder, args.newFilename);
+      if (isDenied(denyPaths, src)) return `Access denied: source '${src}' is restricted`;
+      if (isDenied(denyPaths, dst)) return `Access denied: destination '${dst}' is restricted`;
+      break;
+    }
+
     case 'add-tags':
     case 'remove-tags': {
       const files = Array.isArray(args.files) ? args.files : [];

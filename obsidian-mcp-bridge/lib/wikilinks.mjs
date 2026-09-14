@@ -25,7 +25,8 @@ export function extractLinks(content) {
 
 /**
  * Rewrites wikilinks pointing to oldPath to point to newPath instead (vault-relative, no .md).
- * Preserves heading anchors and aliases.
+ * Preserves heading anchors and aliases. Also rewrites embeds (![[target]]), used to reference
+ * binary files such as images, preserving the leading '!'.
  *
  * Matches both exact vault-relative path and bare basename (e.g., "recipe" from "food/recipe").
  * Does not match partial names or headings-only links ([[#heading]]).
@@ -41,14 +42,14 @@ export function rewriteLinks(content, oldPath, newPath) {
       ? escapedPath
       : `(?:${escapedPath}|${escapedBase})`;
 
-  // Pattern: [[target#heading|alias]] where #heading and |alias are optional
-  // The target must be followed by #, |, or ]] — not by other path chars
+  // Pattern: !?[[target#heading|alias]] where the leading '!' (embed), #heading and
+  // |alias are all optional. The target must be followed by #, |, or ]] — not by other path chars
   const re = new RegExp(
-    `\\[\\[(${targetPattern})(#[^\\]|]*)?(\\|[^\\]]*)?\\]\\]`,
+    `(!)?\\[\\[(${targetPattern})(#[^\\]|]*)?(\\|[^\\]]*)?\\]\\]`,
     'g',
   );
 
-  return content.replace(re, (_match, _target, heading, alias) => {
-    return `[[${newPath}${heading ?? ''}${alias ?? ''}]]`;
+  return content.replace(re, (_match, embed, _target, heading, alias) => {
+    return `${embed ?? ''}[[${newPath}${heading ?? ''}${alias ?? ''}]]`;
   });
 }

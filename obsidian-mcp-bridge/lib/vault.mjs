@@ -117,6 +117,99 @@ export async function moveNote(vaultPath, srcAbs, dstAbs, denyPaths) {
 }
 
 /**
+ * Reads binary file content from disk.
+ */
+export async function readBinaryFile(absPath) {
+  return fs.readFile(absPath);
+}
+
+/**
+ * Writes binary content to disk, creating parent directories as needed.
+ * @param {string} absPath - Absolute path to write
+ * @param {Buffer} buffer - Binary content
+ */
+export async function writeBinaryFile(absPath, buffer) {
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.writeFile(absPath, buffer);
+}
+
+/**
+ * Deletes a binary file permanently or moves to .trash. On filename collision, appends a
+ * timestamp suffix before the extension (unlike deleteNote, the extension varies per file).
+ * @param {string} absPath - Absolute path to binary file
+ * @param {boolean} permanent - If true, permanently delete; if false, move to .trash
+ * @param {string} vaultPath - Absolute path to vault root
+ */
+export async function deleteBinaryFile(absPath, permanent, vaultPath) {
+  if (permanent) {
+    await fs.unlink(absPath);
+  } else {
+    const trashDir = path.join(vaultPath, '.trash');
+    await fs.mkdir(trashDir, { recursive: true });
+    const ext = path.extname(absPath);
+    const baseName = path.basename(absPath, ext);
+    let dest = path.join(trashDir, path.basename(absPath));
+    try {
+      await fs.access(dest);
+      // Collision — suffix with timestamp to avoid silent overwrite
+      dest = path.join(trashDir, `${baseName}_${Date.now()}${ext}`);
+    } catch {
+      // ENOENT: destination free, use it
+    }
+    await fs.rename(absPath, dest);
+  }
+}
+
+/**
+ * Moves a binary file from srcAbs to dstAbs, then rewrites all vault-wide wikilink embeds
+ * pointing at the old path. Throws if destination already exists.
+ *
+ * Unlike moveNote, the filename (including extension) is kept intact when rewriting, since
+ * embeds reference binary files by their full filename rather than an extensionless basename.
+ * @param {string} vaultPath - Absolute path to vault root
+ * @param {string} srcAbs - Absolute path to source file
+ * @param {string} dstAbs - Absolute path to destination file
+ * @param {string[]} denyPaths - Vault-relative paths to exclude from rewriting
+ */
+export async function moveBinaryFile(vaultPath, srcAbs, dstAbs, denyPaths) {
+  // Guard against silently clobbering an existing file
+  try {
+    await fs.access(dstAbs);
+    throw new Error(`Destination already exists: ${path.relative(vaultPath, dstAbs)}`);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+
+  await fs.mkdir(path.dirname(dstAbs), { recursive: true });
+
+  const oldRel = path.relative(vaultPath, srcAbs);
+  const newRel = path.relative(vaultPath, dstAbs);
+
+  await fs.rename(srcAbs, dstAbs);
+
+  // Rewrite embeds in every vault note (walkVault only visits .md files, so the moved
+  // binary file itself is never read as text)
+  await walkVault(vaultPath, async filePath => {
+    const rel = path.relative(vaultPath, filePath);
+    if (isDenied(denyPaths, rel)) return;
+    let content;
+    try {
+      content = await fs.readFile(filePath, 'utf8');
+    } catch {
+      return;
+    }
+    const updated = rewriteLinks(content, oldRel, newRel);
+    if (updated !== content) {
+      try {
+        await fs.writeFile(filePath, updated, 'utf8');
+      } catch {
+        return; // best-effort: log failure without aborting remaining rewrites
+      }
+    }
+  });
+}
+
+/**
  * Searches note content for query (case-insensitive).
  * @returns {Promise<Array<{path: string, matches: Array<{line: number, text: string}>}>>} Results sorted by path.
  */

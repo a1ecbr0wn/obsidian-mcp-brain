@@ -11,6 +11,10 @@ import {
   moveNote,
   searchContent,
   searchFilename,
+  readBinaryFile,
+  writeBinaryFile,
+  deleteBinaryFile,
+  moveBinaryFile,
 } from '../lib/vault.mjs';
 
 // ── test vault setup ─────────────────────────────────────────────────────────
@@ -164,6 +168,139 @@ describe('moveNote', () => {
     const src = path.join(vault, 'new-note.md');
     const dst = path.join(vault, 'archive', 'new-note.md');
     await moveNote(vault, src, dst, []);
+    await assert.doesNotReject(() => fs.access(dst));
+  });
+});
+
+// ── readBinaryFile / writeBinaryFile ─────────────────────────────────────────
+
+describe('readBinaryFile', () => {
+  before(setup);
+  after(teardown);
+
+  it('reads binary content as a Buffer', async () => {
+    const p = path.join(vault, 'image.png');
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    await fs.writeFile(p, bytes);
+    const content = await readBinaryFile(p);
+    assert.ok(Buffer.isBuffer(content));
+    assert.deepEqual(content, bytes);
+  });
+
+  it('throws on missing file', async () => {
+    await assert.rejects(() => readBinaryFile(path.join(vault, 'missing.png')));
+  });
+});
+
+describe('writeBinaryFile', () => {
+  before(setup);
+  after(teardown);
+
+  it('writes binary content', async () => {
+    const p = path.join(vault, 'attachments', 'photo.jpg');
+    const bytes = Buffer.from([0xff, 0xd8, 0xff]);
+    await writeBinaryFile(p, bytes);
+    const content = await fs.readFile(p);
+    assert.deepEqual(content, bytes);
+  });
+
+  it('creates parent directories', async () => {
+    const p = path.join(vault, 'deep', 'nested', 'image.png');
+    const bytes = Buffer.from([0x01, 0x02]);
+    await writeBinaryFile(p, bytes);
+    const content = await fs.readFile(p);
+    assert.deepEqual(content, bytes);
+  });
+
+  it('overwrites existing file', async () => {
+    const p = path.join(vault, 'overwrite.png');
+    await writeBinaryFile(p, Buffer.from([0x01]));
+    await writeBinaryFile(p, Buffer.from([0x02]));
+    const content = await fs.readFile(p);
+    assert.deepEqual(content, Buffer.from([0x02]));
+  });
+});
+
+// ── deleteBinaryFile ──────────────────────────────────────────────────────────
+
+describe('deleteBinaryFile', () => {
+  before(setup);
+  after(teardown);
+
+  it('moves binary file to .trash (default), keeping its extension', async () => {
+    const p = path.join(vault, 'to-delete.png');
+    await fs.writeFile(p, Buffer.from([0x01]));
+    await deleteBinaryFile(p, false, vault);
+    await assert.rejects(() => fs.access(p));
+    const trashed = path.join(vault, '.trash', 'to-delete.png');
+    await assert.doesNotReject(() => fs.access(trashed));
+  });
+
+  it('deletes binary file permanently', async () => {
+    const p = path.join(vault, 'to-delete-perm.png');
+    await fs.writeFile(p, Buffer.from([0x01]));
+    await deleteBinaryFile(p, true, vault);
+    await assert.rejects(() => fs.access(p));
+    const trashed = path.join(vault, '.trash', 'to-delete-perm.png');
+    await assert.rejects(() => fs.access(trashed));
+  });
+
+  it('suffixes with a timestamp on collision, preserving the extension', async () => {
+    const p1 = path.join(vault, 'dup.png');
+    await fs.writeFile(p1, Buffer.from([0x01]));
+    await deleteBinaryFile(p1, false, vault); // now in .trash/dup.png
+
+    const p2 = path.join(vault, 'dup.png');
+    await fs.writeFile(p2, Buffer.from([0x02]));
+    await deleteBinaryFile(p2, false, vault);
+
+    const trashEntries = await fs.readdir(path.join(vault, '.trash'));
+    const dupEntries = trashEntries.filter(e => e.startsWith('dup'));
+    assert.equal(dupEntries.length, 2);
+    assert.ok(dupEntries.every(e => e.endsWith('.png')));
+  });
+});
+
+// ── moveBinaryFile ────────────────────────────────────────────────────────────
+
+describe('moveBinaryFile', () => {
+  before(setup);
+  after(teardown);
+
+  it('moves binary file to new location', async () => {
+    const src = path.join(vault, 'photo.png');
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const dst = path.join(vault, 'attachments', 'photo.png');
+    await moveBinaryFile(vault, src, dst, []);
+    await assert.rejects(() => fs.access(src), 'source removed');
+    await assert.doesNotReject(() => fs.access(dst), 'destination created');
+  });
+
+  it('rewrites wikilink embeds in other notes after move', async () => {
+    await fs.writeFile(path.join(vault, 'diagram.png'), Buffer.from([0x01]));
+    await fs.writeFile(path.join(vault, 'note-with-embed.md'), 'See ![[diagram.png]] below.\n');
+
+    const src = path.join(vault, 'diagram.png');
+    const dst = path.join(vault, 'img', 'diagram.png');
+    await moveBinaryFile(vault, src, dst, []);
+
+    const note = await fs.readFile(path.join(vault, 'note-with-embed.md'), 'utf8');
+    assert.ok(note.includes('![[img/diagram.png]]'), 'embed rewritten');
+  });
+
+  it('throws if destination already exists', async () => {
+    const src = path.join(vault, 'a.png');
+    const dst = path.join(vault, 'b.png');
+    await fs.writeFile(src, Buffer.from([0x01]));
+    await fs.writeFile(dst, Buffer.from([0x02]));
+    await assert.rejects(() => moveBinaryFile(vault, src, dst, []));
+  });
+
+  it('creates destination directory if needed', async () => {
+    const src = path.join(vault, 'new-image.png');
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const dst = path.join(vault, 'brand-new-folder', 'new-image.png');
+    await moveBinaryFile(vault, src, dst, []);
     await assert.doesNotReject(() => fs.access(dst));
   });
 });

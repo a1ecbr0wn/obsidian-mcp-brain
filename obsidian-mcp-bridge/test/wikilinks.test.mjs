@@ -119,4 +119,45 @@ describe('rewriteLinks', () => {
     const result = rewriteLinks(content, 'pasta', 'spaghetti');
     assert.equal(result, '[[spaghetti]] and [[spaghetti|Pasta Dish]]');
   });
+
+  // ── embeds (used to reference binary files, e.g. images) ──────────────────
+
+  it('rewrites a bare embed and preserves the leading !', () => {
+    const content = 'See ![[image.png]] here.';
+    const result = rewriteLinks(content, 'image.png', 'attachments/image.png');
+    assert.equal(result, 'See ![[attachments/image.png]] here.');
+  });
+
+  it('rewrites an embed by basename when the file moves between folders', () => {
+    const content = '![[image.png]]';
+    const result = rewriteLinks(content, 'old/image.png', 'new/image.png');
+    assert.equal(result, '![[new/image.png]]');
+  });
+
+  it('preserves alias on embeds', () => {
+    const content = '![[image.png|alt text]]';
+    const result = rewriteLinks(content, 'image.png', 'attachments/image.png');
+    assert.equal(result, '![[attachments/image.png|alt text]]');
+  });
+
+  it('rewrites both plain links and embeds pointing to the same target', () => {
+    const content = 'Linked: [[image.png]], embedded: ![[image.png]]';
+    const result = rewriteLinks(content, 'image.png', 'attachments/image.png');
+    assert.equal(result, 'Linked: [[attachments/image.png]], embedded: ![[attachments/image.png]]');
+  });
+
+  it('does not rewrite embeds of other files with similar names', () => {
+    const content = '![[image.png]] and ![[image2.png]]';
+    const result = rewriteLinks(content, 'image.png', 'attachments/image.png');
+    assert.equal(result, '![[attachments/image.png]] and ![[image2.png]]');
+  });
+
+  it('does not rewrite a note link when moving a binary file with the same basename', () => {
+    // A note "image.md" (linked as [[image]]) and an unrelated binary file "image.png"
+    // living in a different folder both reduce to basename "image" — moving the binary
+    // file must only touch its own extension-bearing embed, never the note's bare link.
+    const content = 'See [[image]] the note, and ![[image.png]] the picture.';
+    const result = rewriteLinks(content, 'old/image.png', 'new/image.png');
+    assert.equal(result, 'See [[image]] the note, and ![[new/image.png]] the picture.');
+  });
 });

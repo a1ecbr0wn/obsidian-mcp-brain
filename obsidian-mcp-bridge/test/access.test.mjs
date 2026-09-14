@@ -165,6 +165,41 @@ describe('checkAccess', () => {
     });
   });
 
+  describe('create-binary-file / delete-binary-file', () => {
+    it('blocks denied path', () => {
+      const r1 = checkAccess(DENY, 'create-binary-file', { folder: 'people', filename: 'photo.png' });
+      assert.ok(r1?.includes('restricted'));
+      const r2 = checkAccess(DENY, 'delete-binary-file', { folder: 'people', filename: 'photo.png' });
+      assert.ok(r2?.includes('restricted'));
+    });
+
+    it('allows permitted path', () => {
+      assert.equal(checkAccess(DENY, 'create-binary-file', { folder: 'projects', filename: 'photo.png' }), null);
+      assert.equal(checkAccess(DENY, 'delete-binary-file', { folder: 'projects', filename: 'photo.png' }), null);
+    });
+
+    it('handles missing folder (filename only)', () => {
+      assert.equal(checkAccess(DENY, 'create-binary-file', { filename: 'photo.png' }), null);
+      assert.equal(checkAccess(DENY, 'delete-binary-file', { filename: 'photo.png' }), null);
+    });
+  });
+
+  describe('move-binary-file', () => {
+    it('blocks denied source', () => {
+      const r = checkAccess(DENY, 'move-binary-file', { folder: 'people', filename: 'photo.png', newFilename: 'photo.png' });
+      assert.ok(r?.includes('source'));
+    });
+
+    it('blocks denied destination', () => {
+      const r = checkAccess(DENY, 'move-binary-file', { filename: 'photo.png', newFolder: 'people', newFilename: 'photo.png' });
+      assert.ok(r?.includes('destination'));
+    });
+
+    it('allows permitted source and destination', () => {
+      assert.equal(checkAccess(DENY, 'move-binary-file', { filename: 'a.png', newFolder: 'projects', newFilename: 'a.png' }), null);
+    });
+  });
+
   describe('add-tags / remove-tags', () => {
     it('blocks when any file is in denied path', () => {
       const r = checkAccess(DENY, 'add-tags', { files: ['inbox/a.md', 'people/alice.md'] });
