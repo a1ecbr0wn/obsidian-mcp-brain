@@ -643,6 +643,15 @@ describe('create-binary-file', () => {
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('base64-encoded string'));
   });
+
+  it('returns isError for malformed base64 content', async () => {
+    const result = await callTool('create-binary-file', {
+      filename: 'malformed.png', content: 'not valid base64!!! @#$',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('not valid base64'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'malformed.png')));
+  });
 });
 
 // ── delete-binary-file ────────────────────────────────────────────────────

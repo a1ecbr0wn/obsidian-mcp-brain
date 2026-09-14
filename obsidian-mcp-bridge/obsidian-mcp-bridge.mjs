@@ -1089,6 +1089,10 @@ async function route(req, res, url, sid) {
     if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (typeof args.content !== 'string') return toolErr(res, sid, msgId, 'content must be a base64-encoded string');
+    const b64Body = args.content.replace(/\s/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64Body) || b64Body.length % 4 !== 0) {
+      return toolErr(res, sid, msgId, 'content is not valid base64');
+    }
     const absPath = path.join(VAULT, relPath);
     try {
       await fs.access(absPath);
