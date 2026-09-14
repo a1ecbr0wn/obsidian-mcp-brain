@@ -1,6 +1,6 @@
 /**
  * Integration tests for bridge-native tool handlers.
- * Spawns the bridge HTTP server with a temp vault and a minimal stdio mock as CHILD_BIN.
+ * Spawns the bridge HTTP server with a temp vault.
  * Sends real HTTP POST requests and asserts on SSE responses.
  *
  * DENY_PATHS=private is set so access-control paths can be tested alongside
@@ -18,7 +18,6 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE     = path.join(__dirname, '..', 'obsidian-mcp-bridge.mjs');
-const MOCK_CHILD = path.join(__dirname, 'mock-child.mjs');
 const PORT       = 19742;
 const BASE_URL   = `http://127.0.0.1:${PORT}`;
 const DENY_DIR   = 'private'; // vault-relative path that DENY_PATHS blocks
@@ -120,7 +119,6 @@ before(async () => {
       ...process.env,
       VAULT:        vaultDir,
       MCP_BASE_URL: BASE_URL,
-      CHILD_BIN:    MOCK_CHILD,
       LISTEN_PORT:  String(PORT),
       DENY_PATHS:   DENY_DIR,
     },
@@ -158,6 +156,34 @@ describe('list-available-vaults', () => {
     const text = r.msgs[0].result.content[0].text;
     assert.ok(text.includes(vaultName), `expected vault name in: ${text}`);
     assert.ok(!r.msgs[0].result.isError);
+  });
+});
+
+// ── ping ──────────────────────────────────────────────────────────────────
+
+describe('ping', () => {
+  it('answers with an empty result', async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'ping' }, sid);
+    assert.equal(r.msgs.length, 1);
+    assert.deepEqual(r.msgs[0].result, {});
+  });
+});
+
+// ── unknown method / unknown tool ───────────────────────────────────────────
+
+describe('unrecognized requests', () => {
+  it('returns a JSON-RPC Method not found error for an unknown top-level method', async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'not-a-real-method' }, sid);
+    assert.equal(r.msgs.length, 1);
+    assert.equal(r.msgs[0].error?.code, -32601);
+  });
+
+  it('returns isError for an unknown tool name', async () => {
+    const result = await callTool('not-a-real-tool', {});
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Unknown tool'));
   });
 });
 

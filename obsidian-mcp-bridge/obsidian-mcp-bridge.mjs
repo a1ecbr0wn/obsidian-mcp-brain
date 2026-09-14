@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * MCP HTTP bridge for obsidian-mcp.
- * Replaces both mcp-proxy and mcp-oauth-proxy:
- *   - Spawns obsidian-mcp over stdio
+ * MCP HTTP bridge for an Obsidian vault.
+ * Replaces both mcp-proxy and mcp-oauth-proxy, and the obsidian-mcp child process:
  *   - Implements MCP Streamable HTTP transport (2024-11-05 spec)
  *   - Provides the OAuth 2.0 discovery endpoints Claude Code requires
+ *   - Reads and writes vault files directly, with no child process dependency
  *
  * Usage: VAULT=/path/to/vault node obsidian-mcp-bridge.mjs
  */
 
-import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -41,7 +40,6 @@ if (Number.isNaN(LISTEN_PORT) || LISTEN_PORT < 1 || LISTEN_PORT > 65535) {
 }
 const BASE_URL     = process.env.MCP_BASE_URL;
 const VAULT        = process.env.VAULT || process.argv[2];
-const CHILD_BIN    = process.env.CHILD_BIN;
 const VAULT_NAME   = VAULT ? VAULT.replace(/\/+$/, '').split('/').pop() : 'vault';
 
 // Comma-separated vault-relative paths that are off-limits, e.g. "private,journal/personal"
@@ -54,232 +52,9 @@ if (!BASE_URL) {
   logErr('Set MCP_BASE_URL env var to the public HTTPS base URL of this bridge (e.g. https://hostname:4001)');
   process.exit(1);
 }
-if (!CHILD_BIN) {
-  logErr('Set CHILD_BIN env var to the path of the obsidian-mcp binary (e.g. /usr/local/bin/obsidian-mcp)');
-  process.exit(1);
-}
 if (!VAULT) {
   logErr('Set VAULT env var or pass vault path as first argument');
   process.exit(1);
-}
-
-// ── child process ──────────────────────────────────────────────────────────
-
-let child            = null;
-let childReady       = false;
-let everInitialized  = false;
-let childKeepAlive   = null;  // timer handle for child keepalive pings
-let childCapResolve = null;
-let childCapReject  = null;
-let childCapPromise = new Promise((res, rej) => {
-  childCapResolve = res;
-  childCapReject  = rej;
-});
-let childCaps    = null;      // result of child's initialize response
-let childTools   = null;      // cached tools/list result — refreshed on each child restart
-let childBuf     = '';
-const pending    = new Map(); // globalId → (response) => void
-
-function sendChild(msg) {
-  if (!child || child.killed || !child.stdin.writable) {
-    logErr('sendChild: child not available, dropping message');
-    return;
-  }
-  try {
-    child.stdin.write(JSON.stringify(msg) + '\n');
-  } catch (err) {
-    logErr('sendChild write error:', err.code ?? err.message);
-  }
-}
-
-function onChildLine(line) {
-  let msg;
-  try { msg = JSON.parse(line); } catch { return; }
-
-  // notification (no id member) → forward to open SSE streams
-  // Note: id:null is technically valid in JSON-RPC error responses; String(null) === "null"
-  // so it would miss the pending lookup below — but obsidian-mcp does not produce id:null.
-  if (msg.id === undefined) {
-    broadcastNotification(msg);
-    return;
-  }
-
-  const cb = pending.get(String(msg.id));
-  if (cb) {
-    pending.delete(String(msg.id));
-    cb(msg);
-  }
-}
-
-// obsidian-mcp has a 60s inactivity ConnectionMonitor. The bridge short-circuits
-// most requests (tools/list, prompts/list, resources/list) so the child rarely sees
-// traffic. Send a tools/list keepalive every 45s to prevent the monitor from firing.
-function scheduleKeepAlive() {
-  clearTimeout(childKeepAlive);
-  childKeepAlive = setTimeout(async () => {
-    if (!child || !childReady) return;
-    log('  → keepalive: pinging child');
-    const r = await callChild({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/list', params: {} }, 10_000);
-    if (r.error) {
-      // If the child already exited, the exit handler set childReady=false and
-      // scheduled a respawn — nothing for us to do. Only force-restart if the
-      // child appears to still be running but stopped responding.
-      if (childReady) {
-        logErr('keepalive timed out or errored — restarting child:', r.error.message);
-        restartChild();
-      } else {
-        logErr('keepalive errored after child exit (restart already scheduled):', r.error.message);
-      }
-    } else {
-      if (r.result) childTools = r.result; // refresh cache while we're here
-      scheduleKeepAlive();
-    }
-  }, 30_000);
-}
-
-function spawnChild() {
-  childReady = false;
-  childBuf   = '';
-  child = spawn(CHILD_BIN, [VAULT], { stdio: ['pipe', 'pipe', 'inherit'] });
-  const self = child; // captured so data/error listeners can detect replacement
-
-  child.stdin.on('error', err => {
-    logErr('child stdin error:', err.code ?? err.message);
-  });
-
-  child.stdout.on('error', err => {
-    logErr('child stdout error:', err.code ?? err.message);
-  });
-
-  child.stdout.on('data', chunk => {
-    if (child !== self) return; // stale listener from killed child, discard
-    const chunkStr = chunk.toString();
-    log(`  ← child stdout: ${chunk.length} bytes (buf=${childBuf.length + chunkStr.length}), pending=${pending.size}`);
-    childBuf += chunkStr;
-    if (childBuf.length > 10 * 1024 * 1024) { // obsidian-mcp messages can be large; 10MB prevents resource exhaustion
-      logErr(`childBuf overflow at ${childBuf.length} bytes (limit=10MB), restarting child`);
-      childBuf = '';
-      if (child && !child.killed) child.kill('SIGTERM');
-      return;
-    }
-    let nl;
-    while ((nl = childBuf.indexOf('\n')) !== -1) {
-      const line = childBuf.slice(0, nl).trim();
-      childBuf  = childBuf.slice(nl + 1);
-      log(`  ← child line: id=${(() => { try { return JSON.parse(line)?.id ?? 'none'; } catch { return 'parse-err'; } })()} pending=${pending.size}`);
-      if (line) onChildLine(line);
-    }
-  });
-
-  child.on('exit', code => {
-    logErr(`obsidian-mcp exited (${code}), restarting in 3s`);
-    clearTimeout(childKeepAlive);
-    childReady  = false;
-    childCaps   = null;
-    childTools  = null;
-    // fail any in-flight requests (snapshot first so callbacks can't mutate pending mid-iteration)
-    for (const [id, cb] of [...pending]) {
-      cb({ jsonrpc: '2.0', id, error: { code: -32603, message: 'child restarted' } });
-    }
-    pending.clear();
-    // reset cap promise for restart
-    childCapPromise = new Promise((res, rej) => {
-      childCapResolve = res;
-      childCapReject  = rej;
-    });
-    childCapPromise.catch(err => logErr('child re-init failed:', err));
-    setTimeout(spawnChild, 3000);
-  });
-
-  // send initialize to child
-  const initId = randomUUID();
-  pending.set(initId, resp => {
-    if (resp.error) {
-      logErr('child init error:', resp.error);
-      childCapReject(resp.error); // already .catch'd on the promise
-      if (everInitialized) {
-        // On restart, kill and let the exit handler retry
-        if (child && !child.killed) child.kill('SIGTERM');
-      }
-      // else: first-start failure — the .catch on childCapPromise below calls process.exit(1)
-      return;
-    }
-    childCaps       = resp.result;
-    childReady      = true;
-    everInitialized = true;
-    // Spec requires the client to send notifications/initialized after receiving
-    // the initialize response. obsidian-mcp ignores unknown notifications safely.
-    sendChild({ jsonrpc: '2.0', method: 'notifications/initialized' });
-    // Pre-fetch static responses so they can be short-circuited without blocking on the child.
-    const toolsId = randomUUID();
-    pending.set(toolsId, resp => { if (!resp.error) childTools = resp.result; });
-    sendChild({ jsonrpc: '2.0', id: toolsId, method: 'tools/list', params: {} });
-
-    log('obsidian-mcp ready');
-    childCapResolve(childCaps);
-    scheduleKeepAlive();
-  });
-
-  sendChild({
-    jsonrpc: '2.0',
-    id: initId,
-    method: 'initialize',
-    params: {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'obsidian-mcp-bridge', version: '1.0' },
-    },
-  });
-}
-
-async function ensureReady() {
-  if (childReady) return childCaps;
-  try { return await childCapPromise; } catch { return null; }
-}
-
-let lastRestart = 0;
-function restartChild() {
-  const now = Date.now();
-  if (now - lastRestart < 5000) return; // debounce
-  lastRestart = now;
-  logErr('restarting stuck child');
-  if (child && !child.killed) child.kill('SIGTERM');
-}
-
-async function callChild(request, timeoutMs = 60_000) {
-  await ensureReady();
-  if (!childReady) await ensureReady(); // wait again on the new childCapPromise if child restarted
-  if (!childReady) {
-    return { jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'child not available' } };
-  }
-  const origId   = request.id;
-  const globalId = randomUUID();
-  const label    = request.method === 'tools/call'
-    ? `tools/call (${request.params?.name ?? '?'})` : request.method;
-  const t0 = Date.now();
-  const argsLog = request.method === 'tools/call' && request.params?.arguments
-    ? ' args=' + JSON.stringify(request.params.arguments) : '';
-  log(`  ⟶ child: ${label}${argsLog} [${globalId.slice(0, 8)}] pending=${pending.size + 1}`);
-
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      pending.delete(globalId);
-      log(`  ✗ timeout: ${label} [${globalId.slice(0, 8)}] after ${Date.now() - t0}ms pending=${pending.size}`);
-      resolve({ jsonrpc: '2.0', id: origId, error: { code: -32603, message: `timeout: ${request.method}` } });
-      // Do NOT restart the child here — it may just be slow (e.g. USB disk read).
-      // The child is only restarted if it actually exits/crashes (see exit handler).
-    }, timeoutMs);
-
-    pending.set(globalId, resp => {
-      clearTimeout(timer);
-      const ms = Date.now() - t0;
-      const status = resp.error ? `error(${resp.error.code})` : 'ok';
-      log(`  ✓ ${label} [${globalId.slice(0, 8)}] ${status} in ${ms}ms pending=${pending.size - 1}`);
-      resolve({ ...resp, id: origId });
-    });
-
-    sendChild({ ...request, id: globalId });
-  });
 }
 
 // ── Path access control ────────────────────────────────────────────────────
@@ -290,6 +65,14 @@ const checkAccess = (toolName, args) => _checkAccess(DENY_PATHS, toolName, args)
 
 const toolOk  = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } }]);
 const toolErr = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } }]);
+
+// Static initialize response — every tool is bridge-native, so there's no child
+// capabilities negotiation to wait on.
+const SERVER_CAPS = {
+  protocolVersion: '2024-11-05',
+  capabilities: { tools: {} },
+  serverInfo: { name: 'obsidian-mcp-bridge', version: '1.0.0' },
+};
 
 // ── Bridge-native tools ────────────────────────────────────────────────────
 
@@ -550,23 +333,6 @@ const BRIDGE_TOOLS = [
 
 const sseStreams = new Map(); // sessionId → ServerResponse
 
-function broadcastNotification(msg) {
-  const chunk = `event: message\ndata: ${JSON.stringify(msg)}\n\n`;
-  for (const [sid, res] of sseStreams) {
-    try {
-      res.write(chunk);
-    } catch (err) {
-      const code = err.code;
-      if (code !== 'EPIPE' && code !== 'ERR_STREAM_DESTROYED') {
-        logErr(`broadcastNotification error for sid ${sid.slice(0, 8)}:`, err.message);
-      }
-      // Always prune the broken stream and its session regardless of error type.
-      sseStreams.delete(sid);
-      sessions.delete(sid);
-    }
-  }
-}
-
 // ── active HTTP sessions ───────────────────────────────────────────────────
 
 const sessions    = new Set();
@@ -745,7 +511,7 @@ async function route(req, res, url, sid) {
   req.setEncoding('utf8');
   let body = '';
   for await (const chunk of req) {
-    if (body.length + chunk.length > 10 * 1024 * 1024) { // raised from 1MB to accommodate large obsidian-mcp messages
+    if (body.length + chunk.length > 10 * 1024 * 1024) { // generous ceiling for large tool-call payloads (e.g. base64 binary content)
       logErr(`request body too large at ${body.length + chunk.length} bytes (limit=10MB)`);
       req.destroy(); res.writeHead(413); return res.end('request too large');
     }
@@ -768,11 +534,6 @@ async function route(req, res, url, sid) {
 
   // initialize → new session, no forwarding needed
   if (msg.method === 'initialize') {
-    const caps = await ensureReady();
-    if (!caps) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ jsonrpc: '2.0', id: msgId, error: { code: -32603, message: 'child not available' } }));
-    }
     const newSid = randomUUID();
     if (!addSession(newSid)) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -781,7 +542,7 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, newSid, [{
       jsonrpc: '2.0',
       id: msgId,
-      result: caps,
+      result: SERVER_CAPS,
     }]);
   }
 
@@ -793,28 +554,30 @@ async function route(req, res, url, sid) {
 
   // notifications (no id member per JSON-RPC 2.0) → 202, don't forward
   // Note: id:null is technically a malformed request, not a notification, but
-  // we treat it the same way since obsidian-mcp does not produce id:null responses.
+  // no legitimate client sends one, so it's treated the same way.
   if (msg.id === undefined || msg.id === null) {
     res.writeHead(202);
     return res.end();
   }
 
-  // short-circuit list methods that obsidian-mcp is slow/stuck on
+  // base-protocol liveness check — capability-independent, so it's answered
+  // unconditionally rather than falling through to the unknown-method error below.
+  if (msg.method === 'ping') {
+    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {} }]);
+  }
+
+  // static responses for methods this bridge doesn't support server-side
   if (msg.method === 'resources/list') {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { resources: [] } }]);
   }
   if (msg.method === 'prompts/list') {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { prompts: [] } }]);
   }
-  if (msg.method === 'tools/list' && childTools) {
-    // Bridge-native tools supersede child tools of the same name.
-    const bridgeNames = new Set(BRIDGE_TOOLS.map(t => t.name));
-    const filteredChild = childTools.tools.filter(t => !bridgeNames.has(t.name));
-    const result = { ...childTools, tools: [...filteredChild, ...BRIDGE_TOOLS] };
-    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result }]);
+  if (msg.method === 'tools/list') {
+    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: BRIDGE_TOOLS } }]);
   }
 
-  // list-available-vaults is answered directly from the VAULT env var — never hits the child
+  // list-available-vaults is answered directly from the VAULT env var
   if (msg.method === 'tools/call' && msg.params?.name === 'list-available-vaults') {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
       content: [{ type: 'text', text: `Available vaults:\n  - ${VAULT_NAME}` }],
@@ -1259,23 +1022,15 @@ async function route(req, res, url, sid) {
     }
   }
 
-  // requests → forward to child, return SSE response
-  const response = await callChild({ ...msg, id: msgId });
-  // MCP spec: tool execution errors must come back as result.isError, not JSON-RPC errors.
-  // obsidian-mcp uses JSON-RPC errors for tool failures — convert them so clients see the message.
-  if (msg.method === 'tools/call' && response.error) {
-    const errText = (response.error.message ?? 'Tool execution failed')
-      .replaceAll(VAULT + '/', '');
-    return sendSse(res, 200, sid, [{
-      jsonrpc: '2.0',
-      id: msgId,
-      result: {
-        content: [{ type: 'text', text: errText }],
-        isError: true,
-      },
-    }]);
+  // Every named tool has its own handler above and returns before reaching here.
+  if (msg.method === 'tools/call') {
+    return toolErr(res, sid, msgId, `Unknown tool: ${msg.params?.name}`);
   }
-  return sendSse(res, 200, sid, [response]);
+  return sendSse(res, 200, sid, [{
+    jsonrpc: '2.0',
+    id: msgId,
+    error: { code: -32601, message: `Method not found: ${msg.method}` },
+  }]);
 }
 
 function handleAuthorize(req, res) {
@@ -1306,17 +1061,6 @@ function handleAuthorize(req, res) {
 
 // ── start ──────────────────────────────────────────────────────────────────
 
-spawnChild();
-
-// Wait for child before accepting connections
-childCapPromise.then(
-  () => {
-    server.listen(LISTEN_PORT, '127.0.0.1', () => {
-      log(`obsidian-mcp bridge listening on 127.0.0.1:${LISTEN_PORT}`);
-    });
-  },
-  err => {
-    logErr('child failed to initialize:', err);
-    process.exit(1);
-  },
-);
+server.listen(LISTEN_PORT, '127.0.0.1', () => {
+  log(`obsidian-mcp bridge listening on 127.0.0.1:${LISTEN_PORT}`);
+});
