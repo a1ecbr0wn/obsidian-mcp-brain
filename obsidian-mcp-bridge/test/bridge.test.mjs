@@ -215,6 +215,17 @@ describe('list-notes', () => {
     assert.ok(!result.isError);
   });
 
+  it('includes a tab-separated ISO 8601 last-modified timestamp on each line', async () => {
+    const result = await callTool('list-notes', { path: 'projects' });
+    const lines = result.content[0].text.split('\n');
+    assert.equal(lines.length, 2);
+    for (const line of lines) {
+      const [notePath, iso] = line.split('\t');
+      assert.ok(notePath.startsWith('projects/'));
+      assert.ok(!Number.isNaN(Date.parse(iso)), `expected valid ISO timestamp, got: ${iso}`);
+    }
+  });
+
   it('returns isError when path scope is denied', async () => {
     const result = await callTool('list-notes', { path: DENY_DIR });
     assert.ok(result.isError, 'denied scope should return isError');
@@ -392,6 +403,14 @@ describe('read-note', () => {
     const result = await callTool('read-note', { folder: 'readable', filename: 'hello.md' });
     assert.ok(result.content[0].text.includes('some content here'));
     assert.ok(!result.isError);
+  });
+
+  it('includes the last-modified time as a second content item, without touching the note text', async () => {
+    const result = await callTool('read-note', { folder: 'readable', filename: 'hello.md' });
+    assert.equal(result.content[0].text, '# Hello\nsome content here');
+    assert.ok(result.content[1].text.startsWith('Last-Modified: '));
+    const iso = result.content[1].text.replace('Last-Modified: ', '');
+    assert.ok(!Number.isNaN(Date.parse(iso)), `expected valid ISO timestamp, got: ${iso}`);
   });
 
   it('returns isError for a missing note', async () => {
