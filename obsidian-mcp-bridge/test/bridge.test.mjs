@@ -541,6 +541,106 @@ describe('edit-note', () => {
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Access denied'));
   });
+
+  it('replace-section replaces content under a heading', async () => {
+    await writeVaultNote('editable/section-test.md', '# A\nold\n## B\nkeep');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'section-test.md', operation: 'replace-section', heading: 'A', content: 'new' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/section-test.md'), 'utf8');
+    assert.equal(content, '# A\nnew');
+  });
+
+  it('replace-section returns isError with heading required for a missing heading param', async () => {
+    await writeVaultNote('editable/section-missing-heading.md', '# A\nx');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'section-missing-heading.md', operation: 'replace-section', content: 'new' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('heading is required'));
+  });
+
+  it('replace-section returns isError for a heading not found in the note', async () => {
+    await writeVaultNote('editable/section-not-found.md', '# A\nx');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'section-not-found.md', operation: 'replace-section', heading: 'Missing', content: 'new' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('not found'));
+  });
+
+  it('replace-section returns isError listing matches for an ambiguous heading', async () => {
+    await writeVaultNote('editable/section-ambiguous.md', '# Dup\na\n# Dup\nb');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'section-ambiguous.md', operation: 'replace-section', heading: 'Dup', content: 'new' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Ambiguous'));
+    assert.ok(result.content[0].text.includes('line 1'));
+    assert.ok(result.content[0].text.includes('line 3'));
+  });
+
+  it('replace-section occurrence disambiguates a repeated heading', async () => {
+    await writeVaultNote('editable/section-occurrence.md', '# Dup\na\n# Dup\nb');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'section-occurrence.md', operation: 'replace-section', heading: 'Dup', content: 'z', occurrence: 2 });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/section-occurrence.md'), 'utf8');
+    assert.equal(content, '# Dup\na\n# Dup\nz');
+  });
+
+  it('replace-section returns isError when note is in denied path', async () => {
+    await writeVaultNote(`${DENY_DIR}/section-blocked.md`, '# A\nx');
+    const result = await callTool('edit-note', { folder: DENY_DIR, filename: 'section-blocked.md', operation: 'replace-section', heading: 'A', content: 'y' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+
+  it('toggle-checkbox flips an unchecked box to checked', async () => {
+    await writeVaultNote('editable/checkbox-test.md', '- [ ] task one');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'checkbox-test.md', operation: 'toggle-checkbox', taskText: 'task one' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/checkbox-test.md'), 'utf8');
+    assert.equal(content, '- [x] task one');
+  });
+
+  it('toggle-checkbox sets an explicit checked state', async () => {
+    await writeVaultNote('editable/checkbox-explicit.md', '- [ ] task two');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'checkbox-explicit.md', operation: 'toggle-checkbox', taskText: 'task two', checked: true });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/checkbox-explicit.md'), 'utf8');
+    assert.equal(content, '- [x] task two');
+  });
+
+  it('toggle-checkbox returns isError with taskText required for a missing taskText param', async () => {
+    await writeVaultNote('editable/checkbox-missing-tasktext.md', '- [ ] x');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'checkbox-missing-tasktext.md', operation: 'toggle-checkbox' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('taskText is required'));
+  });
+
+  it('toggle-checkbox returns isError for a task not found in the note', async () => {
+    await writeVaultNote('editable/checkbox-not-found.md', '- [ ] x');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'checkbox-not-found.md', operation: 'toggle-checkbox', taskText: 'missing' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('not found'));
+  });
+
+  it('toggle-checkbox returns isError listing matches for ambiguous task text', async () => {
+    await writeVaultNote('editable/checkbox-ambiguous.md', '- [ ] dup\n- [x] dup');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'checkbox-ambiguous.md', operation: 'toggle-checkbox', taskText: 'dup' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Ambiguous'));
+    assert.ok(result.content[0].text.includes('line 1'));
+    assert.ok(result.content[0].text.includes('line 2'));
+  });
+
+  it('toggle-checkbox occurrence disambiguates a repeated task', async () => {
+    await writeVaultNote('editable/checkbox-occurrence.md', '- [ ] dup\n- [ ] dup');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'checkbox-occurrence.md', operation: 'toggle-checkbox', taskText: 'dup', occurrence: 2 });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/checkbox-occurrence.md'), 'utf8');
+    assert.equal(content, '- [ ] dup\n- [x] dup');
+  });
+
+  it('toggle-checkbox returns isError when note is in denied path', async () => {
+    await writeVaultNote(`${DENY_DIR}/checkbox-blocked.md`, '- [ ] x');
+    const result = await callTool('edit-note', { folder: DENY_DIR, filename: 'checkbox-blocked.md', operation: 'toggle-checkbox', taskText: 'x' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
 });
 
 // ── delete-note ───────────────────────────────────────────────────────────

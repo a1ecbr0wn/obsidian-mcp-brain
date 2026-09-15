@@ -21,6 +21,7 @@ import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess } from './lib/access.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
+import { replaceSection, toggleCheckbox } from './lib/sections.mjs';
 import {
   walkVault as libWalkVault,
   readNote as libReadNote,
@@ -253,17 +254,21 @@ const BRIDGE_TOOLS = [
   },
   {
     name: 'edit-note',
-    description: 'Edit an existing note by appending, prepending, or replacing its content.',
+    description: 'Edit an existing note by appending, prepending, replacing its content, replacing the content under a heading, or toggling a checkbox.',
     inputSchema: {
       type: 'object',
       properties: {
-        vault:     { type: 'string', description: 'Vault name' },
-        filename:  { type: 'string', description: 'Filename including .md extension' },
-        folder:    { type: 'string', description: 'Optional vault-relative folder' },
-        operation: { type: 'string', enum: ['append', 'prepend', 'replace'], description: 'Edit operation' },
-        content:   { type: 'string', description: 'Content to apply' },
+        vault:      { type: 'string', description: 'Vault name' },
+        filename:   { type: 'string', description: 'Filename including .md extension' },
+        folder:     { type: 'string', description: 'Optional vault-relative folder' },
+        operation:  { type: 'string', enum: ['append', 'prepend', 'replace', 'replace-section', 'toggle-checkbox'], description: 'Edit operation' },
+        content:    { type: 'string', description: 'Content to apply (append/prepend/replace/replace-section)' },
+        heading:    { type: 'string', description: 'Exact heading text to match (replace-section only)' },
+        taskText:   { type: 'string', description: 'Exact checkbox text after the [ ]/[x] marker (toggle-checkbox only)' },
+        checked:    { type: 'boolean', description: 'Explicit checkbox state (toggle-checkbox only); omit to flip the current state' },
+        occurrence: { type: 'integer', description: 'Disambiguates when heading/taskText matches more than once (1-based)' },
       },
-      required: ['vault', 'filename', 'operation', 'content'],
+      required: ['vault', 'filename', 'operation'],
     },
   },
   {
@@ -929,12 +934,24 @@ async function route(req, res, url, sid) {
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     const op = args.operation;
-    if (!['append', 'prepend', 'replace'].includes(op))
+    if (!['append', 'prepend', 'replace', 'replace-section', 'toggle-checkbox'].includes(op))
       return toolErr(res, sid, msgId, `Invalid operation: ${op}`);
+    if (op === 'replace-section' && !args.heading)
+      return toolErr(res, sid, msgId, 'heading is required for replace-section');
+    if (op === 'toggle-checkbox' && !args.taskText)
+      return toolErr(res, sid, msgId, 'taskText is required for toggle-checkbox');
     const absPath = path.join(vault.path, relPath);
     try {
       if (op === 'replace') {
         await libWriteNote(absPath, args.content ?? '');
+      } else if (op === 'replace-section') {
+        const existing = await libReadNote(absPath);
+        const updated = replaceSection(existing, args.heading, args.content ?? '', args.occurrence);
+        await libWriteNote(absPath, updated);
+      } else if (op === 'toggle-checkbox') {
+        const existing = await libReadNote(absPath);
+        const updated = toggleCheckbox(existing, args.taskText, args.checked, args.occurrence);
+        await libWriteNote(absPath, updated);
       } else {
         const existing = await libReadNote(absPath);
         const newContent = args.content ?? '';
