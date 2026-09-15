@@ -12,6 +12,8 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess } from './lib/access.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag } from './lib/frontmatter.mjs';
@@ -58,6 +60,11 @@ if (!VAULT) {
   logErr('Set VAULT env var or pass vault path as first argument');
   process.exit(1);
 }
+
+// query-graph is only offered if a graphify knowledge graph already exists for this vault.
+// Computed once at startup — building or removing the graph requires a bridge restart to take effect.
+const GRAPHIFY_AVAILABLE = existsSync(path.join(VAULT, 'graphify-out'));
+const GRAPHIFY_QUERY_TIMEOUT_MS = parseInt(process.env.GRAPHIFY_QUERY_TIMEOUT_MS || '60000', 10);
 
 // ── Path access control ────────────────────────────────────────────────────
 
@@ -355,6 +362,21 @@ const BRIDGE_TOOLS = [
     },
   },
 ];
+
+if (GRAPHIFY_AVAILABLE) {
+  BRIDGE_TOOLS.push({
+    name: 'query-graph',
+    description: 'Ask a natural-language question against the vault\'s graphify knowledge graph.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        question: { type: 'string', description: 'Natural-language question to ask the graph' },
+      },
+      required: ['vault', 'question'],
+    },
+  });
+}
 
 // ── SSE streams (GET /mcp per session) ────────────────────────────────────
 
@@ -973,6 +995,24 @@ async function route(req, res, url, sid) {
     }
   }
 
+  if (msg.method === 'tools/call' && msg.params?.name === 'query-graph') {
+    const args = msg.params.arguments ?? {};
+    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    if (!GRAPHIFY_AVAILABLE) return toolErr(res, sid, msgId, 'No graphify knowledge graph exists for this vault. Run graphify --obsidian against it and restart the bridge.');
+    if (!args.question) return toolErr(res, sid, msgId, 'question is required');
+    try {
+      await fs.access(path.join(VAULT, 'graphify-out', 'graph.json'));
+    } catch {
+      return toolErr(res, sid, msgId, 'graphify-out/graph.json not found. Run graphify --obsidian against this vault and restart the bridge.');
+    }
+    try {
+      const output = await runGraphifyQuery(args.question);
+      return toolOk(res, sid, msgId, output);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+    }
+  }
+
   if (msg.method === 'tools/call' && msg.params?.name === 'create-directory') {
     const args = msg.params.arguments ?? {};
     if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
@@ -1097,6 +1137,43 @@ async function route(req, res, url, sid) {
     id: msgId,
     error: { code: -32601, message: `Method not found: ${msg.method}` },
   }]);
+}
+
+// Runs `graphify query "<question>"` in the vault directory. Array-form spawn args (no
+// shell) so the question text can never be interpreted as shell syntax or reach graphify
+// as anything other than a single literal argument — graphify's own CLI reads sys.argv[2]
+// unconditionally as the question (it's a hand-rolled argv parser, not argparse, with no
+// '--' end-of-options handling), so there's no separate flag-smuggling risk to guard
+// against here; adding a '--' would instead shift the question to the wrong argv position
+// and break every real query. Killed (SIGTERM, then SIGKILL after a short grace period if
+// still alive) if it runs longer than GRAPHIFY_QUERY_TIMEOUT_MS, so a hung query can't hold
+// a request open forever or leak an orphaned process if it ignores SIGTERM.
+function runGraphifyQuery(question) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('graphify', ['query', question], { cwd: VAULT });
+    let stdout = '';
+    let stderr = '';
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 2000);
+      reject(new Error(`graphify query timed out after ${GRAPHIFY_QUERY_TIMEOUT_MS}ms`));
+    }, GRAPHIFY_QUERY_TIMEOUT_MS);
+
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+
+    child.on('error', err => {
+      clearTimeout(timer);
+      reject(new Error(err.code === 'ENOENT' ? 'graphify command not found on PATH' : err.message));
+    });
+
+    child.on('exit', code => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`graphify query exited with code ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+    });
+  });
 }
 
 function handleAuthorize(req, res) {

@@ -46,7 +46,7 @@ async function writeVaultNote(relPath, content) {
  * @param {string} [sid] - Optional session ID header (mcp-session-id).
  * @returns {Promise<{status: number, headers: object, msgs: object[]}>} Status code, response headers, and parsed SSE messages.
  */
-async function post(body, sid) {
+async function post(body, sid, port = PORT) {
   return new Promise((resolve, reject) => {
     const bodyStr = JSON.stringify(body);
     const headers = {
@@ -55,7 +55,7 @@ async function post(body, sid) {
     };
     if (sid) headers['mcp-session-id'] = sid;
     const req = http.request(
-      { hostname: '127.0.0.1', port: PORT, path: '/mcp', method: 'POST', headers },
+      { hostname: '127.0.0.1', port, path: '/mcp', method: 'POST', headers },
       res => {
         let data = '';
         res.setEncoding('utf8');
@@ -81,11 +81,11 @@ async function post(body, sid) {
  * Initializes an MCP session via the /mcp endpoint.
  * @returns {Promise<string>} The session ID from the mcp-session-id response header.
  */
-async function initSession() {
+async function initSession(port = PORT) {
   const r = await post({
     jsonrpc: '2.0', id: '1', method: 'initialize',
     params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
-  });
+  }, undefined, port);
   assert.equal(r.status, 200, 'initialize should return 200');
   const sid = r.headers['mcp-session-id'];
   assert.ok(sid, 'initialize should return a session ID');
@@ -1127,5 +1127,128 @@ describe('rename-tag', () => {
       params: { name: 'rename-tag', arguments: { vault: 'wrong-vault', oldTag: 'x', newTag: 'y' } },
     }, sid);
     assert.ok(r.msgs[0].result.isError);
+  });
+});
+
+// ── query-graph ───────────────────────────────────────────────────────────
+// The main bridge instance above has no graphify-out/ in its vault, so query-graph
+// should never appear for it. The positive-path tests spawn a dedicated second bridge
+// instance whose vault does have graphify-out/, with a mock `graphify` binary on PATH.
+
+describe('query-graph (no graph built)', () => {
+  it('is not listed in tools/list', async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'tools/list', params: {} }, sid);
+    const names = r.msgs[0].result.tools.map(t => t.name);
+    assert.ok(!names.includes('query-graph'));
+  });
+});
+
+describe('query-graph (graph built)', () => {
+  const GPORT = 19744;
+  const GBASE_URL = `http://127.0.0.1:${GPORT}`;
+  let gVaultDir, gVaultName, gProc, gMockBinDir;
+
+  async function gCallTool(name, args) {
+    const sid = await initSession(GPORT);
+    const r = await post({
+      jsonrpc: '2.0', id: '2', method: 'tools/call',
+      params: { name, arguments: { vault: gVaultName, ...args } },
+    }, sid, GPORT);
+    assert.equal(r.msgs.length, 1);
+    return r.msgs[0].result;
+  }
+
+  before(async () => {
+    gVaultDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-graphify-test-'));
+    gVaultName = path.basename(gVaultDir);
+    await fs.mkdir(path.join(gVaultDir, 'graphify-out'), { recursive: true });
+    await fs.writeFile(path.join(gVaultDir, 'graphify-out', 'graph.json'), '{}');
+
+    gMockBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mock-graphify-bin-'));
+    const mockPath = path.join(gMockBinDir, 'graphify');
+    await fs.writeFile(mockPath, [
+      '#!/usr/bin/env node',
+      "const question = process.argv[3];", // argv: node, script, 'query', question — matches graphify's real sys.argv[2]
+      "if (question === '__FAIL__') {",
+      "  process.stderr.write('mock failure\\n');",
+      '  process.exit(1);',
+      "} else if (question === '__HANG__') {",
+      '  setTimeout(() => {}, 10000);',
+      '} else {',
+      "  process.stdout.write('Answer: ' + question);",
+      '}',
+      '',
+    ].join('\n'));
+    await fs.chmod(mockPath, 0o755);
+
+    gProc = spawn('node', [BRIDGE], {
+      env: {
+        ...process.env,
+        PATH:         `${gMockBinDir}:${process.env.PATH}`,
+        VAULT:        gVaultDir,
+        MCP_BASE_URL: GBASE_URL,
+        LISTEN_PORT:  String(GPORT),
+        GRAPHIFY_QUERY_TIMEOUT_MS: '300',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    await new Promise((resolve, reject) => {
+      let out = '';
+      const onData = chunk => { out += chunk.toString(); if (out.includes('listening')) resolve(); };
+      gProc.stdout.on('data', onData);
+      gProc.stderr.on('data', onData);
+      gProc.on('exit', code => reject(new Error(`graphify bridge exited early with code ${code}\n${out}`)));
+      setTimeout(() => reject(new Error(`graphify bridge startup timeout\n${out}`)), 15_000);
+    });
+  });
+
+  after(async () => {
+    gProc.kill();
+    await fs.rm(gVaultDir, { recursive: true, force: true });
+    await fs.rm(gMockBinDir, { recursive: true, force: true });
+  });
+
+  it('is listed in tools/list', async () => {
+    const sid = await initSession(GPORT);
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'tools/list', params: {} }, sid, GPORT);
+    const names = r.msgs[0].result.tools.map(t => t.name);
+    assert.ok(names.includes('query-graph'));
+  });
+
+  it('returns the mock graphify output for a successful query', async () => {
+    const result = await gCallTool('query-graph', { question: 'What is X?' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[0].text, 'Answer: What is X?');
+  });
+
+  it('returns isError when graphify exits non-zero', async () => {
+    const result = await gCallTool('query-graph', { question: '__FAIL__' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('exited with code'));
+  });
+
+  it('returns isError on timeout', async () => {
+    const result = await gCallTool('query-graph', { question: '__HANG__' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('timed out'));
+  });
+
+  it('returns isError when graph.json is missing at call time', async () => {
+    const graphJsonPath = path.join(gVaultDir, 'graphify-out', 'graph.json');
+    await fs.rename(graphJsonPath, `${graphJsonPath}.bak`);
+    try {
+      const result = await gCallTool('query-graph', { question: 'anything' });
+      assert.ok(result.isError);
+      assert.ok(result.content[0].text.includes('graph.json not found'));
+    } finally {
+      await fs.rename(`${graphJsonPath}.bak`, graphJsonPath);
+    }
+  });
+
+  it('returns isError when question is missing', async () => {
+    const result = await gCallTool('query-graph', {});
+    assert.ok(result.isError);
   });
 });
