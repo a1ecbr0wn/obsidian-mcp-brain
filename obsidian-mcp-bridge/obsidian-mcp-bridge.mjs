@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 /**
- * MCP HTTP bridge for an Obsidian vault.
+ * MCP HTTP bridge for one or more Obsidian vaults.
  * Replaces both mcp-proxy and mcp-oauth-proxy, and the obsidian-mcp child process:
  *   - Implements MCP Streamable HTTP transport (2024-11-05 spec)
  *   - Provides the OAuth 2.0 discovery endpoints Claude Code requires
  *   - Reads and writes vault files directly, with no child process dependency
  *
- * Usage: VAULT=/path/to/vault node obsidian-mcp-bridge.mjs
+ * Usage: node obsidian-mcp-bridge.mjs
+ * Configuration is read from a JSON file — see loadConfig() below for its shape,
+ * location, and validation. CONFIG_PATH is the only environment variable read.
  */
 
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess } from './lib/access.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
@@ -37,40 +40,106 @@ const ts = () => new Date().toISOString();
 const log = (...a) => console.log(ts(), ...a);
 const logErr = (...a) => console.error(ts(), ...a);
 
-const LISTEN_PORT  = parseInt(process.env.LISTEN_PORT  || '3002', 10);
-if (Number.isNaN(LISTEN_PORT) || LISTEN_PORT < 1 || LISTEN_PORT > 65535) {
-  logErr('LISTEN_PORT must be a valid port number (1-65535)');
-  process.exit(1);
-}
-const BASE_URL     = process.env.MCP_BASE_URL;
-const VAULT        = process.env.VAULT || process.argv[2];
-const VAULT_NAME   = VAULT ? VAULT.replace(/\/+$/, '').split('/').pop() : 'vault';
+// ── Configuration (JSON file, not environment variables) ────────────────────
+//
+// CONFIG_PATH is the one setting still read from the environment, because
+// something has to say where to find the file that contains everything else.
+// Shape:
+//   {
+//     "listenPort": 3002,
+//     "mcpBaseUrl": "https://host:4001",
+//     "denyPaths": ["private"],
+//     "graphifyQueryTimeoutMs": 60000,
+//     "vaults": { "name": { "path": "/abs/path", "denyPaths": [] } }
+//   }
+// mcpBaseUrl and a non-empty vaults map (each with a path) are required;
+// everything else has a default. Invalid or missing config exits the process,
+// matching this file's existing synchronous-startup-validation style.
 
-// Comma-separated vault-relative paths that are off-limits, e.g. "private,journal/personal"
-const DENY_PATHS = (process.env.DENY_PATHS || '')
-  .split(',')
-  .map(p => p.trim().replace(/^\/+|\/+$/g, '')) // strip leading/trailing slashes
-  .filter(Boolean);
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(os.homedir(), '.config', 'obsidian-mcp.json');
 
-if (!BASE_URL) {
-  logErr('Set MCP_BASE_URL env var to the public HTTPS base URL of this bridge (e.g. https://hostname:4001)');
-  process.exit(1);
-}
-if (!VAULT) {
-  logErr('Set VAULT env var or pass vault path as first argument');
-  process.exit(1);
+function normDenyPaths(list, configPath, fieldLabel) {
+  if (list === undefined) return [];
+  if (!Array.isArray(list) || list.some(p => typeof p !== 'string')) {
+    logErr(`Config file at ${configPath}: "${fieldLabel}" must be an array of strings`);
+    process.exit(1);
+  }
+  return list
+    .map(p => p.trim().replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
 }
 
-// query-graph is only offered if a graphify knowledge graph already exists for this vault.
-// Computed once at startup — building or removing the graph requires a bridge restart to take effect.
-const GRAPHIFY_AVAILABLE = existsSync(path.join(VAULT, 'graphify-out'));
-const GRAPHIFY_QUERY_TIMEOUT_MS = parseInt(process.env.GRAPHIFY_QUERY_TIMEOUT_MS || '60000', 10);
+function loadConfig(configPath) {
+  let raw;
+  try {
+    raw = readFileSync(configPath, 'utf8');
+  } catch (err) {
+    logErr(`Could not read config file at ${configPath}: ${err.message}`);
+    process.exit(1);
+  }
+
+  let config;
+  try {
+    config = JSON.parse(raw);
+  } catch (err) {
+    logErr(`Config file at ${configPath} is not valid JSON: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (!config.mcpBaseUrl) {
+    logErr(`Config file at ${configPath} must set "mcpBaseUrl" to the public HTTPS base URL of this bridge (e.g. https://hostname:4001)`);
+    process.exit(1);
+  }
+
+  const listenPort = parseInt(config.listenPort ?? 3002, 10);
+  if (Number.isNaN(listenPort) || listenPort < 1 || listenPort > 65535) {
+    logErr(`Config file at ${configPath}: "listenPort" must be a valid port number (1-65535)`);
+    process.exit(1);
+  }
+
+  const graphifyQueryTimeoutMs = parseInt(config.graphifyQueryTimeoutMs ?? 60000, 10);
+  if (Number.isNaN(graphifyQueryTimeoutMs) || graphifyQueryTimeoutMs < 1) {
+    logErr(`Config file at ${configPath}: "graphifyQueryTimeoutMs" must be a positive number`);
+    process.exit(1);
+  }
+
+  const globalDenyPaths = normDenyPaths(config.denyPaths, configPath, 'denyPaths');
+
+  const rawVaults = config.vaults;
+  if (!rawVaults || typeof rawVaults !== 'object' || Array.isArray(rawVaults) || Object.keys(rawVaults).length === 0) {
+    logErr(`Config file at ${configPath} must set "vaults" to a non-empty object of the form { "name": { "path": "/abs/path" } }`);
+    process.exit(1);
+  }
+
+  const vaults = {};
+  for (const [name, entry] of Object.entries(rawVaults)) {
+    if (!entry || typeof entry.path !== 'string' || !entry.path) {
+      logErr(`Config file at ${configPath}: vault "${name}" must have a "path" string`);
+      process.exit(1);
+    }
+    vaults[name] = {
+      path: entry.path,
+      denyPaths: [...globalDenyPaths, ...normDenyPaths(entry.denyPaths, configPath, `vaults.${name}.denyPaths`)],
+    };
+  }
+
+  return {
+    listenPort,
+    baseUrl: config.mcpBaseUrl,
+    graphifyQueryTimeoutMs,
+    vaults,
+  };
+}
+
+const { listenPort: LISTEN_PORT, baseUrl: BASE_URL, graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS, vaults: VAULTS } = loadConfig(CONFIG_PATH);
 
 // ── Path access control ────────────────────────────────────────────────────
 
-// Bind module-level DENY_PATHS into the imported pure functions.
-const isDenied    = path             => _isDenied(DENY_PATHS, path);
-const checkAccess = (toolName, args) => _checkAccess(DENY_PATHS, toolName, args);
+// Resolves args.vault's effective (global + per-vault) deny list before calling
+// the shared, vault-agnostic checkAccess/isDenied functions. An unrecognised
+// vault name falls back to an empty deny list here — the request fails
+// downstream anyway ("Unknown vault"), so there's nothing extra to protect.
+const checkAccess = (toolName, args) => _checkAccess(VAULTS[args.vault]?.denyPaths ?? [], toolName, args);
 
 const toolOk  = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } }]);
 const toolErr = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } }]);
@@ -152,7 +221,7 @@ const BRIDGE_TOOLS = [
   },
   {
     name: 'list-available-vaults',
-    description: 'List all available Obsidian vaults.',
+    description: 'List all configured Obsidian vaults.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
@@ -361,12 +430,9 @@ const BRIDGE_TOOLS = [
       required: ['vault', 'oldTag', 'newTag'],
     },
   },
-];
-
-if (GRAPHIFY_AVAILABLE) {
-  BRIDGE_TOOLS.push({
+  {
     name: 'query-graph',
-    description: 'Ask a natural-language question against the vault\'s graphify knowledge graph.',
+    description: 'Ask a natural-language question against a vault\'s graphify knowledge graph. Errors clearly if that vault has no graph built.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -375,8 +441,8 @@ if (GRAPHIFY_AVAILABLE) {
       },
       required: ['vault', 'question'],
     },
-  });
-}
+  },
+];
 
 // ── SSE streams (GET /mcp per session) ────────────────────────────────────
 
@@ -626,10 +692,11 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: BRIDGE_TOOLS } }]);
   }
 
-  // list-available-vaults is answered directly from the VAULT env var
+  // list-available-vaults is answered directly from the configured vaults map
   if (msg.method === 'tools/call' && msg.params?.name === 'list-available-vaults') {
+    const names = Object.keys(VAULTS).sort();
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-      content: [{ type: 'text', text: `Available vaults:\n  - ${VAULT_NAME}` }],
+      content: [{ type: 'text', text: `Available vaults:\n${names.map(n => `  - ${n}`).join('\n')}` }],
     } }]);
   }
 
@@ -650,29 +717,30 @@ async function route(req, res, url, sid) {
   // ── bridge-native tool handlers ──────────────────────────────────────────
   if (msg.method === 'tools/call' && msg.params?.name === 'list-notes') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) {
+    const vault = VAULTS[args.vault];
+    if (!vault) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: `Unknown vault: ${args.vault}` }], isError: true,
       } }]);
     }
     const relScope = args.path ? normPath(args.path) : null;
-    if (relScope && isDenied(relScope)) {
+    if (relScope && _isDenied(vault.denyPaths, relScope)) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: 'Access denied' }], isError: true,
       } }]);
     }
-    const scopePath = relScope ? path.join(VAULT, relScope) : VAULT;
+    const scopePath = relScope ? path.join(vault.path, relScope) : vault.path;
     try {
       const notes = [];
       await libWalkVault(scopePath, async (filePath) => {
-        const rel = path.relative(VAULT, filePath);
-        if (isDenied(rel)) return;
+        const rel = path.relative(vault.path, filePath);
+        if (_isDenied(vault.denyPaths, rel)) return;
         notes.push(rel);
       });
       notes.sort();
       const lines = [];
       for (const rel of notes) {
-        const stat = await fs.stat(path.join(VAULT, rel));
+        const stat = await fs.stat(path.join(vault.path, rel));
         lines.push(`${rel}\t${stat.mtime.toISOString()}`);
       }
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
@@ -680,30 +748,31 @@ async function route(req, res, url, sid) {
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: `Error listing notes: ${err.message.replaceAll(VAULT + '/', '')}` }], isError: true,
+        content: [{ type: 'text', text: `Error listing notes: ${err.message.replaceAll(vault.path + '/', '')}` }], isError: true,
       } }]);
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'list-tags') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) {
+    const vault = VAULTS[args.vault];
+    if (!vault) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: `Unknown vault: ${args.vault}` }], isError: true,
       } }]);
     }
     const relScope = args.path ? normPath(args.path) : null;
-    if (relScope && isDenied(relScope)) {
+    if (relScope && _isDenied(vault.denyPaths, relScope)) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: 'Access denied' }], isError: true,
       } }]);
     }
-    const scopePath = relScope ? path.join(VAULT, relScope) : VAULT;
+    const scopePath = relScope ? path.join(vault.path, relScope) : vault.path;
     try {
       const tags = new Set();
       await libWalkVault(scopePath, async (filePath) => {
-        const rel = path.relative(VAULT, filePath);
-        if (isDenied(rel)) return;
+        const rel = path.relative(vault.path, filePath);
+        if (_isDenied(vault.denyPaths, rel)) return;
         const content = await fs.readFile(filePath, 'utf8');
         for (const tag of fmParseTags(content)) tags.add(tag);
       });
@@ -713,14 +782,15 @@ async function route(req, res, url, sid) {
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: `Error listing tags: ${err.message.replaceAll(VAULT + '/', '')}` }], isError: true,
+        content: [{ type: 'text', text: `Error listing tags: ${err.message.replaceAll(vault.path + '/', '')}` }], isError: true,
       } }]);
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'search-tag') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) {
+    const vault = VAULTS[args.vault];
+    if (!vault) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: `Unknown vault: ${args.vault}` }], isError: true,
       } }]);
@@ -732,17 +802,17 @@ async function route(req, res, url, sid) {
       } }]);
     }
     const relScope = args.path ? normPath(args.path) : null;
-    if (relScope && isDenied(relScope)) {
+    if (relScope && _isDenied(vault.denyPaths, relScope)) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: 'Access denied' }], isError: true,
       } }]);
     }
-    const scopePath = relScope ? path.join(VAULT, relScope) : VAULT;
+    const scopePath = relScope ? path.join(vault.path, relScope) : vault.path;
     try {
       const matches = [];
       await libWalkVault(scopePath, async (filePath) => {
-        const rel = path.relative(VAULT, filePath);
-        if (isDenied(rel)) return;
+        const rel = path.relative(vault.path, filePath);
+        if (_isDenied(vault.denyPaths, rel)) return;
         const content = await fs.readFile(filePath, 'utf8');
         const noteTags = fmParseTags(content).map(t => t.toLowerCase());
         if (queryTags.every(t => noteTags.includes(t))) matches.push(rel);
@@ -753,7 +823,7 @@ async function route(req, res, url, sid) {
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: `Error searching tags: ${err.message.replaceAll(VAULT + '/', '')}` }], isError: true,
+        content: [{ type: 'text', text: `Error searching tags: ${err.message.replaceAll(vault.path + '/', '')}` }], isError: true,
       } }]);
     }
   }
@@ -761,7 +831,8 @@ async function route(req, res, url, sid) {
   if (msg.method === 'tools/call' && (msg.params?.name === 'new-notes' || msg.params?.name === 'changed-notes')) {
     const toolName = msg.params.name;
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) {
+    const vault = VAULTS[args.vault];
+    if (!vault) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: `Unknown vault: ${args.vault}` }], isError: true,
       } }]);
@@ -778,17 +849,17 @@ async function route(req, res, url, sid) {
       cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
     }
     const relScope = args.path ? normPath(args.path) : null;
-    if (relScope && isDenied(relScope)) {
+    if (relScope && _isDenied(vault.denyPaths, relScope)) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: 'Access denied' }], isError: true,
       } }]);
     }
-    const scopePath = relScope ? path.join(VAULT, relScope) : VAULT;
+    const scopePath = relScope ? path.join(vault.path, relScope) : vault.path;
     try {
       const matches = [];
       await libWalkVault(scopePath, async (filePath) => {
-        const rel = path.relative(VAULT, filePath);
-        if (isDenied(rel)) return;
+        const rel = path.relative(vault.path, filePath);
+        if (_isDenied(vault.denyPaths, rel)) return;
         const stat = await fs.stat(filePath);
         const timeMs = toolName === 'new-notes' ? stat.birthtimeMs : stat.mtimeMs;
         if (timeMs >= cutoffMs) matches.push(rel);
@@ -799,7 +870,7 @@ async function route(req, res, url, sid) {
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: `Error: ${err.message.replaceAll(VAULT + '/', '')}` }], isError: true,
+        content: [{ type: 'text', text: `Error: ${err.message.replaceAll(vault.path + '/', '')}` }], isError: true,
       } }]);
     }
   }
@@ -808,12 +879,13 @@ async function route(req, res, url, sid) {
 
   if (msg.method === 'tools/call' && msg.params?.name === 'read-note') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     try {
-      const absPath = path.join(VAULT, relPath);
+      const absPath = path.join(vault.path, relPath);
       const content = await libReadNote(absPath);
       const stat = await fs.stat(absPath);
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
@@ -823,41 +895,43 @@ async function route(req, res, url, sid) {
         ],
       } }]);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'create-note') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
-    const absPath = path.join(VAULT, relPath);
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    const absPath = path.join(vault.path, relPath);
     try {
       await fs.access(absPath);
       return toolErr(res, sid, msgId, `Note already exists: ${relPath}`);
     } catch (err) {
-      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
     try {
       await libWriteNote(absPath, args.content ?? '');
       return toolOk(res, sid, msgId, `Created: ${relPath}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'edit-note') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     const op = args.operation;
     if (!['append', 'prepend', 'replace'].includes(op))
       return toolErr(res, sid, msgId, `Invalid operation: ${op}`);
-    const absPath = path.join(VAULT, relPath);
+    const absPath = path.join(vault.path, relPath);
     try {
       if (op === 'replace') {
         await libWriteNote(absPath, args.content ?? '');
@@ -869,196 +943,206 @@ async function route(req, res, url, sid) {
       }
       return toolOk(res, sid, msgId, `Edited (${op}): ${relPath}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'delete-note') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     try {
       const permanent = args.permanent === true;
-      await libDeleteNote(path.join(VAULT, relPath), permanent, VAULT);
+      await libDeleteNote(path.join(vault.path, relPath), permanent, vault.path);
       return toolOk(res, sid, msgId, permanent ? `Deleted: ${relPath}` : `Moved to trash: ${relPath}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'move-note') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const srcRel = normPath(args.folder, args.filename);
     const dstRel = normPath(args.newFolder, args.newFilename);
     if (!srcRel) return toolErr(res, sid, msgId, 'filename is required');
     if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
-    if (isDenied(srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
-    if (isDenied(dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
+    if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
+    if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
     try {
-      await libMoveNote(VAULT, path.join(VAULT, srcRel), path.join(VAULT, dstRel), DENY_PATHS);
+      await libMoveNote(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'create-binary-file') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (typeof args.content !== 'string') return toolErr(res, sid, msgId, 'content must be a base64-encoded string');
     const b64Body = args.content.replace(/\s/g, '');
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64Body) || b64Body.length % 4 !== 0) {
       return toolErr(res, sid, msgId, 'content is not valid base64');
     }
-    const absPath = path.join(VAULT, relPath);
+    const absPath = path.join(vault.path, relPath);
     try {
       await fs.access(absPath);
       return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
     } catch (err) {
-      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
     try {
       const buffer = Buffer.from(args.content, 'base64');
       await libWriteBinaryFile(absPath, buffer);
       return toolOk(res, sid, msgId, `Created: ${relPath}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'delete-binary-file') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use delete-note for .md files');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     try {
       const permanent = args.permanent === true;
-      await libDeleteBinaryFile(path.join(VAULT, relPath), permanent, VAULT);
+      await libDeleteBinaryFile(path.join(vault.path, relPath), permanent, vault.path);
       return toolOk(res, sid, msgId, permanent ? `Deleted: ${relPath}` : `Moved to trash: ${relPath}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'move-binary-file') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const srcRel = normPath(args.folder, args.filename);
     const dstRel = normPath(args.newFolder, args.newFilename);
     if (!srcRel) return toolErr(res, sid, msgId, 'filename is required');
     if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
     if (srcRel.toLowerCase().endsWith('.md') || dstRel.toLowerCase().endsWith('.md'))
       return toolErr(res, sid, msgId, 'Use move-note for .md files');
-    if (isDenied(srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
-    if (isDenied(dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
+    if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
+    if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
     try {
-      await libMoveBinaryFile(VAULT, path.join(VAULT, srcRel), path.join(VAULT, dstRel), DENY_PATHS);
+      await libMoveBinaryFile(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'find-backlinks') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     try {
-      const results = await libFindBacklinks(VAULT, relPath, DENY_PATHS);
+      const results = await libFindBacklinks(vault.path, relPath, vault.denyPaths);
       return toolOk(res, sid, msgId, results.length ? results.join('\n') : 'No backlinks found');
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'resolve-wikilink') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     if (!args.target) return toolErr(res, sid, msgId, 'target is required');
-    if (isDenied(normPath(args.target))) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, normPath(args.target))) return toolErr(res, sid, msgId, 'Access denied');
     try {
-      const results = await libResolveWikilink(VAULT, args.target, DENY_PATHS);
+      const results = await libResolveWikilink(vault.path, args.target, vault.denyPaths);
       return toolOk(res, sid, msgId, results.length ? results.join('\n') : `No file resolves wikilink target: ${args.target}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'query-graph') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
-    if (!GRAPHIFY_AVAILABLE) return toolErr(res, sid, msgId, 'No graphify knowledge graph exists for this vault. Run graphify --obsidian against it and restart the bridge.');
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     if (!args.question) return toolErr(res, sid, msgId, 'question is required');
     try {
-      await fs.access(path.join(VAULT, 'graphify-out', 'graph.json'));
+      await fs.access(path.join(vault.path, 'graphify-out', 'graph.json'));
     } catch {
-      return toolErr(res, sid, msgId, 'graphify-out/graph.json not found. Run graphify --obsidian against this vault and restart the bridge.');
+      return toolErr(res, sid, msgId, 'graphify-out/graph.json not found. Run graphify --obsidian against this vault.');
     }
     try {
-      const output = await runGraphifyQuery(args.question);
+      const output = await runGraphifyQuery(vault.path, args.question);
       return toolOk(res, sid, msgId, output);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'create-directory') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder);
     if (!relPath) return toolErr(res, sid, msgId, 'folder is required');
-    if (isDenied(relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     try {
-      await fs.mkdir(path.join(VAULT, relPath), { recursive: true });
+      await fs.mkdir(path.join(vault.path, relPath), { recursive: true });
       return toolOk(res, sid, msgId, `Created directory: ${relPath}`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'search-vault') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     if (!args.query) return toolErr(res, sid, msgId, 'query is required');
     const sType = args.searchType || 'content';
     if (!['content', 'filename', 'both'].includes(sType))
       return toolErr(res, sid, msgId, `Invalid searchType: ${sType}`);
     const relScope = args.path ? normPath(args.path) : null;
-    if (relScope && isDenied(relScope)) return toolErr(res, sid, msgId, 'Access denied');
-    const scopeDir = relScope ? path.join(VAULT, relScope) : VAULT;
+    if (relScope && _isDenied(vault.denyPaths, relScope)) return toolErr(res, sid, msgId, 'Access denied');
+    const scopeDir = relScope ? path.join(vault.path, relScope) : vault.path;
     try {
       const lines = [];
       if (sType === 'content' || sType === 'both') {
-        const results = await libSearchContent(VAULT, args.query, scopeDir, DENY_PATHS);
+        const results = await libSearchContent(vault.path, args.query, scopeDir, vault.denyPaths);
         for (const { path: p, matches } of results)
           for (const { line, text } of matches)
             lines.push(`${p}:${line}: ${text.trim()}`);
       }
       if (sType === 'filename' || sType === 'both') {
-        const results = await libSearchFilename(VAULT, args.query, scopeDir, DENY_PATHS);
+        const results = await libSearchFilename(vault.path, args.query, scopeDir, vault.denyPaths);
         for (const p of results) lines.push(p);
       }
       return toolOk(res, sid, msgId, lines.length ? lines.join('\n') : 'No results found');
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
   if (msg.method === 'tools/call' && (msg.params?.name === 'add-tags' || msg.params?.name === 'remove-tags')) {
     const isAdd = msg.params.name === 'add-tags';
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const files = Array.isArray(args.files) ? args.files : [];
     const tags  = Array.isArray(args.tags)  ? args.tags  : [];
     if (!files.length) return toolErr(res, sid, msgId, 'files array is required');
@@ -1067,9 +1151,9 @@ async function route(req, res, url, sid) {
     const updated = [], skipped = [];
     for (const file of files) {
       const relPath = normPath(file);
-      if (isDenied(relPath)) { skipped.push(`${relPath} (access denied)`); continue; }
+      if (_isDenied(vault.denyPaths, relPath)) { skipped.push(`${relPath} (access denied)`); continue; }
       try {
-        let content = await libReadNote(path.join(VAULT, relPath));
+        let content = await libReadNote(path.join(vault.path, relPath));
         const original = content;
         if (location === 'frontmatter' || location === 'both') {
           content = isAdd ? fmAddTags(content, tags) : fmRemoveTags(content, tags);
@@ -1092,11 +1176,11 @@ async function route(req, res, url, sid) {
           }
         }
         if (content !== original) {
-          await libWriteNote(path.join(VAULT, relPath), content);
+          await libWriteNote(path.join(vault.path, relPath), content);
           updated.push(relPath);
         }
       } catch (err) {
-        skipped.push(`${relPath} (${err.message.replaceAll(VAULT + '/', '')})`);
+        skipped.push(`${relPath} (${err.message.replaceAll(vault.path + '/', '')})`);
       }
     }
     const parts = [];
@@ -1107,14 +1191,15 @@ async function route(req, res, url, sid) {
 
   if (msg.method === 'tools/call' && msg.params?.name === 'rename-tag') {
     const args = msg.params.arguments ?? {};
-    if (args.vault !== VAULT_NAME) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     if (!args.oldTag) return toolErr(res, sid, msgId, 'oldTag is required');
     if (!args.newTag) return toolErr(res, sid, msgId, 'newTag is required');
     try {
       let count = 0;
-      await libWalkVault(VAULT, async filePath => {
-        const rel = path.relative(VAULT, filePath);
-        if (isDenied(rel)) return;
+      await libWalkVault(vault.path, async filePath => {
+        const rel = path.relative(vault.path, filePath);
+        if (_isDenied(vault.denyPaths, rel)) return;
         let content;
         try { content = await libReadNote(filePath); } catch { return; }
         const updated = fmRenameTag(content, args.oldTag, args.newTag);
@@ -1124,7 +1209,7 @@ async function route(req, res, url, sid) {
       });
       return toolOk(res, sid, msgId, `Renamed tag '${args.oldTag}' → '${args.newTag}' in ${count} note(s)`);
     } catch (err) {
-      return toolErr(res, sid, msgId, err.message.replaceAll(VAULT + '/', ''));
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
@@ -1139,18 +1224,18 @@ async function route(req, res, url, sid) {
   }]);
 }
 
-// Runs `graphify query "<question>"` in the vault directory. Array-form spawn args (no
-// shell) so the question text can never be interpreted as shell syntax or reach graphify
-// as anything other than a single literal argument — graphify's own CLI reads sys.argv[2]
-// unconditionally as the question (it's a hand-rolled argv parser, not argparse, with no
-// '--' end-of-options handling), so there's no separate flag-smuggling risk to guard
-// against here; adding a '--' would instead shift the question to the wrong argv position
-// and break every real query. Killed (SIGTERM, then SIGKILL after a short grace period if
-// still alive) if it runs longer than GRAPHIFY_QUERY_TIMEOUT_MS, so a hung query can't hold
-// a request open forever or leak an orphaned process if it ignores SIGTERM.
-function runGraphifyQuery(question) {
+// Runs `graphify query "<question>"` in the given vault's directory. Array-form spawn
+// args (no shell) so the question text can never be interpreted as shell syntax or reach
+// graphify as anything other than a single literal argument — graphify's own CLI reads
+// sys.argv[2] unconditionally as the question (it's a hand-rolled argv parser, not
+// argparse, with no '--' end-of-options handling), so there's no separate flag-smuggling
+// risk to guard against here; adding a '--' would instead shift the question to the wrong
+// argv position and break every real query. Killed (SIGTERM, then SIGKILL after a short
+// grace period if still alive) if it runs longer than GRAPHIFY_QUERY_TIMEOUT_MS, so a hung
+// query can't hold a request open forever or leak an orphaned process if it ignores SIGTERM.
+function runGraphifyQuery(vaultPath, question) {
   return new Promise((resolve, reject) => {
-    const child = spawn('graphify', ['query', question], { cwd: VAULT });
+    const child = spawn('graphify', ['query', question], { cwd: vaultPath });
     let stdout = '';
     let stderr = '';
 

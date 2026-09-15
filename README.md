@@ -54,11 +54,11 @@ Obsidian vault (filesystem)
 - A way to expose the bridge over HTTPS to your remote client —
   [Tailscale Serve](https://tailscale.com/kb/1312/serve) is what I use, but any
   HTTPS reverse proxy works
-- **Optional:** The `query-graph` tool (which queries your vault using a natural-language
+- **Optional:** The `query-graph` tool (which queries a vault using a natural-language
   knowledge graph) requires the `graphify` CLI to be installed and on `PATH`, and a
-  knowledge graph to be pre-built for your vault (run `graphify --obsidian` once, before
-  starting the bridge). If `graphify` is not available or no graph exists, the tool
-  simply won't appear in the tools list and is unavailable to remote clients.
+  knowledge graph to be pre-built for that vault (run `graphify --obsidian` against it
+  once, before calling the tool). `query-graph` is always listed, but calling it against
+  a vault with no graph returns a clear error rather than an answer.
 
 ---
 
@@ -74,7 +74,11 @@ The `obsidian-mcp-bridge` package can then be run directly from the workspace, o
 
 ### systemd (Linux)
 
-Create `~/.config/systemd/user/obsidian-mcp.service`:
+First, create your config file — see [Configuration](#configuration) below for its
+full shape. By default the bridge reads `~/.config/obsidian-mcp.json`, so no extra
+environment variable is needed unless you want the config somewhere else.
+
+Then create `~/.config/systemd/user/obsidian-mcp.service`:
 
 ```ini
 [Unit]
@@ -83,16 +87,15 @@ After=network.target
 
 [Service]
 ExecStart=node /path/to/obsidian-mcp-bridge/obsidian-mcp-bridge/obsidian-mcp-bridge.mjs
-Environment=LISTEN_PORT=3002
-Environment=MCP_BASE_URL=https://your-hostname:4001
-Environment=VAULT=/path/to/your/obsidian/vault
-Environment=DENY_PATHS=
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 ```
+
+(If your config file lives somewhere other than `~/.config/obsidian-mcp.json`, add
+`Environment=CONFIG_PATH=/path/to/your/config.json` under `[Service]`.)
 
 Then enable and start it:
 
@@ -120,16 +123,11 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
     <string>/path/to/obsidian-mcp-bridge/obsidian-mcp-bridge/obsidian-mcp-bridge.mjs</string>
   </array>
 
+  <!-- Only needed if your config file isn't at the default ~/.config/obsidian-mcp.json -->
   <key>EnvironmentVariables</key>
   <dict>
-    <key>LISTEN_PORT</key>
-    <string>3002</string>
-    <key>MCP_BASE_URL</key>
-    <string>https://your-hostname:4001</string>
-    <key>VAULT</key>
-    <string>/path/to/your/obsidian/vault</string>
-    <key>DENY_PATHS</key>
-    <string></string>
+    <key>CONFIG_PATH</key>
+    <string>/path/to/your/obsidian-mcp.json</string>
   </dict>
 
   <key>RunAtLoad</key>
@@ -192,29 +190,66 @@ OAuth flow (it uses a public/no-credentials token, so no real account is needed)
 
 ## Configuration
 
-All configuration is via environment variables.
+All configuration lives in one JSON file — no environment variables are read except
+`CONFIG_PATH`, which says where to find it.
 
-| Variable                      | Default   | Description                                                                           |
-| ----------------------------- | --------- | ------------------------------------------------------------------------------------- |
-| `LISTEN_PORT`                 | `3002`    | Local port the bridge listens on                                                      |
-| `MCP_BASE_URL`                | —         | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events) |
-| `VAULT`                       | —         | Absolute path to the Obsidian vault directory. **Required.**                          |
-| `DENY_PATHS`                  | _(empty)_ | Comma-separated vault-relative paths to block. See below.                             |
-| `GRAPHIFY_QUERY_TIMEOUT_MS`   | `60000`   | Timeout for `graphify query` subprocess (milliseconds). Only used if a graph is built. |
+- **Location**: `CONFIG_PATH` env var if set, otherwise `~/.config/obsidian-mcp.json`.
+- The bridge serves one or more named vaults from a single process; a client picks
+  which one a call applies to via the `vault` argument every tool already takes.
 
-### Path deny list (`DENY_PATHS`)
+### Shape
 
-`DENY_PATHS` lets you prevent the MCP client from reading or writing specific
-folders in your vault. Paths are relative to the vault root and prefix-matched,
-so denying `people` blocks `people/`, `people/alice/notes.md`, and so on.
-
-```ini
-# Block a single folder
-Environment=DENY_PATHS=private
-
-# Block multiple folders
-Environment=DENY_PATHS=private,people,journal/personal
+```json
+{
+  "listenPort": 3002,
+  "mcpBaseUrl": "https://your-hostname:4001",
+  "denyPaths": ["private"],
+  "graphifyQueryTimeoutMs": 60000,
+  "vaults": {
+    "knowledge": {
+      "path": "/path/to/your/obsidian/vault"
+    },
+    "work": {
+      "path": "/path/to/another/vault",
+      "denyPaths": ["confidential"]
+    }
+  }
+}
 ```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `mcpBaseUrl` | Yes | — | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events) |
+| `vaults` | Yes | — | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
+| `listenPort` | No | `3002` | Local port the bridge listens on |
+| `denyPaths` | No | `[]` | Vault-relative paths to block, applied to every vault. See below |
+| `graphifyQueryTimeoutMs` | No | `60000` | Timeout for a `graphify query` subprocess (milliseconds) |
+
+Each vault entry can also set its own `denyPaths`, which are added on top of the
+global list for that vault only (see below).
+
+### Path deny list (`denyPaths`)
+
+`denyPaths` lets you prevent the MCP client from reading or writing specific
+folders in a vault. Paths are relative to the vault root and prefix-matched, so
+denying `people` blocks `people/`, `people/alice/notes.md`, and so on.
+
+The top-level `denyPaths` applies to every configured vault. A vault's own
+`denyPaths` (if any) is added on top of that global list, restricting that vault
+further without affecting any other vault:
+
+```json
+{
+  "denyPaths": ["private"],
+  "vaults": {
+    "knowledge": { "path": "/export/knowledge" },
+    "work": { "path": "/export/work", "denyPaths": ["confidential", "drafts"] }
+  }
+}
+```
+
+Here, both vaults block `private`; `work` additionally blocks `confidential` and
+`drafts`, while `knowledge` is unaffected by that extra restriction.
 
 The deny list is enforced in the bridge before any tool handler executes.
 Blocked requests receive a structured MCP error (`isError: true`) rather than a
@@ -225,8 +260,14 @@ Affected tools: `read-note`, `create-note`, `edit-note`, `delete-note`, `move-no
 (source and destination), `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`, `create-directory`, `search-vault`
 (when a `path` scope is given).
 
-Tools that operate vault-wide without a path argument (`list-available-vaults`,
-`rename-tag`) are not affected.
+`list-notes`, `list-tags`, `search-tag`, `new-notes`, `changed-notes`, and `rename-tag`
+are equally protected, just via a different mechanism: instead of a single check up
+front, they filter out denied files individually as they walk the vault.
+
+`list-available-vaults` doesn't touch vault files at all — it just returns configured
+vault names — so it's the only tool genuinely unaffected by the deny list.
+`query-graph` takes a free-text question rather than a vault path, so it isn't subject
+to the deny list either.
 
 ---
 
@@ -242,8 +283,9 @@ The bridge implements the [MCP Streamable HTTP transport (2024-11-05)](https://s
 - **`GET /mcp`** — keeps a long-lived SSE stream open per session for server-to-client
   notifications (e.g. `tools/list_changed`).
 
-All MCP tools are implemented natively in the bridge and operate directly on the vault
-via `node:fs/promises`. Each tool validates access control (DENY_PATHS) before executing.
+All MCP tools are implemented natively in the bridge and operate directly on vault files
+via `node:fs/promises`. Each tool resolves its `vault` argument against the configured
+vaults and validates access control (that vault's effective deny list) before executing.
 
 `resources/list` and `prompts/list` return empty results — the bridge does not expose
 vault files as resources or prompts, only as tools.
@@ -254,8 +296,8 @@ vault files as resources or prompts, only as tools.
 
 The OAuth flow is intentionally public — there are no real credentials. Access control
 relies on the network layer (Tailscale node authentication in the reference setup).
-The `DENY_PATHS` feature provides coarse-grained control over which parts of the
-vault the MCP client can touch, but it is not a substitute for network-level access
+The config file's `denyPaths` feature provides coarse-grained control over which parts
+of a vault the MCP client can touch, but it is not a substitute for network-level access
 control.
 
 ## mcp-shim
