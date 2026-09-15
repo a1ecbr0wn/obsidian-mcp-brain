@@ -54,6 +54,11 @@ Obsidian vault (filesystem)
 - A way to expose the bridge over HTTPS to your remote client —
   [Tailscale Serve](https://tailscale.com/kb/1312/serve) is what I use, but any
   HTTPS reverse proxy works
+- **Optional:** The `query-graph` tool (which queries your vault using a natural-language
+  knowledge graph) requires the `graphify` CLI to be installed and on `PATH`, and a
+  knowledge graph to be pre-built for your vault (run `graphify --obsidian` once, before
+  starting the bridge). If `graphify` is not available or no graph exists, the tool
+  simply won't appear in the tools list and is unavailable to remote clients.
 
 ---
 
@@ -189,12 +194,13 @@ OAuth flow (it uses a public/no-credentials token, so no real account is needed)
 
 All configuration is via environment variables.
 
-| Variable       | Default   | Description                                                                           |
-| -------------- | --------- | ------------------------------------------------------------------------------------- |
-| `LISTEN_PORT`  | `3002`    | Local port the bridge listens on                                                      |
-| `MCP_BASE_URL` | —         | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events) |
-| `VAULT`        | —         | Absolute path to the Obsidian vault directory. **Required.**                          |
-| `DENY_PATHS`   | _(empty)_ | Comma-separated vault-relative paths to block. See below.                             |
+| Variable                      | Default   | Description                                                                           |
+| ----------------------------- | --------- | ------------------------------------------------------------------------------------- |
+| `LISTEN_PORT`                 | `3002`    | Local port the bridge listens on                                                      |
+| `MCP_BASE_URL`                | —         | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events) |
+| `VAULT`                       | —         | Absolute path to the Obsidian vault directory. **Required.**                          |
+| `DENY_PATHS`                  | _(empty)_ | Comma-separated vault-relative paths to block. See below.                             |
+| `GRAPHIFY_QUERY_TIMEOUT_MS`   | `60000`   | Timeout for `graphify query` subprocess (milliseconds). Only used if a graph is built. |
 
 ### Path deny list (`DENY_PATHS`)
 
