@@ -25,6 +25,7 @@ const DENY_DIR   = 'private'; // vault-relative path that DENY_PATHS blocks
 let vaultDir;
 let vaultName;
 let bridgeProc;
+let configPath;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -114,13 +115,19 @@ before(async () => {
   vaultDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-test-'));
   vaultName = path.basename(vaultDir);
 
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-test-config-'));
+  configPath = path.join(configDir, 'obsidian-mcp.json');
+  await fs.writeFile(configPath, JSON.stringify({
+    listenPort: PORT,
+    mcpBaseUrl: BASE_URL,
+    denyPaths: [DENY_DIR],
+    vaults: { [vaultName]: { path: vaultDir } },
+  }));
+
   bridgeProc = spawn('node', [BRIDGE], {
     env: {
       ...process.env,
-      VAULT:        vaultDir,
-      MCP_BASE_URL: BASE_URL,
-      LISTEN_PORT:  String(PORT),
-      DENY_PATHS:   DENY_DIR,
+      CONFIG_PATH: configPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -141,6 +148,7 @@ before(async () => {
 after(async () => {
   bridgeProc.kill();
   await fs.rm(vaultDir, { recursive: true, force: true });
+  await fs.rm(path.dirname(configPath), { recursive: true, force: true });
 });
 
 // ── list-available-vaults ─────────────────────────────────────────────────
@@ -1136,18 +1144,24 @@ describe('rename-tag', () => {
 // instance whose vault does have graphify-out/, with a mock `graphify` binary on PATH.
 
 describe('query-graph (no graph built)', () => {
-  it('is not listed in tools/list', async () => {
+  it('is listed in tools/list regardless (availability is per-vault, per-call)', async () => {
     const sid = await initSession();
     const r = await post({ jsonrpc: '2.0', id: '2', method: 'tools/list', params: {} }, sid);
     const names = r.msgs[0].result.tools.map(t => t.name);
-    assert.ok(!names.includes('query-graph'));
+    assert.ok(names.includes('query-graph'));
+  });
+
+  it('returns a clear isError when the vault has no graph', async () => {
+    const result = await callTool('query-graph', { question: 'anything' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('graph.json not found'));
   });
 });
 
 describe('query-graph (graph built)', () => {
   const GPORT = 19744;
   const GBASE_URL = `http://127.0.0.1:${GPORT}`;
-  let gVaultDir, gVaultName, gProc, gMockBinDir;
+  let gVaultDir, gVaultName, gProc, gMockBinDir, gConfigDir;
 
   async function gCallTool(name, args) {
     const sid = await initSession(GPORT);
@@ -1182,14 +1196,20 @@ describe('query-graph (graph built)', () => {
     ].join('\n'));
     await fs.chmod(mockPath, 0o755);
 
+    gConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-graphify-config-'));
+    const gConfigPath = path.join(gConfigDir, 'obsidian-mcp.json');
+    await fs.writeFile(gConfigPath, JSON.stringify({
+      listenPort: GPORT,
+      mcpBaseUrl: GBASE_URL,
+      graphifyQueryTimeoutMs: 300,
+      vaults: { [gVaultName]: { path: gVaultDir } },
+    }));
+
     gProc = spawn('node', [BRIDGE], {
       env: {
         ...process.env,
-        PATH:         `${gMockBinDir}:${process.env.PATH}`,
-        VAULT:        gVaultDir,
-        MCP_BASE_URL: GBASE_URL,
-        LISTEN_PORT:  String(GPORT),
-        GRAPHIFY_QUERY_TIMEOUT_MS: '300',
+        PATH:        `${gMockBinDir}:${process.env.PATH}`,
+        CONFIG_PATH: gConfigPath,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -1208,6 +1228,7 @@ describe('query-graph (graph built)', () => {
     gProc.kill();
     await fs.rm(gVaultDir, { recursive: true, force: true });
     await fs.rm(gMockBinDir, { recursive: true, force: true });
+    await fs.rm(gConfigDir, { recursive: true, force: true });
   });
 
   it('is listed in tools/list', async () => {
@@ -1250,5 +1271,122 @@ describe('query-graph (graph built)', () => {
   it('returns isError when question is missing', async () => {
     const result = await gCallTool('query-graph', {});
     assert.ok(result.isError);
+  });
+});
+
+// ── multi-vault configuration ────────────────────────────────────────────
+// A dedicated third bridge instance configured with two vaults: "alpha" has no
+// deny paths of its own (inherits only the global list), "beta" adds its own
+// deny path on top of the global one — proving the global+per-vault merge.
+
+describe('multi-vault configuration', () => {
+  const MPORT = 19745;
+  const MBASE_URL = `http://127.0.0.1:${MPORT}`;
+  let mAlphaDir, mBetaDir, mProc, mConfigDir;
+
+  async function mCallTool(vault, name, args) {
+    const sid = await initSession(MPORT);
+    const r = await post({
+      jsonrpc: '2.0', id: '2', method: 'tools/call',
+      params: { name, arguments: { vault, ...args } },
+    }, sid, MPORT);
+    assert.equal(r.msgs.length, 1);
+    return r.msgs[0].result;
+  }
+
+  before(async () => {
+    mAlphaDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-multivault-alpha-'));
+    mBetaDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-multivault-beta-'));
+    await fs.mkdir(path.join(mAlphaDir, 'globally-denied'), { recursive: true });
+    await fs.writeFile(path.join(mAlphaDir, 'globally-denied', 'secret.md'), '# Secret');
+    await fs.writeFile(path.join(mAlphaDir, 'visible.md'), '# Visible');
+    await fs.mkdir(path.join(mBetaDir, 'beta-only-denied'), { recursive: true });
+    await fs.writeFile(path.join(mBetaDir, 'beta-only-denied', 'secret.md'), '# Beta secret');
+    await fs.writeFile(path.join(mBetaDir, 'visible.md'), '# Visible');
+
+    mConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-multivault-config-'));
+    const mConfigPath = path.join(mConfigDir, 'obsidian-mcp.json');
+    await fs.writeFile(mConfigPath, JSON.stringify({
+      listenPort: MPORT,
+      mcpBaseUrl: MBASE_URL,
+      denyPaths: ['globally-denied'],
+      vaults: {
+        alpha: { path: mAlphaDir },
+        beta:  { path: mBetaDir, denyPaths: ['beta-only-denied'] },
+      },
+    }));
+
+    mProc = spawn('node', [BRIDGE], {
+      env: { ...process.env, CONFIG_PATH: mConfigPath },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    await new Promise((resolve, reject) => {
+      let out = '';
+      const onData = chunk => { out += chunk.toString(); if (out.includes('listening')) resolve(); };
+      mProc.stdout.on('data', onData);
+      mProc.stderr.on('data', onData);
+      mProc.on('exit', code => reject(new Error(`multi-vault bridge exited early with code ${code}\n${out}`)));
+      setTimeout(() => reject(new Error(`multi-vault bridge startup timeout\n${out}`)), 15_000);
+    });
+  });
+
+  after(async () => {
+    mProc.kill();
+    await fs.rm(mAlphaDir, { recursive: true, force: true });
+    await fs.rm(mBetaDir, { recursive: true, force: true });
+    await fs.rm(mConfigDir, { recursive: true, force: true });
+  });
+
+  it('list-available-vaults lists every configured vault', async () => {
+    const sid = await initSession(MPORT);
+    const r = await post({
+      jsonrpc: '2.0', id: '2', method: 'tools/call',
+      params: { name: 'list-available-vaults', arguments: {} },
+    }, sid, MPORT);
+    const text = r.msgs[0].result.content[0].text;
+    assert.ok(text.includes('alpha'));
+    assert.ok(text.includes('beta'));
+  });
+
+  it('serves each vault from its own configured path', async () => {
+    const alphaResult = await mCallTool('alpha', 'read-note', { filename: 'visible.md' });
+    assert.ok(!alphaResult.isError);
+    assert.equal(alphaResult.content[0].text, '# Visible');
+
+    const betaResult = await mCallTool('beta', 'read-note', { filename: 'visible.md' });
+    assert.ok(!betaResult.isError);
+    assert.equal(betaResult.content[0].text, '# Visible');
+  });
+
+  it('applies the global deny list to every vault', async () => {
+    const alphaResult = await mCallTool('alpha', 'read-note', { folder: 'globally-denied', filename: 'secret.md' });
+    assert.ok(alphaResult.isError);
+    assert.ok(alphaResult.content[0].text.includes('Access denied'));
+
+    // beta has no "globally-denied" folder, but list-notes scoped there should
+    // still be denied rather than erroring for a missing folder — global deny
+    // paths apply vault-wide regardless of whether the vault happens to have that folder.
+    const betaScoped = await mCallTool('beta', 'list-notes', { path: 'globally-denied' });
+    assert.ok(betaScoped.isError);
+    assert.ok(betaScoped.content[0].text.includes('Access denied'));
+  });
+
+  it('applies a per-vault deny path only to that vault', async () => {
+    const betaResult = await mCallTool('beta', 'read-note', { folder: 'beta-only-denied', filename: 'secret.md' });
+    assert.ok(betaResult.isError);
+    assert.ok(betaResult.content[0].text.includes('Access denied'));
+
+    // alpha has no such restriction — an equivalent path there is not denied
+    // (it simply doesn't exist, so the call fails with a not-found error instead).
+    const alphaResult = await mCallTool('alpha', 'read-note', { folder: 'beta-only-denied', filename: 'secret.md' });
+    assert.ok(alphaResult.isError);
+    assert.ok(!alphaResult.content[0].text.includes('Access denied'));
+  });
+
+  it('returns isError for an unknown vault name', async () => {
+    const result = await mCallTool('no-such-vault', 'read-note', { filename: 'visible.md' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Unknown vault'));
   });
 });
