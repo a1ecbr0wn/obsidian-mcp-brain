@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess } from './lib/access.mjs';
-import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag } from './lib/frontmatter.mjs';
+import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
 import { replaceSection, toggleCheckbox } from './lib/sections.mjs';
 import {
@@ -144,6 +144,10 @@ const checkAccess = (toolName, args) => _checkAccess(VAULTS[args.vault]?.denyPat
 
 const toolOk  = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } }]);
 const toolErr = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } }]);
+// A frontmatter field name must be a simple key with no YAML/regex-structural
+// characters — otherwise a caller-supplied field could splice extra lines
+// (including a spurious `---`) into the raw frontmatter block on write.
+const FIELD_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 // Static initialize response — every tool is bridge-native, so there's no child
 // capabilities negotiation to wait on.
@@ -433,6 +437,35 @@ const BRIDGE_TOOLS = [
         newTag: { type: 'string', description: 'New tag name' },
       },
       required: ['vault', 'oldTag', 'newTag'],
+    },
+  },
+  {
+    name: 'set-frontmatter-field',
+    description: 'Set a single frontmatter field (not tags) to a scalar value, creating the frontmatter block or the field if missing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        filename: { type: 'string', description: 'Filename including .md extension' },
+        folder:   { type: 'string', description: 'Optional vault-relative folder' },
+        field:    { type: 'string', description: 'Frontmatter key (any field except tags)' },
+        value:    { description: 'Scalar value to set (string, number, or boolean)' },
+      },
+      required: ['vault', 'filename', 'field', 'value'],
+    },
+  },
+  {
+    name: 'remove-frontmatter-field',
+    description: 'Remove a single frontmatter field (not tags) entirely. No-op if the field or frontmatter block doesn\'t exist.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        filename: { type: 'string', description: 'Filename including .md extension' },
+        folder:   { type: 'string', description: 'Optional vault-relative folder' },
+        field:    { type: 'string', description: 'Frontmatter key (any field except tags)' },
+      },
+      required: ['vault', 'filename', 'field'],
     },
   },
   {
@@ -1204,6 +1237,51 @@ async function route(req, res, url, sid) {
     if (updated.length) parts.push(`Updated ${updated.length} note(s): ${updated.join(', ')}`);
     if (skipped.length) parts.push(`Skipped: ${skipped.join(', ')}`);
     return toolOk(res, sid, msgId, parts.join('\n') || 'No changes needed');
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'set-frontmatter-field') {
+    const args = msg.params.arguments ?? {};
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (!args.field) return toolErr(res, sid, msgId, 'field is required');
+    if (args.field === 'tags') return toolErr(res, sid, msgId, 'Use add-tags/remove-tags/rename-tag for the tags field');
+    if (!FIELD_NAME_RE.test(args.field)) return toolErr(res, sid, msgId, 'field must be a simple key (letters, digits, _, -)');
+    if (!['string', 'number', 'boolean'].includes(typeof args.value))
+      return toolErr(res, sid, msgId, 'value must be a string, number, or boolean');
+    try {
+      const absPath = path.join(vault.path, relPath);
+      const content = await libReadNote(absPath);
+      const updated = setFrontmatterField(content, args.field, args.value);
+      await libWriteNote(absPath, updated);
+      return toolOk(res, sid, msgId, `Set ${args.field} on ${relPath}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'remove-frontmatter-field') {
+    const args = msg.params.arguments ?? {};
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (!args.field) return toolErr(res, sid, msgId, 'field is required');
+    if (args.field === 'tags') return toolErr(res, sid, msgId, 'Use add-tags/remove-tags/rename-tag for the tags field');
+    if (!FIELD_NAME_RE.test(args.field)) return toolErr(res, sid, msgId, 'field must be a simple key (letters, digits, _, -)');
+    try {
+      const absPath = path.join(vault.path, relPath);
+      const content = await libReadNote(absPath);
+      const updated = removeFrontmatterField(content, args.field);
+      if (updated === content) return toolOk(res, sid, msgId, 'No changes needed');
+      await libWriteNote(absPath, updated);
+      return toolOk(res, sid, msgId, `Removed ${args.field} from ${relPath}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+    }
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'rename-tag') {

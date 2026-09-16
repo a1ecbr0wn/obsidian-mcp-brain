@@ -257,7 +257,8 @@ transport-level failure, so the client can report the reason clearly.
 
 Affected tools: `read-note`, `create-note`, `edit-note`, `delete-note`, `move-note`
 (source and destination), `create-binary-file`, `delete-binary-file`, `move-binary-file`
-(source and destination), `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`, `create-directory`, `search-vault`
+(source and destination), `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`,
+`set-frontmatter-field`, `remove-frontmatter-field`, `create-directory`, `search-vault`
 (when a `path` scope is given).
 
 `list-notes`, `list-tags`, `search-tag`, `new-notes`, `changed-notes`, and `rename-tag`
