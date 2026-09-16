@@ -7,6 +7,42 @@ const FM_RE = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 const TAGS_INLINE_RE = /^tags:\s*\[([^\]]*)\]/m;
 const TAGS_BLOCK_RE = /^tags:\s*\r?\n((?:[ \t]+-[^\r\n]*\r?\n?)*)/m;
 
+/** Matches `field: [...]` inline-array style, for any field name. */
+function fieldInlineRe(field) {
+  return new RegExp(`^${escRe(field)}:[ \\t]*\\[[^\\]]*\\][ \\t]*$`, 'm');
+}
+
+/** Matches `field:\n  - ...` block-sequence style, for any field name. */
+function fieldBlockRe(field) {
+  return new RegExp(`^${escRe(field)}:\\s*\\r?\\n((?:[ \\t]+-[^\\r\\n]*\\r?\\n?)*)`, 'm');
+}
+
+/** Matches a plain `field: value` scalar line, for any field name. */
+function fieldScalarRe(field) {
+  return new RegExp(`^${escRe(field)}:[ \\t]*[^\\r\\n]*$`, 'm');
+}
+
+const YAML_SPECIAL_LEADING = /^[-?:,[\]{}#&*!|>'"%@`]/;
+const YAML_LOOKS_LIKE_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+const YAML_LOOKS_LIKE_KEYWORD = /^(true|false|null|~)$/i;
+
+/**
+ * Serializes a scalar value (string/number/boolean) for a single YAML
+ * frontmatter line, quoting a string only when required to keep it a string.
+ * @returns {string} The serialized value, quoted if necessary.
+ */
+export function serializeScalar(value) {
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  const needsQuoting =
+    value === '' ||
+    /[\r\n]/.test(value) ||
+    value.includes(': ') ||
+    YAML_SPECIAL_LEADING.test(value) ||
+    YAML_LOOKS_LIKE_NUMBER.test(value) ||
+    YAML_LOOKS_LIKE_KEYWORD.test(value);
+  return needsQuoting ? JSON.stringify(value) : value;
+}
+
 function parseTagsFromBody(body) {
   const inline = TAGS_INLINE_RE.exec(body);
   if (inline) {
@@ -113,4 +149,64 @@ export function renameTag(content, oldTag, newTag) {
   let result = renameFrontmatterTag(content, oldTag, newTag);
   result = renameInlineTag(result, oldTag, newTag);
   return result;
+}
+
+/** Replaces a field with a new line, handling inline, block, scalar, or missing cases. */
+function replaceFieldInBody(body, field, newLine) {
+  if (fieldInlineRe(field).test(body)) {
+    return body.replace(fieldInlineRe(field), newLine);
+  }
+  if (fieldBlockRe(field).test(body)) {
+    return body.replace(fieldBlockRe(field), newLine + '\n');
+  }
+  if (fieldScalarRe(field).test(body)) {
+    return body.replace(fieldScalarRe(field), newLine);
+  }
+  const trimmed = body.trimEnd();
+  return trimmed ? trimmed + '\n' + newLine : newLine;
+}
+
+/**
+ * Sets a single frontmatter field to a scalar value, creating the
+ * frontmatter block or the field itself if either is missing. Overwrites
+ * an existing inline, block, or scalar value for that field.
+ */
+export function setFrontmatterField(content, field, value) {
+  const newLine = `${field}: ${serializeScalar(value)}`;
+  const fm = FM_RE.exec(content);
+  if (!fm) {
+    return `---\n${newLine}\n---\n${content}`;
+  }
+  const newBody = replaceFieldInBody(fm[1], field, newLine);
+  const after = content.slice(fm.index + fm[0].length);
+  return `---\n${newBody.trimEnd()}\n---${fm[2]}${after}`;
+}
+
+/** Removes a field and its value from the body; returns null if the field is not found. */
+function removeFieldFromBody(body, field) {
+  if (fieldInlineRe(field).test(body)) {
+    return body.replace(new RegExp(`^${escRe(field)}:[ \\t]*\\[[^\\]]*\\][ \\t]*\\r?\\n?`, 'm'), '');
+  }
+  if (fieldBlockRe(field).test(body)) {
+    return body.replace(fieldBlockRe(field), '');
+  }
+  if (fieldScalarRe(field).test(body)) {
+    return body.replace(new RegExp(`^${escRe(field)}:[ \\t]*[^\\r\\n]*\\r?\\n?`, 'm'), '');
+  }
+  return null;
+}
+
+/**
+ * Removes a single frontmatter field (its inline, block, or scalar value).
+ * Returns content unchanged if the field or the frontmatter block itself
+ * doesn't exist.
+ */
+export function removeFrontmatterField(content, field) {
+  const fm = FM_RE.exec(content);
+  if (!fm) return content;
+  const newBody = removeFieldFromBody(fm[1], field);
+  if (newBody === null) return content;
+  const after = content.slice(fm.index + fm[0].length);
+  const trimmed = newBody.trimEnd();
+  return trimmed ? `---\n${trimmed}\n---${fm[2]}${after}` : `---\n---${fm[2]}${after}`;
 }

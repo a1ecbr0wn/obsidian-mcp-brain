@@ -1238,6 +1238,133 @@ describe('rename-tag', () => {
   });
 });
 
+// ── set-frontmatter-field ─────────────────────────────────────────────────
+
+describe('set-frontmatter-field', () => {
+  it('creates the field and frontmatter block when neither exists', async () => {
+    await writeVaultNote('fm-ops/no-fm.md', '# Body\n');
+    const result = await callTool('set-frontmatter-field', { filename: 'fm-ops/no-fm.md', field: 'priority', value: 'high' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'fm-ops/no-fm.md'), 'utf8');
+    assert.ok(content.startsWith('---\npriority: high\n---\n'));
+  });
+
+  it('overwrites an existing field value', async () => {
+    await writeVaultNote('fm-ops/overwrite.md', '---\npriority: low\n---\nBody.');
+    const result = await callTool('set-frontmatter-field', { filename: 'fm-ops/overwrite.md', field: 'priority', value: 'high' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'fm-ops/overwrite.md'), 'utf8');
+    assert.ok(content.includes('priority: high'));
+    assert.ok(!content.includes('priority: low'));
+  });
+
+  it('accepts numeric and boolean values', async () => {
+    await writeVaultNote('fm-ops/scalar.md', '---\ntitle: Note\n---\nBody.');
+    const result = await callTool('set-frontmatter-field', { filename: 'fm-ops/scalar.md', field: 'count', value: 3 });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'fm-ops/scalar.md'), 'utf8');
+    assert.ok(content.includes('count: 3'));
+  });
+
+  it('rejects field: tags', async () => {
+    await writeVaultNote('fm-ops/reject-tags.md', '---\ntags: [x]\n---\n');
+    const result = await callTool('set-frontmatter-field', { filename: 'fm-ops/reject-tags.md', field: 'tags', value: 'y' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('add-tags'));
+  });
+
+  it('rejects a non-scalar value', async () => {
+    await writeVaultNote('fm-ops/reject-nonscalar.md', '---\ntitle: Note\n---\n');
+    const result = await callTool('set-frontmatter-field', { filename: 'fm-ops/reject-nonscalar.md', field: 'meta', value: { nested: true } });
+    assert.ok(result.isError);
+  });
+
+  it('returns isError when field is missing', async () => {
+    await writeVaultNote('fm-ops/missing-field.md', '---\ntitle: Note\n---\n');
+    const result = await callTool('set-frontmatter-field', { filename: 'fm-ops/missing-field.md', value: 'x' });
+    assert.ok(result.isError);
+  });
+
+  it('rejects a field name containing structural characters', async () => {
+    await writeVaultNote('fm-ops/reject-field-chars.md', '---\ntitle: Note\n---\n');
+    const result = await callTool('set-frontmatter-field', {
+      filename: 'fm-ops/reject-field-chars.md',
+      field: 'evil\n---\ninjected: true\nfake',
+      value: 'x',
+    });
+    assert.ok(result.isError);
+  });
+
+  it('does not let a value with an embedded newline break out of the frontmatter block', async () => {
+    await writeVaultNote('fm-ops/reject-value-newline.md', '---\ntitle: Note\n---\n# Body\n');
+    const result = await callTool('set-frontmatter-field', {
+      filename: 'fm-ops/reject-value-newline.md',
+      field: 'notes',
+      value: 'foo\n---\nmalicious body content',
+    });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'fm-ops/reject-value-newline.md'), 'utf8');
+    assert.equal((content.match(/^---$/gm) ?? []).length, 2, 'no extra frontmatter delimiter injected');
+    assert.ok(content.includes('# Body'), 'original body preserved');
+  });
+
+  it('blocks the call when the target is in a denied path', async () => {
+    await writeVaultNote(`${DENY_DIR}/denied-set.md`, '---\ntitle: Note\n---\n');
+    const result = await callTool('set-frontmatter-field', { folder: DENY_DIR, filename: 'denied-set.md', field: 'priority', value: 'high' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+});
+
+// ── remove-frontmatter-field ──────────────────────────────────────────────
+
+describe('remove-frontmatter-field', () => {
+  it('removes an existing field', async () => {
+    await writeVaultNote('fm-ops/remove-existing.md', '---\ntitle: Note\npriority: high\n---\nBody.');
+    const result = await callTool('remove-frontmatter-field', { filename: 'fm-ops/remove-existing.md', field: 'priority' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'fm-ops/remove-existing.md'), 'utf8');
+    assert.ok(!content.includes('priority'));
+    assert.ok(content.includes('title: Note'));
+  });
+
+  it('reports no changes needed when the field is absent', async () => {
+    await writeVaultNote('fm-ops/remove-absent.md', '---\ntitle: Note\n---\nBody.');
+    const result = await callTool('remove-frontmatter-field', { filename: 'fm-ops/remove-absent.md', field: 'nonexistent' });
+    assert.ok(!result.isError);
+    assert.ok(result.content[0].text.includes('No changes needed'));
+  });
+
+  it('rejects field: tags', async () => {
+    await writeVaultNote('fm-ops/remove-reject-tags.md', '---\ntags: [x]\n---\n');
+    const result = await callTool('remove-frontmatter-field', { filename: 'fm-ops/remove-reject-tags.md', field: 'tags' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('add-tags'));
+  });
+
+  it('returns isError when field is missing', async () => {
+    await writeVaultNote('fm-ops/remove-missing-field.md', '---\ntitle: Note\n---\n');
+    const result = await callTool('remove-frontmatter-field', { filename: 'fm-ops/remove-missing-field.md' });
+    assert.ok(result.isError);
+  });
+
+  it('rejects a field name containing structural characters', async () => {
+    await writeVaultNote('fm-ops/remove-reject-field-chars.md', '---\ntitle: Note\n---\n');
+    const result = await callTool('remove-frontmatter-field', {
+      filename: 'fm-ops/remove-reject-field-chars.md',
+      field: 'evil\n---\ninjected: true\nfake',
+    });
+    assert.ok(result.isError);
+  });
+
+  it('blocks the call when the target is in a denied path', async () => {
+    await writeVaultNote(`${DENY_DIR}/denied-remove-field.md`, '---\npriority: high\n---\n');
+    const result = await callTool('remove-frontmatter-field', { folder: DENY_DIR, filename: 'denied-remove-field.md', field: 'priority' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
+});
+
 // ── query-graph ───────────────────────────────────────────────────────────
 // The main bridge instance above has no graphify-out/ in its vault, so query-graph
 // should never appear for it. The positive-path tests spawn a dedicated second bridge
