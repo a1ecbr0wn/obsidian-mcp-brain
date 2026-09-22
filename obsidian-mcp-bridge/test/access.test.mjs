@@ -97,7 +97,7 @@ describe('checkAccess', () => {
   });
 
   it('returns null for unrecognised tool', () => {
-    assert.equal(checkAccess(DENY, 'list-available-vaults', {}), null);
+    assert.equal(checkAccess(DENY, 'list-vaults', {}), null);
   });
 
   describe('read-note / create-note / edit-note', () => {
@@ -254,18 +254,18 @@ describe('checkAccess', () => {
     });
   });
 
-  describe('create-directory', () => {
+  describe('create-folder', () => {
     it('blocks denied path', () => {
-      const r = checkAccess(DENY, 'create-directory', { folder: 'people/new' });
+      const r = checkAccess(DENY, 'create-folder', { folder: 'people/new' });
       assert.ok(r?.includes('restricted'));
     });
 
     it('allows permitted path', () => {
-      assert.equal(checkAccess(DENY, 'create-directory', { folder: 'projects/new' }), null);
+      assert.equal(checkAccess(DENY, 'create-folder', { folder: 'projects/new' }), null);
     });
 
     it('blocks .. traversal into denied path', () => {
-      const r = checkAccess(DENY, 'create-directory', { folder: 'projects/../people/new' });
+      const r = checkAccess(DENY, 'create-folder', { folder: 'projects/../people/new' });
       assert.ok(r?.includes('restricted'));
     });
   });

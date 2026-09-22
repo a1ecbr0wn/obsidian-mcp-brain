@@ -151,14 +151,14 @@ after(async () => {
   await fs.rm(path.dirname(configPath), { recursive: true, force: true });
 });
 
-// ── list-available-vaults ─────────────────────────────────────────────────
+// ── list-vaults ─────────────────────────────────────────────────
 
-describe('list-available-vaults', () => {
+describe('list-vaults', () => {
   it('returns the vault name', async () => {
     const sid = await initSession();
     const r = await post({
       jsonrpc: '2.0', id: '2', method: 'tools/call',
-      params: { name: 'list-available-vaults', arguments: {} },
+      params: { name: 'list-vaults', arguments: {} },
     }, sid);
     assert.equal(r.msgs.length, 1);
     const text = r.msgs[0].result.content[0].text;
@@ -281,9 +281,9 @@ describe('list-tags', () => {
   });
 });
 
-// ── search-tag ────────────────────────────────────────────────────────────
+// ── search-tags ────────────────────────────────────────────────────────────
 
-describe('search-tag', () => {
+describe('search-tags', () => {
   before(async () => {
     await writeVaultNote('searchable/one.md', '---\ntags: [project, active]\n---\n');
     await writeVaultNote('searchable/two.md', '---\ntags: [project, archived]\n---\n');
@@ -292,7 +292,7 @@ describe('search-tag', () => {
   });
 
   it('finds notes with a single tag', async () => {
-    const result = await callTool('search-tag', { tags: ['project'] });
+    const result = await callTool('search-tags', { tags: ['project'] });
     const text = result.content[0].text;
     assert.ok(text.includes('searchable/one.md'));
     assert.ok(text.includes('searchable/two.md'));
@@ -301,7 +301,7 @@ describe('search-tag', () => {
   });
 
   it('requires ALL tags (AND logic)', async () => {
-    const result = await callTool('search-tag', { tags: ['project', 'active'] });
+    const result = await callTool('search-tags', { tags: ['project', 'active'] });
     const text = result.content[0].text;
     assert.ok(text.includes('searchable/one.md'));
     assert.ok(!text.includes('searchable/two.md'), 'archived note should not match active+project');
@@ -309,18 +309,18 @@ describe('search-tag', () => {
   });
 
   it('returns no notes found when no match', async () => {
-    const result = await callTool('search-tag', { tags: ['nonexistent-tag-xyz'] });
+    const result = await callTool('search-tags', { tags: ['nonexistent-tag-xyz'] });
     assert.ok(result.content[0].text.includes('No notes found'));
     assert.ok(!result.isError);
   });
 
   it('returns isError for empty tags array', async () => {
-    const result = await callTool('search-tag', { tags: [] });
+    const result = await callTool('search-tags', { tags: [] });
     assert.ok(result.isError);
   });
 
   it('returns isError when path scope is denied', async () => {
-    const result = await callTool('search-tag', { tags: ['project'], path: DENY_DIR });
+    const result = await callTool('search-tags', { tags: ['project'], path: DENY_DIR });
     assert.ok(result.isError);
   });
 });
@@ -1166,11 +1166,11 @@ describe('resolve-wikilink', () => {
   });
 });
 
-// ── create-directory ──────────────────────────────────────────────────────
+// ── create-folder ──────────────────────────────────────────────────────
 
-describe('create-directory', () => {
+describe('create-folder', () => {
   it('creates a directory (and parents)', async () => {
-    const result = await callTool('create-directory', { folder: 'newdir/nested' });
+    const result = await callTool('create-folder', { folder: 'newdir/nested' });
     assert.ok(!result.isError);
     const stat = await fs.stat(path.join(vaultDir, 'newdir/nested'));
     assert.ok(stat.isDirectory());
@@ -1178,17 +1178,17 @@ describe('create-directory', () => {
 
   it('succeeds even if directory already exists (idempotent)', async () => {
     await fs.mkdir(path.join(vaultDir, 'already-exists'), { recursive: true });
-    const result = await callTool('create-directory', { folder: 'already-exists' });
+    const result = await callTool('create-folder', { folder: 'already-exists' });
     assert.ok(!result.isError);
   });
 
   it('returns isError when folder is in denied path', async () => {
-    const result = await callTool('create-directory', { folder: `${DENY_DIR}/subdir` });
+    const result = await callTool('create-folder', { folder: `${DENY_DIR}/subdir` });
     assert.ok(result.isError);
   });
 
   it('returns isError when folder is missing', async () => {
-    const result = await callTool('create-directory', { folder: '' });
+    const result = await callTool('create-folder', { folder: '' });
     assert.ok(result.isError);
   });
 });
@@ -1860,11 +1860,11 @@ describe('multi-vault configuration', () => {
     await fs.rm(mConfigDir, { recursive: true, force: true });
   });
 
-  it('list-available-vaults lists every configured vault', async () => {
+  it('list-vaults lists every configured vault', async () => {
     const sid = await initSession(MPORT);
     const r = await post({
       jsonrpc: '2.0', id: '2', method: 'tools/call',
-      params: { name: 'list-available-vaults', arguments: {} },
+      params: { name: 'list-vaults', arguments: {} },
     }, sid, MPORT);
     const text = r.msgs[0].result.content[0].text;
     assert.ok(text.includes('alpha'));

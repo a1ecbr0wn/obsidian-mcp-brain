@@ -211,7 +211,7 @@ const BRIDGE_TOOLS = [
     },
   },
   {
-    name: 'search-tag',
+    name: 'search-tags',
     description: 'Find notes that have ALL of the specified tags (YAML frontmatter). Returns vault-relative paths.',
     inputSchema: {
       type: 'object',
@@ -250,7 +250,7 @@ const BRIDGE_TOOLS = [
     },
   },
   {
-    name: 'list-available-vaults',
+    name: 'list-vaults',
     description: 'List all configured Obsidian vaults.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
@@ -419,13 +419,13 @@ const BRIDGE_TOOLS = [
     },
   },
   {
-    name: 'create-directory',
-    description: 'Create a new directory (and any missing parents) in the vault.',
+    name: 'create-folder',
+    description: 'Create a new folder (and any missing parents) in the vault.',
     inputSchema: {
       type: 'object',
       properties: {
         vault:  { type: 'string', description: 'Vault name' },
-        folder: { type: 'string', description: 'Vault-relative path for the new directory' },
+        folder: { type: 'string', description: 'Vault-relative path for the new folder' },
       },
       required: ['vault', 'folder'],
     },
@@ -780,8 +780,8 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: BRIDGE_TOOLS } }]);
   }
 
-  // list-available-vaults is answered directly from the configured vaults map
-  if (msg.method === 'tools/call' && msg.params?.name === 'list-available-vaults') {
+  // list-vaults is answered directly from the configured vaults map
+  if (msg.method === 'tools/call' && msg.params?.name === 'list-vaults') {
     const names = Object.keys(VAULTS).sort();
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
       content: [{ type: 'text', text: `Available vaults:\n${names.map(n => `  - ${n}`).join('\n')}` }],
@@ -875,7 +875,7 @@ async function route(req, res, url, sid) {
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'search-tag') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'search-tags') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) {
@@ -1240,7 +1240,7 @@ async function route(req, res, url, sid) {
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'create-directory') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'create-folder') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
