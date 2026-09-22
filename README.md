@@ -211,6 +211,8 @@ All configuration lives in one JSON file — no environment variables are read e
   "mcpBaseUrl": "https://your-hostname:4001",
   "denyPaths": ["private"],
   "graphifyQueryTimeoutMs": 60000,
+  "fetchMaxBytes": 10485760,
+  "fetchTimeoutMs": 30000,
   "vaults": {
     "knowledge": {
       "path": "/path/to/your/obsidian/vault"
@@ -223,13 +225,15 @@ All configuration lives in one JSON file — no environment variables are read e
 }
 ```
 
-| Field                    | Required | Default | Description                                                                             |
-| ------------------------ | -------- | ------- | --------------------------------------------------------------------------------------- |
-| `mcpBaseUrl`             | Yes      | —       | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events)   |
-| `vaults`                 | Yes      | —       | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
-| `listenPort`             | No       | `3002`  | Local port the bridge listens on                                                        |
-| `denyPaths`              | No       | `[]`    | Vault-relative paths to block, applied to every vault. See below                        |
-| `graphifyQueryTimeoutMs` | No       | `60000` | Timeout for a `graphify query` subprocess (milliseconds)                                |
+| Field                    | Required | Default    | Description                                                                             |
+| ------------------------ | -------- | ---------- | ----------------------------------------------------------------------------------------- |
+| `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events)   |
+| `vaults`                 | Yes      | —          | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
+| `listenPort`             | No       | `3002`     | Local port the bridge listens on                                                        |
+| `denyPaths`              | No       | `[]`       | Vault-relative paths to block, applied to every vault. See below                        |
+| `graphifyQueryTimeoutMs` | No       | `60000`    | Timeout for a `graphify query` subprocess (milliseconds)                                |
+| `fetchMaxBytes`          | No       | `10485760` | Default max response size for `fetch-binary-file` (bytes); overridable per call         |
+| `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file` (milliseconds); overridable per call    |
 
 Each vault entry can also set its own `denyPaths`, which are added on top of the
 global list for that vault only (see below).
@@ -262,10 +266,10 @@ Blocked requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
 Affected tools: `read-note`, `create-note`, `edit-note`, `delete-note`, `move-note`
-(source and destination), `create-binary-file`, `delete-binary-file`, `move-binary-file`
-(source and destination), `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`,
-`set-frontmatter-field`, `remove-frontmatter-field`, `create-directory`, `search-vault`
-(when a `path` scope is given).
+(source and destination), `create-binary-file`, `fetch-binary-file`, `delete-binary-file`,
+`move-binary-file` (source and destination), `find-backlinks`, `resolve-wikilink`,
+`add-tags`, `remove-tags`, `set-frontmatter-field`, `remove-frontmatter-field`,
+`create-directory`, `search-vault` (when a `path` scope is given).
 
 `list-notes`, `list-tags`, `search-tag`, `new-notes`, `changed-notes`, and `rename-tag`
 are equally protected, just via a different mechanism: instead of a single check up
@@ -305,7 +309,7 @@ instead an object mapping each vault-relative path to its expected timestamp; ev
 listed file's precondition is checked before any file in the batch is written, so
 the batch either applies wholly or not at all.
 
-Not applicable to `create-note` or `create-binary-file`, which
+Not applicable to `create-note`, `create-binary-file`, or `fetch-binary-file`, which
 already fail if the destination exists, nor to `rename-tag`, which sweeps the whole
 vault rather than targeting one file.
 
@@ -325,6 +329,37 @@ change:
 If a `heading` or `taskText` match isn't unique in the note, the call fails with a
 list of every match (line number, and heading level where relevant); pass the
 1-based `occurrence` from that list on a follow-up call to disambiguate.
+
+### fetch-binary-file
+
+`create-binary-file` requires the client to send the file as base64 — expensive
+through an LLM client, since base64 is read in and written out again on top of its
+already-larger-than-binary size. `fetch-binary-file` instead has the bridge download
+a URL itself and write the result, so the client only ever sends a URL string.
+
+```
+fetch-binary-file → { filename: "photo.jpg", folder: "attachments", url: "https://example.com/photo.jpg" }
+```
+
+Because the bridge performs the request itself, a caller-supplied URL is effectively
+asking this host to make an arbitrary outbound call — on any deployment, this host
+may be able to reach private network services that shouldn't be exposed to a remote
+MCP client. `fetch-binary-file` treats this as its primary risk:
+
+- Only `http`/`https` URLs are accepted.
+- The hostname is resolved and the request is refused if any resolved address is
+  loopback, link-local, unique-local, or in RFC1918 private space.
+- Every redirect hop is re-validated the same way — not just the initial URL — since
+  a public hostname can redirect to a private address.
+- The response body is size-checked while streaming, so an oversized response is
+  aborted mid-transfer rather than after it's already been downloaded.
+- A hard timeout (`fetchTimeoutMs`, overridable per call) aborts a slow or hanging
+  response.
+- The destination path is deny-path- and collision-checked *before* any network
+  call, so a denied or already-occupied path never causes an outbound request.
+
+`maxBytes` and `timeoutMs` can be overridden per call; otherwise they default to the
+config file's `fetchMaxBytes`/`fetchTimeoutMs`.
 
 ---
 

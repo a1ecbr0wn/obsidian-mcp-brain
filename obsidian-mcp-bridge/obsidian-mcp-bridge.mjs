@@ -23,6 +23,7 @@ import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveT
 import { escRe } from './lib/utils.mjs';
 import { replaceSection, deleteSection, toggleCheckbox } from './lib/sections.mjs';
 import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
+import { fetchToBuffer } from './lib/fetch.mjs';
 import {
   walkVault as libWalkVault,
   readNote as libReadNote,
@@ -52,6 +53,8 @@ const logErr = (...a) => console.error(ts(), ...a);
 //     "mcpBaseUrl": "https://host:4001",
 //     "denyPaths": ["private"],
 //     "graphifyQueryTimeoutMs": 60000,
+//     "fetchMaxBytes": 10485760,
+//     "fetchTimeoutMs": 30000,
 //     "vaults": { "name": { "path": "/abs/path", "denyPaths": [] } }
 //   }
 // mcpBaseUrl and a non-empty vaults map (each with a path) are required;
@@ -105,6 +108,18 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  const fetchMaxBytes = parseInt(config.fetchMaxBytes ?? 10 * 1024 * 1024, 10);
+  if (Number.isNaN(fetchMaxBytes) || fetchMaxBytes < 1) {
+    logErr(`Config file at ${configPath}: "fetchMaxBytes" must be a positive number`);
+    process.exit(1);
+  }
+
+  const fetchTimeoutMs = parseInt(config.fetchTimeoutMs ?? 30000, 10);
+  if (Number.isNaN(fetchTimeoutMs) || fetchTimeoutMs < 1) {
+    logErr(`Config file at ${configPath}: "fetchTimeoutMs" must be a positive number`);
+    process.exit(1);
+  }
+
   const globalDenyPaths = normDenyPaths(config.denyPaths, configPath, 'denyPaths');
 
   const rawVaults = config.vaults;
@@ -129,11 +144,20 @@ function loadConfig(configPath) {
     listenPort,
     baseUrl: config.mcpBaseUrl,
     graphifyQueryTimeoutMs,
+    fetchMaxBytes,
+    fetchTimeoutMs,
     vaults,
   };
 }
 
-const { listenPort: LISTEN_PORT, baseUrl: BASE_URL, graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS, vaults: VAULTS } = loadConfig(CONFIG_PATH);
+const {
+  listenPort: LISTEN_PORT,
+  baseUrl: BASE_URL,
+  graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS,
+  fetchMaxBytes: FETCH_MAX_BYTES,
+  fetchTimeoutMs: FETCH_TIMEOUT_MS,
+  vaults: VAULTS,
+} = loadConfig(CONFIG_PATH);
 
 // ── Path access control ────────────────────────────────────────────────────
 
@@ -320,6 +344,22 @@ const BRIDGE_TOOLS = [
         content:  { type: 'string', description: 'Base64-encoded file content' },
       },
       required: ['vault', 'filename', 'content'],
+    },
+  },
+  {
+    name: 'fetch-binary-file',
+    description: 'Create a new binary file by downloading a URL server-side, so the client only needs to send a URL rather than the full file content. Fails if the file already exists. The URL must be http(s) and resolve to a public address.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:     { type: 'string', description: 'Vault name' },
+        filename:  { type: 'string', description: 'Filename including extension' },
+        folder:    { type: 'string', description: 'Optional vault-relative folder' },
+        url:       { type: 'string', description: 'http(s) URL to download' },
+        maxBytes:  { type: 'integer', description: 'Optional override for the maximum response size in bytes (default from server config)' },
+        timeoutMs: { type: 'integer', description: 'Optional override for the request timeout in milliseconds (default from server config)' },
+      },
+      required: ['vault', 'filename', 'url'],
     },
   },
   {
@@ -1073,6 +1113,41 @@ async function route(req, res, url, sid) {
       const buffer = Buffer.from(args.content, 'base64');
       await libWriteBinaryFile(absPath, buffer);
       return toolOk(res, sid, msgId, `Created: ${relPath}`);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+    }
+  }
+
+  if (msg.method === 'tools/call' && msg.params?.name === 'fetch-binary-file') {
+    const args = msg.params.arguments ?? {};
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (!args.url) return toolErr(res, sid, msgId, 'url is required');
+    // Number(), not parseInt() — parseInt silently truncates a decimal or trailing
+    // garbage ("1.5"/"100abc" -> 100) instead of rejecting it; these are caller
+    // input, unlike the config file's own already-parseInt-style numeric fields.
+    const maxBytes = args.maxBytes !== undefined ? Number(args.maxBytes) : FETCH_MAX_BYTES;
+    if (!Number.isInteger(maxBytes) || maxBytes < 1) return toolErr(res, sid, msgId, 'maxBytes must be a positive integer');
+    const timeoutMs = args.timeoutMs !== undefined ? Number(args.timeoutMs) : FETCH_TIMEOUT_MS;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1) return toolErr(res, sid, msgId, 'timeoutMs must be a positive integer');
+    const absPath = path.join(vault.path, relPath);
+    // Destination existence is confirmed before any network call, so a colliding
+    // path never causes an outbound request; fetchToBuffer validates the URL (and
+    // every redirect hop) before the request that follows it.
+    try {
+      await fs.access(absPath);
+      return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+    }
+    try {
+      const buffer = await fetchToBuffer(args.url, { maxBytes, timeoutMs });
+      await libWriteBinaryFile(absPath, buffer);
+      return toolOk(res, sid, msgId, `Created: ${relPath} (${buffer.length} bytes)`);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }

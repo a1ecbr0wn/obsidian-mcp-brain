@@ -3,3 +3,8 @@ node_modules/
 .claude/
 
 .DS_Store
+
+*.log
+npm-debug.log*
+.vscode/
+.idea/
