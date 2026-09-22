@@ -275,7 +275,24 @@ rl.on("line", async (line) => {
     }
 
     const hadSession = !!sessionId;
+    const sessionIdBeforePost = sessionId;
     let { status, body } = await post(line);
+    // Retry 5xx on initialize — the bridge may be transiently restarting.
+    if (status >= 500 && msg?.method === "initialize") {
+      process.stderr.write(`shim: initialize got HTTP ${status}, will retry up to 4 times\n`);
+      for (let attempt = 1; attempt <= 4 && status >= 500; attempt++) {
+        const delay = Math.min(1000 * 2 ** attempt, 16_000);
+        process.stderr.write(`shim: retry ${attempt} of 4 in ${delay}ms\n`);
+        await new Promise((r) => setTimeout(r, delay));
+        sessionId = sessionIdBeforePost; // reset before each attempt so post() doesn't send a stale session ID
+        ({ status, body } = await post(line));
+      }
+      if (status >= 500) {
+        // All retries failed — roll back session state set by bad 5xx responses.
+        sessionId = sessionIdBeforePost;
+        abortSse(); // tear down any SSE stream opened by a failed attempt
+      }
+    }
     if (status === 202) return;
     if (status === 404 || (status === 400 && hadSession)) {
       // Session expired or not recognised — try to reinitialize once and retry.
