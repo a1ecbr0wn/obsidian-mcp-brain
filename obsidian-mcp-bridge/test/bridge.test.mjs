@@ -641,6 +641,52 @@ describe('edit-note', () => {
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Access denied'));
   });
+
+  it('delete-section removes the heading and its body', async () => {
+    await writeVaultNote('editable/delsection-test.md', '# A\nkeep\n# B\ngone\n# C\nkeep');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-test.md', operation: 'delete-section', heading: 'B' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/delsection-test.md'), 'utf8');
+    assert.equal(content, '# A\nkeep\n# C\nkeep');
+  });
+
+  it('delete-section returns isError with heading required for a missing heading param', async () => {
+    await writeVaultNote('editable/delsection-missing-heading.md', '# A\nx');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-missing-heading.md', operation: 'delete-section' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('heading is required'));
+  });
+
+  it('delete-section returns isError for a heading not found in the note', async () => {
+    await writeVaultNote('editable/delsection-not-found.md', '# A\nx');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-not-found.md', operation: 'delete-section', heading: 'Missing' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('not found'));
+  });
+
+  it('delete-section returns isError listing matches for an ambiguous heading', async () => {
+    await writeVaultNote('editable/delsection-ambiguous.md', '# Dup\na\n# Dup\nb');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-ambiguous.md', operation: 'delete-section', heading: 'Dup' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Ambiguous'));
+    assert.ok(result.content[0].text.includes('line 1'));
+    assert.ok(result.content[0].text.includes('line 3'));
+  });
+
+  it('delete-section occurrence disambiguates a repeated heading', async () => {
+    await writeVaultNote('editable/delsection-occurrence.md', '# Dup\na\n# Dup\nb\n# Z\nkeep');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-occurrence.md', operation: 'delete-section', heading: 'Dup', occurrence: 2 });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/delsection-occurrence.md'), 'utf8');
+    assert.equal(content, '# Dup\na\n# Z\nkeep');
+  });
+
+  it('delete-section returns isError when note is in denied path', async () => {
+    await writeVaultNote(`${DENY_DIR}/delsection-blocked.md`, '# A\nx');
+    const result = await callTool('edit-note', { folder: DENY_DIR, filename: 'delsection-blocked.md', operation: 'delete-section', heading: 'A' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+  });
 });
 
 // ── delete-note ───────────────────────────────────────────────────────────
@@ -1362,6 +1408,165 @@ describe('remove-frontmatter-field', () => {
     const result = await callTool('remove-frontmatter-field', { folder: DENY_DIR, filename: 'denied-remove-field.md', field: 'priority' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Access denied'));
+  });
+});
+
+// ── write preconditions (expectedMtime) ─────────────────────────────────────
+
+describe('write preconditions (expectedMtime)', () => {
+  it('edit-note succeeds when expectedMtime matches the current mtime', async () => {
+    await writeVaultNote('editable/precond-ok.md', 'original');
+    const stat = await fs.stat(path.join(vaultDir, 'editable/precond-ok.md'));
+    const result = await callTool('edit-note', {
+      folder: 'editable', filename: 'precond-ok.md', operation: 'replace', content: 'updated',
+      expectedMtime: stat.mtime.toISOString(),
+    });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/precond-ok.md'), 'utf8');
+    assert.equal(content, 'updated');
+  });
+
+  it('edit-note is refused, with no modification, when the note was touched since expectedMtime', async () => {
+    await writeVaultNote('editable/precond-stale.md', 'original');
+    const stat = await fs.stat(path.join(vaultDir, 'editable/precond-stale.md'));
+    const stale = new Date(stat.mtime.getTime() - 60_000).toISOString();
+    const result = await callTool('edit-note', {
+      folder: 'editable', filename: 'precond-stale.md', operation: 'replace', content: 'updated',
+      expectedMtime: stale,
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    const content = await fs.readFile(path.join(vaultDir, 'editable/precond-stale.md'), 'utf8');
+    assert.equal(content, 'original', 'no write should occur on a precondition failure');
+  });
+
+  it('edit-note reports a precondition failure for a note that no longer exists', async () => {
+    const result = await callTool('edit-note', {
+      folder: 'editable', filename: 'precond-ghost.md', operation: 'replace', content: 'x',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('no longer exists'));
+  });
+
+  it('omitting expectedMtime preserves current last-write-wins behaviour', async () => {
+    await writeVaultNote('editable/precond-omitted.md', 'original');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'precond-omitted.md', operation: 'replace', content: 'updated' });
+    assert.ok(!result.isError);
+    const content = await fs.readFile(path.join(vaultDir, 'editable/precond-omitted.md'), 'utf8');
+    assert.equal(content, 'updated');
+  });
+
+  it('delete-note is refused when expectedMtime has drifted', async () => {
+    await writeVaultNote('editable/precond-delete.md', 'x');
+    const result = await callTool('delete-note', { folder: 'editable', filename: 'precond-delete.md', expectedMtime: '2026-01-01T00:00:00.000Z' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    await assert.doesNotReject(() => fs.access(path.join(vaultDir, 'editable/precond-delete.md')));
+  });
+
+  it('move-note checks the precondition against the source file', async () => {
+    await writeVaultNote('editable/precond-move-src.md', 'x');
+    const result = await callTool('move-note', {
+      folder: 'editable', filename: 'precond-move-src.md',
+      newFolder: 'editable', newFilename: 'precond-move-dst.md',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    await assert.doesNotReject(() => fs.access(path.join(vaultDir, 'editable/precond-move-src.md')));
+  });
+
+  it('set-frontmatter-field is refused when expectedMtime has drifted', async () => {
+    await writeVaultNote('editable/precond-fm.md', '---\npriority: low\n---\n');
+    const result = await callTool('set-frontmatter-field', {
+      folder: 'editable', filename: 'precond-fm.md', field: 'priority', value: 'high',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    const content = await fs.readFile(path.join(vaultDir, 'editable/precond-fm.md'), 'utf8');
+    assert.ok(content.includes('priority: low'));
+  });
+
+  it('remove-frontmatter-field is refused when expectedMtime has drifted', async () => {
+    await writeVaultNote('editable/precond-fm-remove.md', '---\npriority: low\n---\n');
+    const result = await callTool('remove-frontmatter-field', {
+      folder: 'editable', filename: 'precond-fm-remove.md', field: 'priority',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    const content = await fs.readFile(path.join(vaultDir, 'editable/precond-fm-remove.md'), 'utf8');
+    assert.ok(content.includes('priority: low'));
+  });
+
+  it('delete-binary-file is refused when expectedMtime has drifted', async () => {
+    const abs = path.join(vaultDir, 'editable/precond-bin-delete.png');
+    await fs.writeFile(abs, Buffer.from([0x01]));
+    const result = await callTool('delete-binary-file', {
+      folder: 'editable', filename: 'precond-bin-delete.png',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    await assert.doesNotReject(() => fs.access(abs));
+  });
+
+  it('move-binary-file checks the precondition against the source file', async () => {
+    const src = path.join(vaultDir, 'editable/precond-bin-move-src.png');
+    await fs.writeFile(src, Buffer.from([0x01]));
+    const result = await callTool('move-binary-file', {
+      folder: 'editable', filename: 'precond-bin-move-src.png',
+      newFolder: 'editable', newFilename: 'precond-bin-move-dst.png',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    await assert.doesNotReject(() => fs.access(src));
+  });
+
+  it('add-tags with expectedMtime rejects a malformed (non-object) value', async () => {
+    await writeVaultNote('editable/precond-batch-shape.md', 'x');
+    const result = await callTool('add-tags', { files: ['editable/precond-batch-shape.md'], tags: ['t'], expectedMtime: 'not-a-map' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('expectedMtime must be an object'));
+  });
+
+  it('add-tags batch refuses the whole write when one file in the set has drifted', async () => {
+    await writeVaultNote('editable/precond-batch-a.md', 'a');
+    await writeVaultNote('editable/precond-batch-b.md', 'b');
+    const statA = await fs.stat(path.join(vaultDir, 'editable/precond-batch-a.md'));
+    const result = await callTool('add-tags', {
+      files: ['editable/precond-batch-a.md', 'editable/precond-batch-b.md'],
+      tags: ['newtag'],
+      expectedMtime: {
+        'editable/precond-batch-a.md': statA.mtime.toISOString(),
+        'editable/precond-batch-b.md': '2026-01-01T00:00:00.000Z', // stale
+      },
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Precondition failed'));
+    const contentA = await fs.readFile(path.join(vaultDir, 'editable/precond-batch-a.md'), 'utf8');
+    assert.equal(contentA, 'a', 'no file in the batch should be written when any precondition fails');
+  });
+
+  it('add-tags batch succeeds when every listed file matches its expectedMtime', async () => {
+    await writeVaultNote('editable/precond-batch-ok-a.md', 'a');
+    await writeVaultNote('editable/precond-batch-ok-b.md', 'b');
+    const statA = await fs.stat(path.join(vaultDir, 'editable/precond-batch-ok-a.md'));
+    const statB = await fs.stat(path.join(vaultDir, 'editable/precond-batch-ok-b.md'));
+    const result = await callTool('add-tags', {
+      files: ['editable/precond-batch-ok-a.md', 'editable/precond-batch-ok-b.md'],
+      tags: ['newtag'],
+      expectedMtime: {
+        'editable/precond-batch-ok-a.md': statA.mtime.toISOString(),
+        'editable/precond-batch-ok-b.md': statB.mtime.toISOString(),
+      },
+    });
+    assert.ok(!result.isError);
+    const contentA = await fs.readFile(path.join(vaultDir, 'editable/precond-batch-ok-a.md'), 'utf8');
+    assert.ok(contentA.includes('newtag'));
   });
 });
 

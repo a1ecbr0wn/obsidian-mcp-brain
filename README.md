@@ -276,9 +276,75 @@ vault names — so it's the only tool genuinely unaffected by the deny list.
 `query-graph` takes a free-text question rather than a vault path, so it isn't subject
 to the deny list either.
 
+### Write preconditions (`expectedMtime`)
+
+Every tool that writes to an existing file accepts an optional `expectedMtime`: the
+ISO 8601 last-modified timestamp you previously got back from `read-note` or
+`list-notes`. Pass it back on a later write and the bridge refuses the write — with
+no changes made — if the file's mtime has moved since, telling you both the
+timestamp you expected and its actual current one so you know to re-read and retry.
+
+This is a compare-and-swap check, not a lock: it's meant to catch "I read this note
+a while ago, and something else touched it since," not to serialize concurrent
+writers. It's optional so existing callers are unaffected, but a client following a
+read-then-write pattern (read a note, decide what to change, write it back) should
+always pass it — otherwise an edit made by something else in between is silently
+overwritten.
+
+```
+read-note  → note content + Last-Modified: 2026-09-20T10:15:00.000Z
+...decide what to change...
+edit-note  → { operation: "replace", content: "...", expectedMtime: "2026-09-20T10:15:00.000Z" }
+```
+
+Applies to: `edit-note` (all operations), `delete-note`, `move-note` (checked against
+the source file), `set-frontmatter-field`, `remove-frontmatter-field`,
+`move-binary-file` and `delete-binary-file` (checked against the source file). For
+`add-tags`/`remove-tags`, which operate on a `files[]` array, `expectedMtime` is
+instead an object mapping each vault-relative path to its expected timestamp; every
+listed file's precondition is checked before any file in the batch is written, so
+the batch either applies wholly or not at all.
+
+Not applicable to `create-note` or `create-binary-file`, which
+already fail if the destination exists, nor to `rename-tag`, which sweeps the whole
+vault rather than targeting one file.
+
+### edit-note operations
+
+Beyond `append`, `prepend`, and `replace`, `edit-note` supports targeted,
+section-scoped edits so a large note doesn't need to be resent in full for a small
+change:
+
+- **`replace-section`** — replaces the content under a heading (matched by exact
+  text), leaving the heading line itself in place.
+- **`delete-section`** — removes a heading and everything under it, heading line
+  included.
+- **`toggle-checkbox`** — flips (or explicitly sets) a `- [ ]`/`- [x]` line, matched
+  by its exact text.
+
+If a `heading` or `taskText` match isn't unique in the note, the call fails with a
+list of every match (line number, and heading level where relevant); pass the
+1-based `occurrence` from that list on a follow-up call to disambiguate.
+
 ---
 
 ## Claude Desktop Configuration
+
+Unlike Claude Code, Claude Desktop doesn't speak the MCP Streamable HTTP transport
+directly — it only launches local stdio subprocesses. To reach a remote bridge like
+this one, it needs a small relay in between that translates its stdio JSON-RPC
+traffic into HTTP+SSE calls against the bridge's `/mcp` endpoint. Two options:
+
+- **[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) via `npx`** (below) —
+  the quickest option, no install or local files needed, good for a plain
+  no-credentials setup like this bridge's public OAuth flow.
+- **This repo's own [`mcp-shim`](#mcp-shim)** — a zero-dependency local script,
+  worth using instead if you need a bearer token, a custom request timeout, or
+  want to avoid an `npx` download on every Claude Desktop launch.
+
+Edit `claude_desktop_config.json` (find it via **Claude Desktop → Settings →
+Developer → Edit Config**) and add an entry under `mcpServers`, replacing the URL
+below with your bridge's actual address:
 
 ```json
 {
@@ -287,11 +353,14 @@ to the deny list either.
       "command": "npx",
       "args": [
         "mcp-remote@latest",
-        "https://data.bat-gorgon.ts.net:4001/mcp"
+        "https://your-hostname:4001/mcp"
       ]
     }
   }
+}
 ```
+
+Restart Claude Desktop after saving.
 
 ---
 

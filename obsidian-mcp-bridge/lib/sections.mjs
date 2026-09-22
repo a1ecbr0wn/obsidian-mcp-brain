@@ -128,6 +128,32 @@ export function replaceSection(content, heading, newBody, occurrence) {
 }
 
 /**
+ * Removes the heading matching `heading` (exact text) along with its entire body — the
+ * heading line itself plus everything up to (but not including) the next heading of the
+ * same or shallower level, or end of file. Unlike replaceSection, nothing is left behind
+ * in the heading's place.
+ *
+ * Throws if `heading` matches no heading, or matches more than one and no `occurrence`
+ * (1-based) is given to disambiguate.
+ */
+export function deleteSection(content, heading, occurrence) {
+  const headings = findHeadings(content);
+  const matches = headings.filter(h => h.text === heading);
+  if (matches.length === 0) {
+    throw new Error(`Heading not found: ${heading}`);
+  }
+  if (matches.length > 1 && occurrence === undefined) {
+    throw ambiguityError('heading', heading, matches, m => `line ${m.line} (level ${m.level})`);
+  }
+  const match = pickMatch(matches, occurrence);
+
+  const lines = content.split('\n');
+  const before = lines.slice(0, match.line - 1);
+  const after = lines.slice(match.bodyEndLine);
+  return [...before, ...after].join('\n');
+}
+
+/**
  * Parses all Markdown checkbox list items (`- [ ]`/`- [x]`, `*` bullets also accepted),
  * ignoring lines inside fenced code blocks.
  * @returns {Array<{text: string, checked: boolean, line: number}>} line is 1-based.
