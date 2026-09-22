@@ -44,7 +44,8 @@ export function checkAccess(denyPaths, toolName, args) {
       break;
     }
 
-    case 'create-binary-file': {
+    case 'create-binary-file':
+    case 'fetch-binary-file': {
       const p = normPath(args.folder, args.filename);
       if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
       break;

@@ -853,6 +853,96 @@ describe('create-binary-file', () => {
   });
 });
 
+// ── fetch-binary-file ────────────────────────────────────────────────────
+// Full network-fetch coverage (success, redirects, oversize, timeout) lives in
+// test/fetch.test.mjs with mocked node:http/https and dns.lookup, since a real local
+// test server is necessarily loopback — which this tool must legitimately refuse to
+// fetch from. These integration tests instead confirm the real spawned bridge process
+// enforces that refusal end-to-end against an actual reachable local server (proving
+// the SSRF check runs for real, not just in the mocked unit tests), plus the
+// pre-network validation paths (missing url, denied/colliding destination, bad param
+// values).
+
+describe('fetch-binary-file', () => {
+  let probeServer, probePort, probeHits;
+
+  before(async () => {
+    probeHits = 0;
+    probeServer = http.createServer((req, res) => { probeHits++; res.writeHead(200); res.end('ok'); });
+    await new Promise(resolve => probeServer.listen(0, '127.0.0.1', resolve));
+    probePort = probeServer.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => probeServer.close(resolve));
+  });
+
+  it('returns isError for a URL that resolves to a private/loopback address, and makes no request', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'ssrf-blocked.png', url: `http://127.0.0.1:${probePort}/image.png` });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('disallowed address'));
+    assert.equal(probeHits, 0, 'the bridge must never actually issue the request');
+    await assert.rejects(fs.access(path.join(vaultDir, 'ssrf-blocked.png')));
+  });
+
+  it('returns isError for a non-http(s) URL scheme', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'bad-scheme.png', url: 'ftp://127.0.0.1/x' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('scheme'));
+  });
+
+  it('returns isError when url is missing', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'no-url.png' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('url is required'));
+  });
+
+  it('returns isError for a .md filename', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'not-binary.md', url: `http://127.0.0.1:${probePort}/x` });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('create-note'));
+  });
+
+  it('returns isError when the destination already exists, without making a request', async () => {
+    await writeVaultNote('fetch-existing.png', 'already here');
+    const result = await callTool('fetch-binary-file', { filename: 'fetch-existing.png', url: `http://127.0.0.1:${probePort}/x` });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('already exists'));
+    assert.equal(probeHits, 0);
+  });
+
+  it('returns isError when destination is in a denied path, without making a request', async () => {
+    const result = await callTool('fetch-binary-file', { folder: DENY_DIR, filename: 'fetch-denied.png', url: `http://127.0.0.1:${probePort}/x` });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+    assert.equal(probeHits, 0);
+  });
+
+  it('returns isError for a non-positive-integer maxBytes override', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'bad-maxbytes.png', url: `http://127.0.0.1:${probePort}/x`, maxBytes: -1 });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('maxBytes'));
+  });
+
+  it('returns isError for a non-positive-integer timeoutMs override', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'bad-timeout.png', url: `http://127.0.0.1:${probePort}/x`, timeoutMs: 0 });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('timeoutMs'));
+  });
+
+  it('returns isError for a decimal maxBytes rather than silently truncating it', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'decimal-maxbytes.png', url: `http://127.0.0.1:${probePort}/x`, maxBytes: 1.5 });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('maxBytes'));
+  });
+
+  it('returns isError for a non-numeric-string timeoutMs rather than silently truncating it', async () => {
+    const result = await callTool('fetch-binary-file', { filename: 'garbage-timeout.png', url: `http://127.0.0.1:${probePort}/x`, timeoutMs: '100abc' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('timeoutMs'));
+  });
+});
+
 // ── delete-binary-file ────────────────────────────────────────────────────
 
 describe('delete-binary-file', () => {
