@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   findHeadings,
   replaceSection,
+  deleteSection,
   findCheckboxes,
   toggleCheckbox,
 } from '../lib/sections.mjs';
@@ -128,6 +129,51 @@ describe('replaceSection', () => {
     const content = '## Exact Heading\nold body';
     const result = replaceSection(content, 'Exact Heading', 'new body');
     assert.ok(result.startsWith('## Exact Heading\n'));
+  });
+});
+
+describe('deleteSection', () => {
+  test('removes the heading line and its body up to the next same-or-shallower heading', () => {
+    const content = '# A\nkeep\n# B\ngone\n# C\nkeep';
+    const result = deleteSection(content, 'B');
+    assert.equal(result, '# A\nkeep\n# C\nkeep');
+  });
+
+  test('removes a heading and its nested subsections when it is at EOF', () => {
+    const content = '# A\nkeep\n## B\nnested\ntext';
+    const result = deleteSection(content, 'B');
+    assert.equal(result, '# A\nkeep');
+  });
+
+  test('removing the only heading leaves the remainder empty', () => {
+    const content = '# A\nbody';
+    const result = deleteSection(content, 'A');
+    assert.equal(result, '');
+  });
+
+  test('throws when heading not found', () => {
+    assert.throws(() => deleteSection('# A\ntext', 'Missing'), /not found/i);
+  });
+
+  test('throws with match list when heading is ambiguous', () => {
+    const content = '# Dup\na\n# Dup\nb';
+    assert.throws(() => deleteSection(content, 'Dup'), err => {
+      assert.match(err.message, /ambiguous/i);
+      assert.match(err.message, /line 1/);
+      assert.match(err.message, /line 3/);
+      return true;
+    });
+  });
+
+  test('occurrence disambiguates a repeated heading', () => {
+    const content = '# Dup\na\n# Dup\nb\n# Z\nkeep';
+    const result = deleteSection(content, 'Dup', 2);
+    assert.equal(result, '# Dup\na\n# Z\nkeep');
+  });
+
+  test('throws on out-of-range occurrence', () => {
+    const content = '# Dup\na\n# Dup\nb';
+    assert.throws(() => deleteSection(content, 'Dup', 5), /occurrence/i);
   });
 });
 

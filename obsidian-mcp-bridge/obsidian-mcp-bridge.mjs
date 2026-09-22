@@ -21,7 +21,8 @@ import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess } from './lib/access.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
-import { replaceSection, toggleCheckbox } from './lib/sections.mjs';
+import { replaceSection, deleteSection, toggleCheckbox } from './lib/sections.mjs';
+import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
 import {
   walkVault as libWalkVault,
   readNote as libReadNote,
@@ -258,19 +259,20 @@ const BRIDGE_TOOLS = [
   },
   {
     name: 'edit-note',
-    description: 'Edit an existing note by appending, prepending, replacing its content, replacing the content under a heading, or toggling a checkbox.',
+    description: 'Edit an existing note by appending, prepending, replacing its content, replacing or deleting the content under a heading, or toggling a checkbox.',
     inputSchema: {
       type: 'object',
       properties: {
-        vault:      { type: 'string', description: 'Vault name' },
-        filename:   { type: 'string', description: 'Filename including .md extension' },
-        folder:     { type: 'string', description: 'Optional vault-relative folder' },
-        operation:  { type: 'string', enum: ['append', 'prepend', 'replace', 'replace-section', 'toggle-checkbox'], description: 'Edit operation' },
-        content:    { type: 'string', description: 'Content to apply (append/prepend/replace/replace-section)' },
-        heading:    { type: 'string', description: 'Exact heading text to match (replace-section only)' },
-        taskText:   { type: 'string', description: 'Exact checkbox text after the [ ]/[x] marker (toggle-checkbox only)' },
-        checked:    { type: 'boolean', description: 'Explicit checkbox state (toggle-checkbox only); omit to flip the current state' },
-        occurrence: { type: 'integer', description: 'Disambiguates when heading/taskText matches more than once (1-based)' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Filename including .md extension' },
+        folder:        { type: 'string', description: 'Optional vault-relative folder' },
+        operation:     { type: 'string', enum: ['append', 'prepend', 'replace', 'replace-section', 'delete-section', 'toggle-checkbox'], description: 'Edit operation' },
+        content:       { type: 'string', description: 'Content to apply (append/prepend/replace/replace-section)' },
+        heading:       { type: 'string', description: 'Exact heading text to match (replace-section/delete-section only)' },
+        taskText:      { type: 'string', description: 'Exact checkbox text after the [ ]/[x] marker (toggle-checkbox only)' },
+        checked:       { type: 'boolean', description: 'Explicit checkbox state (toggle-checkbox only); omit to flip the current state' },
+        occurrence:    { type: 'integer', description: 'Disambiguates when heading/taskText matches more than once (1-based)' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the edit is refused if the note has changed since' },
       },
       required: ['vault', 'filename', 'operation'],
     },
@@ -281,10 +283,11 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:     { type: 'string', description: 'Vault name' },
-        filename:  { type: 'string', description: 'Filename including .md extension' },
-        folder:    { type: 'string', description: 'Optional vault-relative folder' },
-        permanent: { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Filename including .md extension' },
+        folder:        { type: 'string', description: 'Optional vault-relative folder' },
+        permanent:     { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the delete is refused if the note has changed since' },
       },
       required: ['vault', 'filename'],
     },
@@ -295,11 +298,12 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:       { type: 'string', description: 'Vault name' },
-        filename:    { type: 'string', description: 'Source filename including .md extension' },
-        folder:      { type: 'string', description: 'Optional source vault-relative folder' },
-        newFilename: { type: 'string', description: 'Destination filename including .md extension' },
-        newFolder:   { type: 'string', description: 'Optional destination vault-relative folder' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Source filename including .md extension' },
+        folder:        { type: 'string', description: 'Optional source vault-relative folder' },
+        newFilename:   { type: 'string', description: 'Destination filename including .md extension' },
+        newFolder:     { type: 'string', description: 'Optional destination vault-relative folder' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the move is refused if the source note has changed since' },
       },
       required: ['vault', 'filename', 'newFilename'],
     },
@@ -324,11 +328,12 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:       { type: 'string', description: 'Vault name' },
-        filename:    { type: 'string', description: 'Source filename including extension' },
-        folder:      { type: 'string', description: 'Optional source vault-relative folder' },
-        newFilename: { type: 'string', description: 'Destination filename including extension' },
-        newFolder:   { type: 'string', description: 'Optional destination vault-relative folder' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Source filename including extension' },
+        folder:        { type: 'string', description: 'Optional source vault-relative folder' },
+        newFilename:   { type: 'string', description: 'Destination filename including extension' },
+        newFolder:     { type: 'string', description: 'Optional destination vault-relative folder' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the move is refused if the source file has changed since' },
       },
       required: ['vault', 'filename', 'newFilename'],
     },
@@ -339,10 +344,11 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:     { type: 'string', description: 'Vault name' },
-        filename:  { type: 'string', description: 'Filename including extension' },
-        folder:    { type: 'string', description: 'Optional vault-relative folder' },
-        permanent: { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Filename including extension' },
+        folder:        { type: 'string', description: 'Optional vault-relative folder' },
+        permanent:     { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the delete is refused if the file has changed since' },
       },
       required: ['vault', 'filename'],
     },
@@ -404,10 +410,11 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:    { type: 'string', description: 'Vault name' },
-        files:    { type: 'array', items: { type: 'string' }, description: 'Vault-relative note paths' },
-        tags:     { type: 'array', items: { type: 'string' }, description: 'Tags to add' },
-        location: { type: 'string', enum: ['frontmatter', 'content', 'both'], description: 'Where to add tags (default: frontmatter)' },
+        vault:         { type: 'string', description: 'Vault name' },
+        files:         { type: 'array', items: { type: 'string' }, description: 'Vault-relative note paths' },
+        tags:          { type: 'array', items: { type: 'string' }, description: 'Tags to add' },
+        location:      { type: 'string', enum: ['frontmatter', 'content', 'both'], description: 'Where to add tags (default: frontmatter)' },
+        expectedMtime: { type: 'object', description: 'Optional map of vault-relative path to ISO 8601 mtime; checked for every listed file before any file is written (all-or-nothing)' },
       },
       required: ['vault', 'files', 'tags'],
     },
@@ -418,10 +425,11 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:    { type: 'string', description: 'Vault name' },
-        files:    { type: 'array', items: { type: 'string' }, description: 'Vault-relative note paths' },
-        tags:     { type: 'array', items: { type: 'string' }, description: 'Tags to remove' },
-        location: { type: 'string', enum: ['frontmatter', 'content', 'both'], description: 'Where to remove tags (default: frontmatter)' },
+        vault:         { type: 'string', description: 'Vault name' },
+        files:         { type: 'array', items: { type: 'string' }, description: 'Vault-relative note paths' },
+        tags:          { type: 'array', items: { type: 'string' }, description: 'Tags to remove' },
+        location:      { type: 'string', enum: ['frontmatter', 'content', 'both'], description: 'Where to remove tags (default: frontmatter)' },
+        expectedMtime: { type: 'object', description: 'Optional map of vault-relative path to ISO 8601 mtime; checked for every listed file before any file is written (all-or-nothing)' },
       },
       required: ['vault', 'files', 'tags'],
     },
@@ -445,11 +453,12 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:    { type: 'string', description: 'Vault name' },
-        filename: { type: 'string', description: 'Filename including .md extension' },
-        folder:   { type: 'string', description: 'Optional vault-relative folder' },
-        field:    { type: 'string', description: 'Frontmatter key (any field except tags)' },
-        value:    { description: 'Scalar value to set (string, number, or boolean)' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Filename including .md extension' },
+        folder:        { type: 'string', description: 'Optional vault-relative folder' },
+        field:         { type: 'string', description: 'Frontmatter key (any field except tags)' },
+        value:         { description: 'Scalar value to set (string, number, or boolean)' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the write is refused if the note has changed since' },
       },
       required: ['vault', 'filename', 'field', 'value'],
     },
@@ -460,10 +469,11 @@ const BRIDGE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        vault:    { type: 'string', description: 'Vault name' },
-        filename: { type: 'string', description: 'Filename including .md extension' },
-        folder:   { type: 'string', description: 'Optional vault-relative folder' },
-        field:    { type: 'string', description: 'Frontmatter key (any field except tags)' },
+        vault:         { type: 'string', description: 'Vault name' },
+        filename:      { type: 'string', description: 'Filename including .md extension' },
+        folder:        { type: 'string', description: 'Optional vault-relative folder' },
+        field:         { type: 'string', description: 'Frontmatter key (any field except tags)' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the write is refused if the note has changed since' },
       },
       required: ['vault', 'filename', 'field'],
     },
@@ -779,7 +789,7 @@ async function route(req, res, url, sid) {
       const lines = [];
       for (const rel of notes) {
         const stat = await fs.stat(path.join(vault.path, rel));
-        lines.push(`${rel}\t${stat.mtime.toISOString()}`);
+        lines.push(`${rel}\t${formatMtime(stat)}`);
       }
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No notes found' }],
@@ -929,7 +939,7 @@ async function route(req, res, url, sid) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [
           { type: 'text', text: content },
-          { type: 'text', text: `Last-Modified: ${stat.mtime.toISOString()}` },
+          { type: 'text', text: `Last-Modified: ${formatMtime(stat)}` },
         ],
       } }]);
     } catch (err) {
@@ -967,19 +977,24 @@ async function route(req, res, url, sid) {
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     const op = args.operation;
-    if (!['append', 'prepend', 'replace', 'replace-section', 'toggle-checkbox'].includes(op))
+    if (!['append', 'prepend', 'replace', 'replace-section', 'delete-section', 'toggle-checkbox'].includes(op))
       return toolErr(res, sid, msgId, `Invalid operation: ${op}`);
-    if (op === 'replace-section' && !args.heading)
-      return toolErr(res, sid, msgId, 'heading is required for replace-section');
+    if ((op === 'replace-section' || op === 'delete-section') && !args.heading)
+      return toolErr(res, sid, msgId, `heading is required for ${op}`);
     if (op === 'toggle-checkbox' && !args.taskText)
       return toolErr(res, sid, msgId, 'taskText is required for toggle-checkbox');
     const absPath = path.join(vault.path, relPath);
     try {
+      if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
       if (op === 'replace') {
         await libWriteNote(absPath, args.content ?? '');
       } else if (op === 'replace-section') {
         const existing = await libReadNote(absPath);
         const updated = replaceSection(existing, args.heading, args.content ?? '', args.occurrence);
+        await libWriteNote(absPath, updated);
+      } else if (op === 'delete-section') {
+        const existing = await libReadNote(absPath);
+        const updated = deleteSection(existing, args.heading, args.occurrence);
         await libWriteNote(absPath, updated);
       } else if (op === 'toggle-checkbox') {
         const existing = await libReadNote(absPath);
@@ -1004,9 +1019,11 @@ async function route(req, res, url, sid) {
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    const absPath = path.join(vault.path, relPath);
     try {
+      if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
       const permanent = args.permanent === true;
-      await libDeleteNote(path.join(vault.path, relPath), permanent, vault.path);
+      await libDeleteNote(absPath, permanent, vault.path);
       return toolOk(res, sid, msgId, permanent ? `Deleted: ${relPath}` : `Moved to trash: ${relPath}`);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
@@ -1024,6 +1041,7 @@ async function route(req, res, url, sid) {
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
     try {
+      if (args.expectedMtime !== undefined) await assertUnmodified(path.join(vault.path, srcRel), args.expectedMtime);
       await libMoveNote(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
     } catch (err) {
@@ -1068,9 +1086,11 @@ async function route(req, res, url, sid) {
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use delete-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    const absPath = path.join(vault.path, relPath);
     try {
+      if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
       const permanent = args.permanent === true;
-      await libDeleteBinaryFile(path.join(vault.path, relPath), permanent, vault.path);
+      await libDeleteBinaryFile(absPath, permanent, vault.path);
       return toolOk(res, sid, msgId, permanent ? `Deleted: ${relPath}` : `Moved to trash: ${relPath}`);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
@@ -1090,6 +1110,7 @@ async function route(req, res, url, sid) {
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
     try {
+      if (args.expectedMtime !== undefined) await assertUnmodified(path.join(vault.path, srcRel), args.expectedMtime);
       await libMoveBinaryFile(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
     } catch (err) {
@@ -1198,6 +1219,27 @@ async function route(req, res, url, sid) {
     if (!files.length) return toolErr(res, sid, msgId, 'files array is required');
     if (!tags.length)  return toolErr(res, sid, msgId, 'tags array is required');
     const location = args.location || 'frontmatter';
+    if (args.expectedMtime !== undefined) {
+      if (typeof args.expectedMtime !== 'object' || args.expectedMtime === null || Array.isArray(args.expectedMtime))
+        return toolErr(res, sid, msgId, 'expectedMtime must be an object mapping vault-relative path to ISO 8601 mtime');
+      // Validate every non-denied file's precondition before any file is written,
+      // so a batch either applies wholly or not at all. This creates a window between
+      // validating file N and writing it where drift can occur (proportional to batch
+      // size), which is intentional and consistent with the compare-and-swap design
+      // (not a lock). See assertUnmodified() JSDoc: we guard against realistic conflicts
+      // (edits seconds/minutes old), not same-instant races.
+      for (const file of files) {
+        const relPath = normPath(file);
+        if (_isDenied(vault.denyPaths, relPath)) continue; // will be skipped below regardless
+        const expected = args.expectedMtime[file] ?? args.expectedMtime[relPath];
+        if (expected === undefined) return toolErr(res, sid, msgId, `expectedMtime missing for ${relPath}`);
+        try {
+          await assertUnmodified(path.join(vault.path, relPath), expected);
+        } catch (err) {
+          return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+        }
+      }
+    }
     const updated = [], skipped = [];
     for (const file of files) {
       const relPath = normPath(file);
@@ -1253,6 +1295,7 @@ async function route(req, res, url, sid) {
       return toolErr(res, sid, msgId, 'value must be a string, number, or boolean');
     try {
       const absPath = path.join(vault.path, relPath);
+      if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
       const content = await libReadNote(absPath);
       const updated = setFrontmatterField(content, args.field, args.value);
       await libWriteNote(absPath, updated);
@@ -1274,6 +1317,7 @@ async function route(req, res, url, sid) {
     if (!FIELD_NAME_RE.test(args.field)) return toolErr(res, sid, msgId, 'field must be a simple key (letters, digits, _, -)');
     try {
       const absPath = path.join(vault.path, relPath);
+      if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
       const content = await libReadNote(absPath);
       const updated = removeFrontmatterField(content, args.field);
       if (updated === content) return toolOk(res, sid, msgId, 'No changes needed');
