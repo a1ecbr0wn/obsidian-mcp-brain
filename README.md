@@ -5,7 +5,8 @@ A couple of tools to enable remote https access to an Obsidian MCP server.
 ## obsidian-mcp-bridge
 
 A thin Node.js HTTP bridge that provides remote MCP access to an Obsidian vault.
-It implements all MCP tools natively and exposes them to remote clients such as Claude Code and Claude Desktop via HTTP.
+It implements all MCP tools natively and exposes them to remote clients such as
+Claude Code and Claude Desktop via HTTP.
 
 ## Why this bridge is needed
 
@@ -16,10 +17,11 @@ and the standard approaches have issues:
 
 Existing solutions like [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) wrap
 stdio MCP servers and expose them over HTTP. However, mcp-proxy has a session-management
-bug: when Claude Code opens its GET `/mcp` notification stream at the same time as
-sending tool-list requests (which it always does), mcp-proxy's response routing gets
-confused and `tools/list` silently times out. This bridge implements the MCP HTTP
-transport layer directly and implements all tools natively, eliminating that class of bug.
+bug: when Claude Code opens its GET `/mcp` notification stream at the same time
+as sending tool-list requests (which it always does), mcp-proxy's response routing
+gets confused and `tools/list` silently times out. This bridge implements the MCP
+HTTP transport layer directly and implements all tools natively, eliminating that
+class of bug.
 
 ### No OAuth 2.0 discovery
 
@@ -27,8 +29,8 @@ The [MCP 2025-03-26 spec](https://spec.modelcontextprotocol.io) requires every
 non-localhost remote MCP server to expose OAuth 2.0 discovery endpoints
 (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`,
 `/authorize`, `/token`, `/register`). Without them, Claude Code refuses to connect.
-This bridge serves a public (no credentials required) OAuth flow so that Claude Code's
-auth handshake completes without needing real credentials.
+This bridge serves a public (no credentials required) OAuth flow so that Claude
+Code's auth handshake completes without needing real credentials.
 
 ### What this bridge does
 
@@ -55,10 +57,11 @@ Obsidian vault (filesystem)
   [Tailscale Serve](https://tailscale.com/kb/1312/serve) is what I use, but any
   HTTPS reverse proxy works
 - **Optional:** The `query-graph` tool (which queries a vault using a natural-language
-  knowledge graph) requires the `graphify` CLI to be installed and on `PATH`, and a
-  knowledge graph to be pre-built for that vault (run `graphify --obsidian` against it
-  once, before calling the tool). `query-graph` is always listed, but calling it against
-  a vault with no graph returns a clear error rather than an answer.
+  knowledge graph) requires the `graphify` CLI to be installed and on `PATH`, and
+  a knowledge graph to be pre-built for that vault (run `graphify --obsidian`
+  against it once, before calling the tool). `query-graph` is always listed, but
+  calling it against a vault with no graph returns a clear error rather than an
+  answer.
 
 ---
 
@@ -70,7 +73,9 @@ Install dependencies and build the packages:
 npm install
 ```
 
-The `obsidian-mcp-bridge` package can then be run directly from the workspace, or you can copy the built files to wherever you want to run them from. Then set it up as a persistent service.
+The `obsidian-mcp-bridge` package can then be run directly from the workspace, or
+you can copy the built files to wherever you want to run them from. Then set it
+up as a persistent service.
 
 ### systemd (Linux)
 
@@ -123,7 +128,8 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
     <string>/path/to/obsidian-mcp-bridge/obsidian-mcp-bridge/obsidian-mcp-bridge.mjs</string>
   </array>
 
-  <!-- Only needed if your config file isn't at the default ~/.config/obsidian-mcp.json -->
+  <!-- Only needed if your config file isn't at the default
+  ~/.config/obsidian-mcp.json -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>CONFIG_PATH</key>
@@ -217,13 +223,13 @@ All configuration lives in one JSON file — no environment variables are read e
 }
 ```
 
-| Field | Required | Default | Description |
-| --- | --- | --- | --- |
-| `mcpBaseUrl` | Yes | — | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events) |
-| `vaults` | Yes | — | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
-| `listenPort` | No | `3002` | Local port the bridge listens on |
-| `denyPaths` | No | `[]` | Vault-relative paths to block, applied to every vault. See below |
-| `graphifyQueryTimeoutMs` | No | `60000` | Timeout for a `graphify query` subprocess (milliseconds) |
+| Field                    | Required | Default | Description                                                                             |
+| ------------------------ | -------- | ------- | --------------------------------------------------------------------------------------- |
+| `mcpBaseUrl`             | Yes      | —       | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events)   |
+| `vaults`                 | Yes      | —       | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
+| `listenPort`             | No       | `3002`  | Local port the bridge listens on                                                        |
+| `denyPaths`              | No       | `[]`    | Vault-relative paths to block, applied to every vault. See below                        |
+| `graphifyQueryTimeoutMs` | No       | `60000` | Timeout for a `graphify query` subprocess (milliseconds)                                |
 
 Each vault entry can also set its own `denyPaths`, which are added on top of the
 global list for that vault only (see below).
@@ -272,6 +278,23 @@ to the deny list either.
 
 ---
 
+## Claude Desktop Configuration
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "npx",
+      "args": [
+        "mcp-remote@latest",
+        "https://data.bat-gorgon.ts.net:4001/mcp"
+      ]
+    }
+  }
+```
+
+---
+
 ## How the obsidian-mcp-bridge works
 
 The bridge implements the [MCP Streamable HTTP transport (2024-11-05)](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http):
@@ -297,15 +320,17 @@ vault files as resources or prompts, only as tools.
 
 The OAuth flow is intentionally public — there are no real credentials. Access control
 relies on the network layer (Tailscale node authentication in the reference setup).
-The config file's `denyPaths` feature provides coarse-grained control over which parts
-of a vault the MCP client can touch, but it is not a substitute for network-level access
-control.
+The config file's `denyPaths` feature provides coarse-grained control over which
+parts of a vault the MCP client can touch, but it is not a substitute for
+network-level access control.
+
+---
 
 ## mcp-shim
 
 A lightweight shim that connects Claude Desktop to a remote MCP server over HTTPS
-(Streamable HTTP transport). It bridges Claude Desktop's stdio JSON-RPC protocol to
-the remote server's HTTP+SSE interface.
+(Streamable HTTP transport). It bridges Claude Desktop's stdio JSON-RPC protocol
+to the remote server's HTTP+SSE interface.
 
 ### Requirements
 
