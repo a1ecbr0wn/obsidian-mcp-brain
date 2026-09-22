@@ -133,6 +133,22 @@ describe('validateUrl', () => {
     await assert.rejects(() => validateUrl('http://[::1]/'), /disallowed address/i);
   });
 
+  test('rejects an IPv6 link-local literal', async () => {
+    await assert.rejects(() => validateUrl('http://[fe80::1]/'), /disallowed address/i);
+  });
+
+  // Regression: URL.hostname serializes IPv6 literals with brackets (e.g. "[::1]"),
+  // which dns.lookup can't resolve as-is — the address must actually be checked
+  // ("disallowed address"), not just fail to resolve ("could not resolve hostname").
+  // A CI environment without IPv6 exposed this: dns.lookup("[::1]") failed to
+  // resolve there even though a same-host environment resolved it by coincidence.
+  test('actually resolves and checks an IPv6 literal, rather than failing to resolve it', async () => {
+    await assert.rejects(() => validateUrl('http://[::1]/'), err => {
+      assert.doesNotMatch(err.message, /could not resolve/i);
+      return true;
+    });
+  });
+
   test('accepts a public IPv4 literal and returns its resolved addresses', async () => {
     const { parsed, addresses } = await validateUrl('http://8.8.8.8/');
     assert.equal(parsed.hostname, '8.8.8.8');

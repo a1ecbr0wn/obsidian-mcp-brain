@@ -64,9 +64,19 @@ export async function validateUrl(url) {
     throw new Error(`URL scheme must be http or https: ${url}`);
   }
 
+  // URL.hostname serializes an IPv6 literal with brackets (e.g. "[::1]"), but
+  // dns.lookup expects the bare address — passing the bracketed form fails to
+  // resolve it at all, which would make an IPv6-literal URL error out instead of
+  // actually being checked (as happened here: a CI environment without IPv6
+  // correctly failed to resolve "[::1]", exposing that a same-host environment
+  // resolving it by coincidence was never validating the address, just erroring).
+  const lookupHost = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']')
+    ? parsed.hostname.slice(1, -1)
+    : parsed.hostname;
+
   let addresses;
   try {
-    addresses = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
+    addresses = await dns.lookup(lookupHost, { all: true, verbatim: true });
   } catch {
     throw new Error(`Could not resolve hostname: ${parsed.hostname}`);
   }
