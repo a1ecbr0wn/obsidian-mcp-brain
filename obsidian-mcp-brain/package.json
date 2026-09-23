@@ -1,0 +1,28 @@
+{
+  "name": "obsidian-mcp-brain",
+  "version": "1.0.0",
+  "description": "MCP server exposing Obsidian vaults to remote clients (Claude Code, Claude Desktop) with OAuth discovery and path-level access control",
+  "type": "module",
+  "main": "obsidian-mcp-brain.mjs",
+  "bin": {
+    "obsidian-mcp-brain": "./obsidian-mcp-brain.mjs"
+  },
+  "files": [
+    "obsidian-mcp-brain.mjs",
+    "lib/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "obsidian",
+    "claude",
+    "server",
+    "oauth"
+  ],
+  "license": "MIT"
+}

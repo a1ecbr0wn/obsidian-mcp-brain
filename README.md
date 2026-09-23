@@ -2,13 +2,13 @@
 
 A couple of tools to enable remote https access to an Obsidian MCP server.
 
-## obsidian-mcp-bridge
+## obsidian-mcp-brain
 
-A thin Node.js HTTP bridge that provides remote MCP access to an Obsidian vault.
+A thin Node.js HTTP server that provides remote MCP access to an Obsidian vault.
 It implements all MCP tools natively and exposes them to remote clients such as
 Claude Code and Claude Desktop via HTTP.
 
-## Why this bridge is needed
+## Why this server is needed
 
 Remote MCP clients (Claude Code 2.x, Claude Desktop) connect over HTTP, not stdio,
 and the standard approaches have issues:
@@ -19,7 +19,7 @@ Existing solutions like [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) w
 stdio MCP servers and expose them over HTTP. However, mcp-proxy has a session-management
 bug: when Claude Code opens its GET `/mcp` notification stream at the same time
 as sending tool-list requests (which it always does), mcp-proxy's response routing
-gets confused and `tools/list` silently times out. This bridge implements the MCP
+gets confused and `tools/list` silently times out. This server implements the MCP
 HTTP transport layer directly and implements all tools natively, eliminating that
 class of bug.
 
@@ -29,16 +29,16 @@ The [MCP 2025-03-26 spec](https://spec.modelcontextprotocol.io) requires every
 non-localhost remote MCP server to expose OAuth 2.0 discovery endpoints
 (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`,
 `/authorize`, `/token`, `/register`). Without them, Claude Code refuses to connect.
-This bridge serves a public (no credentials required) OAuth flow so that Claude
+This server serves a public (no credentials required) OAuth flow so that Claude
 Code's auth handshake completes without needing real credentials.
 
-### What this bridge does
+### What this server does
 
 ```text
 Claude Code / Claude Desktop
         │  HTTPS (e.g. Tailscale)
         ▼
-obsidian-mcp-bridge  :3002
+obsidian-mcp-brain  :3002
   ├─ OAuth 2.0 discovery endpoints
   ├─ MCP Streamable HTTP transport (POST /mcp, GET /mcp)
   ├─ Path deny list (access control)
@@ -53,7 +53,7 @@ Obsidian vault (filesystem)
 ### Prerequisites
 
 - Node.js 18+
-- A way to expose the bridge over HTTPS to your remote client —
+- A way to expose the server over HTTPS to your remote client —
   [Tailscale Serve](https://tailscale.com/kb/1312/serve) is what I use, but any
   HTTPS reverse proxy works
 - **Optional:** The `query-graph` tool (which queries a vault using a natural-language
@@ -73,25 +73,25 @@ Install dependencies and build the packages:
 npm install
 ```
 
-The `obsidian-mcp-bridge` package can then be run directly from the workspace, or
+The `obsidian-mcp-brain` package can then be run directly from the workspace, or
 you can copy the built files to wherever you want to run them from. Then set it
 up as a persistent service.
 
 ### systemd (Linux)
 
 First, create your config file — see [Configuration](#configuration) below for its
-full shape. By default the bridge reads `~/.config/obsidian-mcp.json`, so no extra
+full shape. By default the server reads `~/.config/obsidian-mcp.json`, so no extra
 environment variable is needed unless you want the config somewhere else.
 
 Then create `~/.config/systemd/user/obsidian-mcp.service`:
 
 ```ini
 [Unit]
-Description=Obsidian MCP Bridge
+Description=Obsidian MCP Server
 After=network.target
 
 [Service]
-ExecStart=node /path/to/obsidian-mcp-bridge/obsidian-mcp-bridge/obsidian-mcp-bridge.mjs
+ExecStart=node /path/to/obsidian-mcp-brain/obsidian-mcp-brain/obsidian-mcp-brain.mjs
 Restart=on-failure
 RestartSec=5
 
@@ -111,7 +111,7 @@ systemctl --user enable --now obsidian-mcp.service
 
 ### macOS (launchd)
 
-Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
+Create `~/Library/LaunchAgents/com.obsidian-mcp-brain.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -120,12 +120,12 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.obsidian-mcp-bridge</string>
+  <string>com.obsidian-mcp-brain</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/node</string>
-    <string>/path/to/obsidian-mcp-bridge/obsidian-mcp-bridge/obsidian-mcp-bridge.mjs</string>
+    <string>/path/to/obsidian-mcp-brain/obsidian-mcp-brain/obsidian-mcp-brain.mjs</string>
   </array>
 
   <!-- Only needed if your config file isn't at the default
@@ -142,9 +142,9 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/tmp/obsidian-mcp-bridge.log</string>
+  <string>/tmp/obsidian-mcp-brain.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/obsidian-mcp-bridge.log</string>
+  <string>/tmp/obsidian-mcp-brain.log</string>
 </dict>
 </plist>
 ```
@@ -152,45 +152,25 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist`:
 Load it:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist
+launchctl load ~/Library/LaunchAgents/com.obsidian-mcp-brain.plist
 ```
 
 To restart after a config change:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist
-launchctl load   ~/Library/LaunchAgents/com.obsidian-mcp-bridge.plist
+launchctl unload ~/Library/LaunchAgents/com.obsidian-mcp-brain.plist
+launchctl load   ~/Library/LaunchAgents/com.obsidian-mcp-brain.plist
 ```
 
 ### Tailscale Serve (HTTPS tunnel)
 
-Point Tailscale at the bridge's local port:
+Point Tailscale at the server's local port:
 
 ```bash
 sudo tailscale serve --bg --https 4001 http://localhost:3002
 ```
 
-This exposes the bridge at `https://<your-tailscale-hostname>:4001`.
-
----
-
-## Connecting Claude Code
-
-Add the server to your Claude Code config (`~/.claude.json` or via `claude mcp add`):
-
-```json
-{
-  "mcpServers": {
-    "obsidian": {
-      "type": "http",
-      "url": "https://your-hostname:4001/mcp"
-    }
-  }
-}
-```
-
-Claude Code will prompt you to authenticate the first time — click through the
-OAuth flow (it uses a public/no-credentials token, so no real account is needed).
+This exposes the server at `https://<your-tailscale-hostname>:4001`.
 
 ---
 
@@ -200,7 +180,7 @@ All configuration lives in one JSON file — no environment variables are read e
 `CONFIG_PATH`, which says where to find it.
 
 - **Location**: `CONFIG_PATH` env var if set, otherwise `~/.config/obsidian-mcp.json`.
-- The bridge serves one or more named vaults from a single process; a client picks
+- The server serves one or more named vaults from a single process; a client picks
   which one a call applies to via the `vault` argument every tool already takes.
 
 ### Shape
@@ -227,9 +207,9 @@ All configuration lives in one JSON file — no environment variables are read e
 
 | Field                    | Required | Default    | Description                                                                             |
 | ------------------------ | -------- | ---------- | ----------------------------------------------------------------------------------------- |
-| `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the bridge (used in OAuth responses and SSE endpoint events)   |
+| `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the server (used in OAuth responses and SSE endpoint events)   |
 | `vaults`                 | Yes      | —          | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
-| `listenPort`             | No       | `3002`     | Local port the bridge listens on                                                        |
+| `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `denyPaths`              | No       | `[]`       | Vault-relative paths to block, applied to every vault. See below                        |
 | `graphifyQueryTimeoutMs` | No       | `60000`    | Timeout for a `graphify query` subprocess (milliseconds)                                |
 | `fetchMaxBytes`          | No       | `10485760` | Default max response size for `fetch-binary-file` (bytes); overridable per call         |
@@ -261,7 +241,7 @@ further without affecting any other vault:
 Here, both vaults block `private`; `work` additionally blocks `confidential` and
 `drafts`, while `knowledge` is unaffected by that extra restriction.
 
-The deny list is enforced in the bridge before any tool handler executes.
+The deny list is enforced in the server before any tool handler executes.
 Blocked requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
@@ -284,7 +264,7 @@ to the deny list either.
 
 Every tool that writes to an existing file accepts an optional `expectedMtime`: the
 ISO 8601 last-modified timestamp you previously got back from `read-note` or
-`list-notes`. Pass it back on a later write and the bridge refuses the write — with
+`list-notes`. Pass it back on a later write and the server refuses the write — with
 no changes made — if the file's mtime has moved since, telling you both the
 timestamp you expected and its actual current one so you know to re-read and retry.
 
@@ -334,14 +314,14 @@ list of every match (line number, and heading level where relevant); pass the
 
 `create-binary-file` requires the client to send the file as base64 — expensive
 through an LLM client, since base64 is read in and written out again on top of its
-already-larger-than-binary size. `fetch-binary-file` instead has the bridge download
+already-larger-than-binary size. `fetch-binary-file` instead has the server download
 a URL itself and write the result, so the client only ever sends a URL string.
 
 ```
 fetch-binary-file → { filename: "photo.jpg", folder: "attachments", url: "https://example.com/photo.jpg" }
 ```
 
-Because the bridge performs the request itself, a caller-supplied URL is effectively
+Because the server performs the request itself, a caller-supplied URL is effectively
 asking this host to make an arbitrary outbound call — on any deployment, this host
 may be able to reach private network services that shouldn't be exposed to a remote
 MCP client. `fetch-binary-file` treats this as its primary risk:
@@ -363,23 +343,43 @@ config file's `fetchMaxBytes`/`fetchTimeoutMs`.
 
 ---
 
-## Claude Desktop Configuration
+## Connecting Claude Code
+
+Add the server to your Claude Code config (`~/.claude.json` or via `claude mcp add`):
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "type": "http",
+      "url": "https://your-hostname:4001/mcp"
+    }
+  }
+}
+```
+
+Claude Code will prompt you to authenticate the first time — click through the
+OAuth flow (it uses a public/no-credentials token, so no real account is needed).
+
+---
+
+## Connecting Claude Desktop
 
 Unlike Claude Code, Claude Desktop doesn't speak the MCP Streamable HTTP transport
-directly — it only launches local stdio subprocesses. To reach a remote bridge like
+directly — it only launches local stdio subprocesses. To reach a remote server like
 this one, it needs a small relay in between that translates its stdio JSON-RPC
-traffic into HTTP+SSE calls against the bridge's `/mcp` endpoint. Two options:
+traffic into HTTP+SSE calls against the server's `/mcp` endpoint. Two options:
 
 - **[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) via `npx`** (below) —
   the quickest option, no install or local files needed, good for a plain
-  no-credentials setup like this bridge's public OAuth flow.
+  no-credentials setup like this server's public OAuth flow.
 - **This repo's own [`mcp-shim`](#mcp-shim)** — a zero-dependency local script,
   worth using instead if you need a bearer token, a custom request timeout, or
   want to avoid an `npx` download on every Claude Desktop launch.
 
 Edit `claude_desktop_config.json` (find it via **Claude Desktop → Settings →
 Developer → Edit Config**) and add an entry under `mcpServers`, replacing the URL
-below with your bridge's actual address:
+below with your server's actual address:
 
 ```json
 {
@@ -399,9 +399,41 @@ Restart Claude Desktop after saving.
 
 ---
 
-## How the obsidian-mcp-bridge works
+## Available Tools
 
-The bridge implements the [MCP Streamable HTTP transport (2024-11-05)](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http):
+| Tool | Description |
+| --- | --- |
+| `list-notes` | List all notes in the vault, or scoped to a folder. Returns sorted vault-relative paths, each with a last-modified timestamp |
+| `list-tags` | List all unique tags (YAML frontmatter) used across vault notes, optionally scoped to a subdirectory |
+| `search-tags` | Find notes that have ALL of the specified tags |
+| `new-notes` | List notes created in the last 7 days, or since a provided timestamp |
+| `changed-notes` | List notes modified in the last 7 days, or since a provided timestamp |
+| `list-vaults` | List all configured vaults |
+| `read-note` | Read a note's content and last-modified timestamp |
+| `create-note` | Create a new note. Fails if it already exists |
+| `edit-note` | Edit a note: append, prepend, replace, replace/delete the content under a heading, or toggle a checkbox |
+| `delete-note` | Delete a note, moving it to `.trash` by default |
+| `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
+| `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
+| `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
+| `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
+| `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
+| `find-backlinks` | Find all notes that link to or embed a given note or binary file |
+| `resolve-wikilink` | Resolve a wikilink target string to the vault-relative file(s) it points to |
+| `create-folder` | Create a new folder (and any missing parents) in the vault |
+| `search-vault` | Search vault notes by content, filename, or both |
+| `add-tags` | Add tags to notes in frontmatter and/or inline body content |
+| `remove-tags` | Remove tags from notes in frontmatter and/or inline body content |
+| `rename-tag` | Rename a tag throughout the entire vault (frontmatter and inline) |
+| `set-frontmatter-field` | Set a single frontmatter field (not `tags`) to a scalar value, creating it if missing |
+| `remove-frontmatter-field` | Remove a single frontmatter field (not `tags`) entirely |
+| `query-graph` | Ask a natural-language question against a vault's graphify knowledge graph |
+
+---
+
+## How the obsidian-mcp-brain works
+
+The server implements the [MCP Streamable HTTP transport (2024-11-05)](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http):
 
 - **`POST /mcp`** — receives JSON-RPC requests from the client. `initialize` creates
   a session and returns server capabilities. Notifications return 202 code. All other
@@ -411,11 +443,11 @@ The bridge implements the [MCP Streamable HTTP transport (2024-11-05)](https://s
 - **`GET /mcp`** — keeps a long-lived SSE stream open per session for server-to-client
   notifications (e.g. `tools/list_changed`).
 
-All MCP tools are implemented natively in the bridge and operate directly on vault files
+All MCP tools are implemented natively in the server and operate directly on vault files
 via `node:fs/promises`. Each tool resolves its `vault` argument against the configured
 vaults and validates access control (that vault's effective deny list) before executing.
 
-`resources/list` and `prompts/list` return empty results — the bridge does not expose
+`resources/list` and `prompts/list` return empty results — the server does not expose
 vault files as resources or prompts, only as tools.
 
 ---
@@ -478,7 +510,7 @@ Restart Claude Desktop after saving.
   "mcpServers": {
     "obsidian": {
       "command": "node",
-      "args": ["/Users/alice/obsidian-mcp-bridge/mcp-shim/mcp-shim.mjs"],
+      "args": ["/Users/alice/obsidian-mcp-brain/mcp-shim/mcp-shim.mjs"],
       "env": {
         "MCP_URL": "https://obsidian-mcp.example.com/mcp"
       }
@@ -494,7 +526,7 @@ Restart Claude Desktop after saving.
   "mcpServers": {
     "my-api": {
       "command": "node",
-      "args": ["/Users/alice/obsidian-mcp-bridge/mcp-shim/mcp-shim.mjs"],
+      "args": ["/Users/alice/obsidian-mcp-brain/mcp-shim/mcp-shim.mjs"],
       "env": {
         "MCP_URL": "https://api.example.com/mcp",
         "MCP_TOKEN": "sk-..."
@@ -511,7 +543,7 @@ Restart Claude Desktop after saving.
   "mcpServers": {
     "slow-server": {
       "command": "node",
-      "args": ["/Users/alice/obsidian-mcp-bridge/mcp-shim/mcp-shim.mjs"],
+      "args": ["/Users/alice/obsidian-mcp-brain/mcp-shim/mcp-shim.mjs"],
       "env": {
         "MCP_URL": "https://slow.example.com/mcp",
         "MCP_TIMEOUT": "30000"

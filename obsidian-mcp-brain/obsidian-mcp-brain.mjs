@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /**
- * MCP HTTP bridge for one or more Obsidian vaults.
- * Replaces both mcp-proxy and mcp-oauth-proxy, and the obsidian-mcp child process:
+ * MCP server exposing one or more Obsidian vaults to remote MCP clients over HTTP.
  *   - Implements MCP Streamable HTTP transport (2024-11-05 spec)
  *   - Provides the OAuth 2.0 discovery endpoints Claude Code requires
  *   - Reads and writes vault files directly, with no child process dependency
  *
- * Usage: node obsidian-mcp-bridge.mjs
+ * Usage: node obsidian-mcp-brain.mjs
  * Configuration is read from a JSON file — see loadConfig() below for its shape,
  * location, and validation. CONFIG_PATH is the only environment variable read.
  */
@@ -92,7 +91,7 @@ function loadConfig(configPath) {
   }
 
   if (!config.mcpBaseUrl) {
-    logErr(`Config file at ${configPath} must set "mcpBaseUrl" to the public HTTPS base URL of this bridge (e.g. https://hostname:4001)`);
+    logErr(`Config file at ${configPath} must set "mcpBaseUrl" to the public HTTPS base URL of this server (e.g. https://hostname:4001)`);
     process.exit(1);
   }
 
@@ -174,18 +173,18 @@ const toolErr = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0'
 // (including a spurious `---`) into the raw frontmatter block on write.
 const FIELD_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
-// Static initialize response — every tool is bridge-native, so there's no child
+// Static initialize response — every tool is native, so there's no child
 // capabilities negotiation to wait on.
 const SERVER_CAPS = {
   protocolVersion: '2024-11-05',
   capabilities: { tools: {} },
-  serverInfo: { name: 'obsidian-mcp-bridge', version: '1.0.0' },
+  serverInfo: { name: 'obsidian-mcp-brain', version: '1.0.0' },
 };
 
-// ── Bridge-native tools ────────────────────────────────────────────────────
+// ── Native tools ────────────────────────────────────────────────────
 
 
-const BRIDGE_TOOLS = [
+const TOOLS = [
   {
     name: 'list-notes',
     description: 'List all notes in the vault, or scoped to a folder. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
@@ -769,7 +768,7 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {} }]);
   }
 
-  // static responses for methods this bridge doesn't support server-side
+  // static responses for methods this server doesn't support server-side
   if (msg.method === 'resources/list') {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { resources: [] } }]);
   }
@@ -777,7 +776,7 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { prompts: [] } }]);
   }
   if (msg.method === 'tools/list') {
-    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: BRIDGE_TOOLS } }]);
+    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: TOOLS } }]);
   }
 
   // list-vaults is answered directly from the configured vaults map
@@ -802,7 +801,7 @@ async function route(req, res, url, sid) {
     }
   }
 
-  // ── bridge-native tool handlers ──────────────────────────────────────────
+  // ── native tool handlers ──────────────────────────────────────────
   if (msg.method === 'tools/call' && msg.params?.name === 'list-notes') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
@@ -963,7 +962,7 @@ async function route(req, res, url, sid) {
     }
   }
 
-  // ── Phase 2 bridge-native handlers ──────────────────────────────────────
+  // ── Phase 2 native handlers ──────────────────────────────────────
 
   if (msg.method === 'tools/call' && msg.params?.name === 'read-note') {
     const args = msg.params.arguments ?? {};
@@ -1504,5 +1503,5 @@ function handleAuthorize(req, res) {
 // ── start ──────────────────────────────────────────────────────────────────
 
 server.listen(LISTEN_PORT, '127.0.0.1', () => {
-  log(`obsidian-mcp bridge listening on 127.0.0.1:${LISTEN_PORT}`);
+  log(`obsidian-mcp server listening on 127.0.0.1:${LISTEN_PORT}`);
 });
