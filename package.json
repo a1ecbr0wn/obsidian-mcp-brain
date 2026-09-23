@@ -2,7 +2,7 @@
   "name": "obsidian-mcp-workspace",
   "private": true,
   "workspaces": [
-    "obsidian-mcp-bridge",
+    "obsidian-mcp-brain",
     "mcp-shim"
   ],
   "scripts": {

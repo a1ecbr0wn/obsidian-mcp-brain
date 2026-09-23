@@ -1,6 +1,6 @@
 /**
- * Integration tests for bridge-native tool handlers.
- * Spawns the bridge HTTP server with a temp vault.
+ * Integration tests for native tool handlers.
+ * Spawns the server HTTP server with a temp vault.
  * Sends real HTTP POST requests and asserts on SSE responses.
  *
  * DENY_PATHS=private is set so access-control paths can be tested alongside
@@ -17,14 +17,14 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BRIDGE     = path.join(__dirname, '..', 'obsidian-mcp-bridge.mjs');
-const PORT       = 19742;
-const BASE_URL   = `http://127.0.0.1:${PORT}`;
-const DENY_DIR   = 'private'; // vault-relative path that DENY_PATHS blocks
+const SERVER_ENTRY = path.join(__dirname, '..', 'obsidian-mcp-brain.mjs');
+const PORT         = 19742;
+const BASE_URL     = `http://127.0.0.1:${PORT}`;
+const DENY_DIR     = 'private'; // vault-relative path that DENY_PATHS blocks
 
 let vaultDir;
 let vaultName;
-let bridgeProc;
+let serverProc;
 let configPath;
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ async function initSession(port = PORT) {
 }
 
 /**
- * Calls a bridge-native MCP tool with the given arguments.
+ * Calls a native MCP tool with the given arguments.
  * @param {string} name - Tool name to invoke.
  * @param {object} args - Tool arguments (vault name is prepended automatically).
  * @returns {Promise<object>} The MCP result object from the tool call.
@@ -112,10 +112,10 @@ async function callTool(name, args) {
 // ── global setup / teardown ───────────────────────────────────────────────
 
 before(async () => {
-  vaultDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-test-'));
+  vaultDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'server-test-'));
   vaultName = path.basename(vaultDir);
 
-  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-test-config-'));
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-test-config-'));
   configPath = path.join(configDir, 'obsidian-mcp.json');
   await fs.writeFile(configPath, JSON.stringify({
     listenPort: PORT,
@@ -124,7 +124,7 @@ before(async () => {
     vaults: { [vaultName]: { path: vaultDir } },
   }));
 
-  bridgeProc = spawn('node', [BRIDGE], {
+  serverProc = spawn('node', [SERVER_ENTRY], {
     env: {
       ...process.env,
       CONFIG_PATH: configPath,
@@ -138,15 +138,15 @@ before(async () => {
       out += chunk.toString();
       if (out.includes('listening')) resolve();
     };
-    bridgeProc.stdout.on('data', onData);
-    bridgeProc.stderr.on('data', onData);
-    bridgeProc.on('exit', code => reject(new Error(`bridge exited early with code ${code}\n${out}`)));
-    setTimeout(() => reject(new Error(`bridge startup timeout\n${out}`)), 15_000);
+    serverProc.stdout.on('data', onData);
+    serverProc.stderr.on('data', onData);
+    serverProc.on('exit', code => reject(new Error(`server exited early with code ${code}\n${out}`)));
+    setTimeout(() => reject(new Error(`server startup timeout\n${out}`)), 15_000);
   });
 });
 
 after(async () => {
-  bridgeProc.kill();
+  serverProc.kill();
   await fs.rm(vaultDir, { recursive: true, force: true });
   await fs.rm(path.dirname(configPath), { recursive: true, force: true });
 });
@@ -857,7 +857,7 @@ describe('create-binary-file', () => {
 // Full network-fetch coverage (success, redirects, oversize, timeout) lives in
 // test/fetch.test.mjs with mocked node:http/https and dns.lookup, since a real local
 // test server is necessarily loopback — which this tool must legitimately refuse to
-// fetch from. These integration tests instead confirm the real spawned bridge process
+// fetch from. These integration tests instead confirm the real spawned server process
 // enforces that refusal end-to-end against an actual reachable local server (proving
 // the SSRF check runs for real, not just in the mocked unit tests), plus the
 // pre-network validation paths (missing url, denied/colliding destination, bad param
@@ -881,7 +881,7 @@ describe('fetch-binary-file', () => {
     const result = await callTool('fetch-binary-file', { filename: 'ssrf-blocked.png', url: `http://127.0.0.1:${probePort}/image.png` });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('disallowed address'));
-    assert.equal(probeHits, 0, 'the bridge must never actually issue the request');
+    assert.equal(probeHits, 0, 'the server must never actually issue the request');
     await assert.rejects(fs.access(path.join(vaultDir, 'ssrf-blocked.png')));
   });
 
@@ -1661,8 +1661,8 @@ describe('write preconditions (expectedMtime)', () => {
 });
 
 // ── query-graph ───────────────────────────────────────────────────────────
-// The main bridge instance above has no graphify-out/ in its vault, so query-graph
-// should never appear for it. The positive-path tests spawn a dedicated second bridge
+// The main server instance above has no graphify-out/ in its vault, so query-graph
+// should never appear for it. The positive-path tests spawn a dedicated second server
 // instance whose vault does have graphify-out/, with a mock `graphify` binary on PATH.
 
 describe('query-graph (no graph built)', () => {
@@ -1696,7 +1696,7 @@ describe('query-graph (graph built)', () => {
   }
 
   before(async () => {
-    gVaultDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-graphify-test-'));
+    gVaultDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-graphify-test-'));
     gVaultName = path.basename(gVaultDir);
     await fs.mkdir(path.join(gVaultDir, 'graphify-out'), { recursive: true });
     await fs.writeFile(path.join(gVaultDir, 'graphify-out', 'graph.json'), '{}');
@@ -1718,7 +1718,7 @@ describe('query-graph (graph built)', () => {
     ].join('\n'));
     await fs.chmod(mockPath, 0o755);
 
-    gConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-graphify-config-'));
+    gConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-graphify-config-'));
     const gConfigPath = path.join(gConfigDir, 'obsidian-mcp.json');
     await fs.writeFile(gConfigPath, JSON.stringify({
       listenPort: GPORT,
@@ -1727,7 +1727,7 @@ describe('query-graph (graph built)', () => {
       vaults: { [gVaultName]: { path: gVaultDir } },
     }));
 
-    gProc = spawn('node', [BRIDGE], {
+    gProc = spawn('node', [SERVER_ENTRY], {
       env: {
         ...process.env,
         PATH:        `${gMockBinDir}:${process.env.PATH}`,
@@ -1741,8 +1741,8 @@ describe('query-graph (graph built)', () => {
       const onData = chunk => { out += chunk.toString(); if (out.includes('listening')) resolve(); };
       gProc.stdout.on('data', onData);
       gProc.stderr.on('data', onData);
-      gProc.on('exit', code => reject(new Error(`graphify bridge exited early with code ${code}\n${out}`)));
-      setTimeout(() => reject(new Error(`graphify bridge startup timeout\n${out}`)), 15_000);
+      gProc.on('exit', code => reject(new Error(`graphify server exited early with code ${code}\n${out}`)));
+      setTimeout(() => reject(new Error(`graphify server startup timeout\n${out}`)), 15_000);
     });
   });
 
@@ -1797,7 +1797,7 @@ describe('query-graph (graph built)', () => {
 });
 
 // ── multi-vault configuration ────────────────────────────────────────────
-// A dedicated third bridge instance configured with two vaults: "alpha" has no
+// A dedicated third server instance configured with two vaults: "alpha" has no
 // deny paths of its own (inherits only the global list), "beta" adds its own
 // deny path on top of the global one — proving the global+per-vault merge.
 
@@ -1817,8 +1817,8 @@ describe('multi-vault configuration', () => {
   }
 
   before(async () => {
-    mAlphaDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-multivault-alpha-'));
-    mBetaDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-multivault-beta-'));
+    mAlphaDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-multivault-alpha-'));
+    mBetaDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'server-multivault-beta-'));
     await fs.mkdir(path.join(mAlphaDir, 'globally-denied'), { recursive: true });
     await fs.writeFile(path.join(mAlphaDir, 'globally-denied', 'secret.md'), '# Secret');
     await fs.writeFile(path.join(mAlphaDir, 'visible.md'), '# Visible');
@@ -1826,7 +1826,7 @@ describe('multi-vault configuration', () => {
     await fs.writeFile(path.join(mBetaDir, 'beta-only-denied', 'secret.md'), '# Beta secret');
     await fs.writeFile(path.join(mBetaDir, 'visible.md'), '# Visible');
 
-    mConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-multivault-config-'));
+    mConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-multivault-config-'));
     const mConfigPath = path.join(mConfigDir, 'obsidian-mcp.json');
     await fs.writeFile(mConfigPath, JSON.stringify({
       listenPort: MPORT,
@@ -1838,7 +1838,7 @@ describe('multi-vault configuration', () => {
       },
     }));
 
-    mProc = spawn('node', [BRIDGE], {
+    mProc = spawn('node', [SERVER_ENTRY], {
       env: { ...process.env, CONFIG_PATH: mConfigPath },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -1848,8 +1848,8 @@ describe('multi-vault configuration', () => {
       const onData = chunk => { out += chunk.toString(); if (out.includes('listening')) resolve(); };
       mProc.stdout.on('data', onData);
       mProc.stderr.on('data', onData);
-      mProc.on('exit', code => reject(new Error(`multi-vault bridge exited early with code ${code}\n${out}`)));
-      setTimeout(() => reject(new Error(`multi-vault bridge startup timeout\n${out}`)), 15_000);
+      mProc.on('exit', code => reject(new Error(`multi-vault server exited early with code ${code}\n${out}`)));
+      setTimeout(() => reject(new Error(`multi-vault server startup timeout\n${out}`)), 15_000);
     });
   });
 
