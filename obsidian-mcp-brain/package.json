@@ -24,5 +24,13 @@
     "server",
     "oauth"
   ],
-  "license": "MIT"
+  "license": "Apache-2.0",
+  "author": "a1ecbr0wn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a1ecbr0wn/obsidian-mcp-brain.git",
+    "directory": "obsidian-mcp-brain"
+  },
+  "homepage": "https://github.com/a1ecbr0wn/obsidian-mcp-brain#readme",
+  "bugs": "https://github.com/a1ecbr0wn/obsidian-mcp-brain/issues"
 }

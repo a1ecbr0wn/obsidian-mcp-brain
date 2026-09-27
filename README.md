@@ -462,10 +462,35 @@ network-level access control.
 
 ---
 
+## Releasing
+
+`obsidian-mcp-brain` publishes to npm via two tag-triggered GitHub Actions workflows
+(`mcp-shim` is not published separately). To cut a release:
+
+1. Go to the repo's **Actions** tab → **Tag a release** → **Run workflow**.
+2. Leave the `version` input blank to auto-bump based on conventional-commit messages
+   since the last tag (via [git-cliff](https://git-cliff.org)), or type an explicit
+   version (`v1.2.0` or `1.2.0`).
+3. That workflow bumps `obsidian-mcp-brain/package.json`, commits and tags (both
+   GPG-signed), pushes, and triggers the `publish` workflow at the new tag.
+4. `publish` runs the full test suite, publishes to npm with
+   [provenance](https://docs.npmjs.com/generating-provenance-statements), and creates
+   a GitHub Release with a changelog generated from the commits since the last tag.
+
+No manual `npm version` or `npm publish` step is needed — the workflow does both.
+
+**Before the very first real release**: `npm publish --provenance` inside an npm
+workspaces monorepo (`--workspace=obsidian-mcp-brain`) is a known trouble spot —
+provenance attestation has had bugs around resolving the correct workspace root.
+Watch the first `publish` run closely (or try it against a throwaway-scoped package
+name first) rather than assuming it behaves the same as a single-package repo.
+
+---
+
 ## mcp-shim
 
 A lightweight shim that connects Claude Desktop to a remote MCP server over HTTPS
-(Streamable HTTP transport). It bridges Claude Desktop's stdio JSON-RPC protocol
+(Streamable HTTP transport). It relays Claude Desktop's stdio JSON-RPC protocol
 to the remote server's HTTP+SSE interface.
 
 ### Requirements
