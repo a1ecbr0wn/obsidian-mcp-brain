@@ -65,12 +65,13 @@ jobs:
           PKG_VERSION: ${{ env.pkg_version }}
         run: |
           sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" obsidian-mcp-brain/package.json
+          sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" package.json
 
       - name: Add, commit, tag, push
         env:
           TAG: ${{ env.tag }}
         run: |
-          git add obsidian-mcp-brain/package.json
+          git add obsidian-mcp-brain/package.json package.json
           git commit -S -m "Release ${TAG}"
           git push
           git tag "${TAG}" -s -m "Release ${TAG}"
