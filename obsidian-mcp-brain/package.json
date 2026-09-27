@@ -19,10 +19,11 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "obsidian",
-    "claude",
-    "server",
-    "oauth"
+    "obsidian-vault",
+    "obsidian-brain"
   ],
   "license": "Apache-2.0",
   "author": "a1ecbr0wn",

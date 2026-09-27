@@ -1,12 +1,11 @@
-# Obsidian MCP Tools
-
-A couple of tools to enable remote https access to an Obsidian MCP server.
-
-## obsidian-mcp-brain
+# obsidian-mcp-brain
 
 A thin Node.js HTTP server that provides remote MCP access to an Obsidian vault.
 It implements all MCP tools natively and exposes them to remote clients such as
 Claude Code and Claude Desktop via HTTP.
+
+For the full project (including `mcp-shim`, a Claude Desktop relay) and
+development setup, see the [repo README](https://github.com/a1ecbr0wn/obsidian-mcp-brain#readme).
 
 ## Why this server is needed
 
@@ -67,15 +66,12 @@ Obsidian vault (filesystem)
 
 ### Installation
 
-Install dependencies and build the packages:
-
 ```bash
-npm install
+npm install -g obsidian-mcp-brain
 ```
 
-The `obsidian-mcp-brain` package can then be run directly from the workspace, or
-you can copy the built files to wherever you want to run them from. Then set it
-up as a persistent service.
+This puts an `obsidian-mcp-brain` command on your `PATH`. Then set it up as a
+persistent service.
 
 ### systemd (Linux)
 
@@ -91,7 +87,7 @@ Description=Obsidian MCP Server
 After=network.target
 
 [Service]
-ExecStart=node /path/to/obsidian-mcp-brain/obsidian-mcp-brain/obsidian-mcp-brain.mjs
+ExecStart=/usr/bin/env obsidian-mcp-brain
 Restart=on-failure
 RestartSec=5
 
@@ -124,8 +120,7 @@ Create `~/Library/LaunchAgents/com.obsidian-mcp-brain.plist`:
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
-    <string>/path/to/obsidian-mcp-brain/obsidian-mcp-brain/obsidian-mcp-brain.mjs</string>
+    <string>/usr/local/bin/obsidian-mcp-brain</string>
   </array>
 
   <!-- Only needed if your config file isn't at the default
@@ -373,9 +368,10 @@ traffic into HTTP+SSE calls against the server's `/mcp` endpoint. Two options:
 - **[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) via `npx`** (below) —
   the quickest option, no install or local files needed, good for a plain
   no-credentials setup like this server's public OAuth flow.
-- **This repo's own [`mcp-shim`](#mcp-shim)** — a zero-dependency local script,
-  worth using instead if you need a bearer token, a custom request timeout, or
-  want to avoid an `npx` download on every Claude Desktop launch.
+- **[`mcp-shim`](https://github.com/a1ecbr0wn/obsidian-mcp-brain#mcp-shim)** —
+  a zero-dependency local script from this project's repo, worth using instead if
+  you need a bearer token, a custom request timeout, or want to avoid an `npx`
+  download on every Claude Desktop launch.
 
 Edit `claude_desktop_config.json` (find it via **Claude Desktop → Settings →
 Developer → Edit Config**) and add an entry under `mcpServers`, replacing the URL
@@ -431,7 +427,7 @@ Restart Claude Desktop after saving.
 
 ---
 
-## How the obsidian-mcp-brain works
+## How obsidian-mcp-brain works
 
 The server implements the [MCP Streamable HTTP transport (2024-11-05)](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http):
 
@@ -459,143 +455,3 @@ relies on the network layer (Tailscale node authentication in the reference setu
 The config file's `denyPaths` feature provides coarse-grained control over which
 parts of a vault the MCP client can touch, but it is not a substitute for
 network-level access control.
-
----
-
-## Releasing
-
-`obsidian-mcp-brain` publishes to npm via two tag-triggered GitHub Actions workflows
-(`mcp-shim` is not published separately). To cut a release:
-
-1. Go to the repo's **Actions** tab → **Tag a release** → **Run workflow**.
-2. Leave the `version` input blank to auto-bump based on conventional-commit messages
-   since the last tag (via [git-cliff](https://git-cliff.org)), or type an explicit
-   version (`v1.2.0` or `1.2.0`).
-3. That workflow bumps both `package.json` files (root and
-   `obsidian-mcp-brain/package.json`), commits and tags (both GPG-signed), pushes,
-   and triggers the `publish` workflow at the new tag.
-4. `publish` runs the full test suite, publishes to npm with
-   [provenance](https://docs.npmjs.com/generating-provenance-statements), and creates
-   a GitHub Release with a changelog generated from the commits since the last tag.
-
-No manual `npm version` or `npm publish` step is needed — the workflow does both.
-
-**Authentication**: publishing uses [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)
-(OIDC) — GitHub Actions authenticates directly via its own OIDC identity, with no
-`NPM_TOKEN` or other long-lived secret involved. This is configured as a Trusted
-Publisher on the package's npmjs.com settings (org `a1ecbr0wn`, repo
-`obsidian-mcp-brain`, workflow filename `publish.yml`), with the "Allowed actions"
-setting set to permit direct publish (Trusted Publisher configs default to
-stage-only, which would otherwise leave every release pending manual approval on
-npmjs.com).
-
-**Before a package's very first-ever publish**: npm requires a live, interactive
-one-time password for the first publish of any brand-new package name, regardless
-of token type or OIDC — this is an anti-squatting safeguard with no CI workaround.
-The first release of a new package must be published once manually from a local
-machine (`npm publish --workspace=obsidian-mcp-brain --access public`, without
-`--provenance`, which needs GitHub Actions' OIDC context and fails locally). Every
-release after that can go through `tag.yml`/`publish.yml` unattended.
-
----
-
-## mcp-shim
-
-A lightweight shim that connects Claude Desktop to a remote MCP server over HTTPS
-(Streamable HTTP transport). It relays Claude Desktop's stdio JSON-RPC protocol
-to the remote server's HTTP+SSE interface.
-
-### Requirements
-
-Node.js 18 or later (no npm install needed — no dependencies).
-
-### Configuration for Claude Desktop
-
-Edit `claude_desktop_config.json` (find it via **Claude Desktop → Settings →
-Developer → Edit Config**) and add an entry under `mcpServers`:
-
-```json
-{
-  "mcpServers": {
-    "my-server": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-shim.mjs"],
-      "env": {
-        "MCP_URL": "https://my-server.example.com/mcp"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop after saving.
-
-### Environment Variables
-
-| Variable      | Required | Default | Description                                                                                               |
-| ------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------- |
-| `MCP_URL`     | Yes      | -       | Full URL of the remote MCP endpoint. Can also be passed as a positional argument: `node mcp-shim.mjs URL` |
-| `MCP_TOKEN`   | No       | -       | Bearer token added to every request as `Authorization: Bearer TOKEN`                                      |
-| `MCP_TIMEOUT` | No       | `60000` | Request timeout in milliseconds (POST and DELETE only — the SSE stream has no timeout)                    |
-
-### Examples
-
-#### Server with no auth
-
-```json
-{
-  "mcpServers": {
-    "obsidian": {
-      "command": "node",
-      "args": ["/Users/alice/obsidian-mcp-brain/mcp-shim/mcp-shim.mjs"],
-      "env": {
-        "MCP_URL": "https://obsidian-mcp.example.com/mcp"
-      }
-    }
-  }
-}
-```
-
-#### Server with a bearer token
-
-```json
-{
-  "mcpServers": {
-    "my-api": {
-      "command": "node",
-      "args": ["/Users/alice/obsidian-mcp-brain/mcp-shim/mcp-shim.mjs"],
-      "env": {
-        "MCP_URL": "https://api.example.com/mcp",
-        "MCP_TOKEN": "sk-..."
-      }
-    }
-  }
-}
-```
-
-#### Custom timeout
-
-```json
-{
-  "mcpServers": {
-    "slow-server": {
-      "command": "node",
-      "args": ["/Users/alice/obsidian-mcp-brain/mcp-shim/mcp-shim.mjs"],
-      "env": {
-        "MCP_URL": "https://slow.example.com/mcp",
-        "MCP_TIMEOUT": "30000"
-      }
-    }
-  }
-}
-```
-
-### How the mcp-shim works
-
-1. Claude Desktop launches the shim as a subprocess and communicates over stdio.
-2. The shim forwards each JSON-RPC message from Claude Desktop as an HTTPS POST
-   to `MCP_URL`.
-3. On the first response, it opens a persistent SSE GET stream on the same URL to
-   receive server-initiated messages.
-4. The SSE stream reconnects automatically with exponential backoff if it drops.
-5. When Claude Desktop exits, the shim sends an HTTP DELETE to cleanly end the session.
