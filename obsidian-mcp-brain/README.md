@@ -4,9 +4,6 @@ A thin Node.js HTTP server that provides remote MCP access to an Obsidian vault.
 It implements all MCP tools natively and exposes them to remote clients such as
 Claude Code and Claude Desktop via HTTP.
 
-For the full project (including `mcp-shim`, a Claude Desktop relay) and
-development setup, see the [repo README](https://github.com/a1ecbr0wn/obsidian-mcp-brain#readme).
-
 ## Why this server is needed
 
 Remote MCP clients (Claude Code 2.x, Claude Desktop) connect over HTTP, not stdio,
