@@ -1,0 +1,85 @@
+name: Tag a release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tag to apply, in the form "v0.0.0" or leave blank to automatically bump the version'
+        required: false
+
+permissions:
+  contents: write   # push the version-bump commit and tag
+  actions: write    # dispatch publish.yml via the GitHub API
+
+jobs:
+  tag-release:
+    name: Bump obsidian-mcp-brain's version, commit, tag, push, and trigger publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        # taiki-e/install-action publishes a moving tag per supported tool (here,
+        # literally "git-cliff") rather than a version number — the SHA below is
+        # pinned to a snapshot of that tag, not a release version.
+        uses: taiki-e/install-action@cebec40cd0b46ac709baef462a3a8e0c3f02e957 # git-cliff
+
+      - name: Check the version number from input
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          echo "Validating that tag is in the correct format v0.0.1"
+          input_version="${INPUT_VERSION}"
+          if [ -z "${input_version}" ]; then
+              input_version=$(git-cliff --bumped-version)
+          fi
+          # Validate version format with anchored regex to prevent partial matches in downstream shell commands
+          if grep -P '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "${input_version}"; then
+              echo "tag=${input_version}" >> $GITHUB_ENV
+              echo "pkg_version=${input_version:1}" >> $GITHUB_ENV
+          elif grep -P '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "${input_version}"; then
+              echo "tag=v${input_version}" >> $GITHUB_ENV
+              echo "pkg_version=${input_version}" >> $GITHUB_ENV
+          else
+              echo "::error::Version '${input_version}' is not in the form v0.0.0 or 0.0.0"
+              exit 1
+          fi
+
+      - name: Setup GPG
+        run: |
+          echo "${{ secrets.SIGNINGKEY }}" | gpg --import
+
+      - name: Setup git config
+        run: |
+          git config user.name "Tag Bot"
+          git config user.email "github@noser.net"
+          git config commit.gpgsign true
+          git config user.signingkey ${{ secrets.SIGNINGKEYHASH }}
+
+      - name: Bump package.json version
+        env:
+          PKG_VERSION: ${{ env.pkg_version }}
+        run: |
+          sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" obsidian-mcp-brain/package.json
+
+      - name: Add, commit, tag, push
+        env:
+          TAG: ${{ env.tag }}
+        run: |
+          git add obsidian-mcp-brain/package.json
+          git commit -S -m "Release ${TAG}"
+          git push
+          git tag "${TAG}" -s -m "Release ${TAG}"
+          git push origin "${TAG}"
+
+      - name: Dispatch publish workflow
+        uses: benc-uk/workflow-dispatch@d004979be141727c7a17c28f603e2facc40d0855 # v1.2.4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repo: ${{ github.repository }}
+          ref: refs/tags/${{ env.tag }}
+          workflow: publish.yml

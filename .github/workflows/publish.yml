@@ -1,0 +1,48 @@
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create GitHub Release
+  id-token: write   # npm provenance via OIDC
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - run: npm test --workspace=obsidian-mcp-brain
+
+      - run: npm publish --workspace=obsidian-mcp-brain --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
+        id: git-cliff
+        with:
+          config: cliff.toml
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          body_path: CHANGELOG.md
+          tag_name: "${{ github.ref_name }}"
+          name: "Release ${{ github.ref_name }}"
+          token: "${{ secrets.GITHUB_TOKEN }}"
