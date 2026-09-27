@@ -22,13 +22,18 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
+      # npm Trusted Publishing (OIDC) requires npm 11.5.1+; actions/setup-node's
+      # bundled npm on node 22 may be older than this.
+      - run: npm install -g npm@latest
+
       - run: npm ci
 
       - run: npm test --workspace=obsidian-mcp-brain
 
+      # No NODE_AUTH_TOKEN: authentication is via GitHub Actions' OIDC identity
+      # (npm Trusted Publishing), configured on the package's npmjs.com settings,
+      # not a long-lived secret.
       - run: npm publish --workspace=obsidian-mcp-brain --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Generate changelog
         uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
