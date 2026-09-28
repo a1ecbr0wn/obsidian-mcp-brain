@@ -64,8 +64,10 @@ jobs:
         env:
           PKG_VERSION: ${{ env.pkg_version }}
         run: |
-          sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" obsidian-mcp-brain/package.json
-          sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" package.json
+          for f in obsidian-mcp-brain/package.json package.json; do
+            sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" "$f"
+            grep -qF "\"version\": \"${PKG_VERSION}\"" "$f" || { echo "::error::failed to bump version in $f"; exit 1; }
+          done
 
       - name: Add, commit, tag, push
         env:
