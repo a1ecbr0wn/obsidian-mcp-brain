@@ -173,7 +173,7 @@ All configuration lives in one JSON file — no environment variables are read e
 
 - **Location**: `CONFIG_PATH` env var if set, otherwise `~/.config/obsidian-mcp.json`.
 - The server serves one or more named vaults from a single process; a client picks
-  which one a call applies to via the `vault` argument every tool already takes.
+  which one a call applies to via the `vault` argument every tool except `list-vaults` takes.
 
 ### Shape
 
@@ -233,7 +233,7 @@ further without affecting any other vault:
 Here, both vaults block `private`; `work` additionally blocks `confidential` and
 `drafts`, while `knowledge` is unaffected by that extra restriction.
 
-The deny list is enforced in the server before any tool handler executes.
+The deny list is enforced before the tool reads or writes any file.
 Blocked requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
@@ -250,7 +250,9 @@ front, they filter out denied files individually as they walk the vault.
 `list-vaults` doesn't touch vault files at all — it just returns configured
 vault names — so it's the only tool genuinely unaffected by the deny list.
 `query-graph` takes a free-text question rather than a vault path, so it isn't subject
-to the deny list either.
+to the deny list either. **Warning**: if the graphify graph was built over denied folders,
+the tool can reveal their content; build the graph from a vault without denied folders,
+or leave the tool unused.
 
 ### Write preconditions (`expectedMtime`)
 
