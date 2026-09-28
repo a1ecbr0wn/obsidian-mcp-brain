@@ -163,6 +163,43 @@ describe('fetchToBuffer', () => {
     assert.equal(buf.toString(), 'hello');
   });
 
+  // Regression: Node 20+ enables autoSelectFamily by default, so net.connect calls a
+  // custom lookup with { all: true } and requires an array of { address, family } back.
+  // Answering with the single-address form there made every real-hostname fetch fail
+  // with "Invalid IP address: undefined". IP-literal URLs never invoke lookup at all,
+  // which is why the tests above couldn't see it — these use a hostname with dns mocked.
+  describe('pinned lookup contract', () => {
+    let originalLookup;
+    afterEach(() => { if (originalLookup) { dns.lookup = originalLookup; originalLookup = undefined; } });
+
+    async function captureLookup() {
+      originalLookup = dns.lookup;
+      dns.lookup = async () => [{ address: '93.184.216.34', family: 4 }, { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 }];
+      let lookup;
+      mockHttpRequest((_url, options) => { lookup = options.lookup; return { statusCode: 200, chunks: ['x'] }; });
+      await fetchToBuffer('http://example.com/x', { maxBytes: 1000, timeoutMs: 1000 });
+      return lookup;
+    }
+
+    test('answers an { all: true } lookup with the array of validated addresses', async () => {
+      const lookup = await captureLookup();
+      const result = await new Promise((resolve, reject) =>
+        lookup('ignored.example', { all: true }, (err, ...args) => (err ? reject(err) : resolve(args))));
+      assert.equal(result.length, 1, 'all:true must be answered with a single array argument');
+      assert.deepEqual(result[0], [
+        { address: '93.184.216.34', family: 4 },
+        { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+      ]);
+    });
+
+    test('answers a plain lookup with a single address and family', async () => {
+      const lookup = await captureLookup();
+      const result = await new Promise((resolve, reject) =>
+        lookup('ignored.example', {}, (err, ...args) => (err ? reject(err) : resolve(args))));
+      assert.deepEqual(result, ['93.184.216.34', 4]);
+    });
+  });
+
   test('throws with the status code on a non-2xx response', async () => {
     mockHttpRequest(() => ({ statusCode: 404 }));
     await assert.rejects(() => fetchToBuffer('http://8.8.8.8/missing', { maxBytes: 1000, timeoutMs: 1000 }), /404/);

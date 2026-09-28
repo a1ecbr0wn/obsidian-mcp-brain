@@ -96,10 +96,16 @@ export async function validateUrl(url) {
 // resolve and always returns the address(es) validateUrl already vetted — this is
 // what pins the actual socket to the validated IP, closing the DNS-rebinding gap
 // between validation and connection (the hostname could otherwise resolve to a
-// different, private address on a second, independent lookup).
+// different, private address on a second, independent lookup). Node 20+ calls a
+// custom lookup with { all: true } (autoSelectFamily) and requires an array of
+// { address, family } back; the single-address form is only valid without `all`.
 function pinnedLookup(addresses) {
   const first = addresses[0];
-  return (_hostname, _options, callback) => callback(null, first.address, first.family);
+  return (_hostname, options, callback) => (
+    options?.all
+      ? callback(null, addresses)
+      : callback(null, first.address, first.family)
+  );
 }
 
 /**
