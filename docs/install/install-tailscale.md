@@ -5,10 +5,11 @@ title: "Expose it over HTTPS with Tailscale Serve | obsidian-mcp-brain"
 
 ## Expose it over HTTPS with Tailscale Serve
 
-Remote MCP clients need an HTTPS URL. Any HTTPS reverse proxy will do;
-[Tailscale Serve](https://tailscale.com/kb/1312/serve) is what the reference setup
-uses, because it also limits who can reach the server to the devices on your
-tailnet.
+Remote MCP clients need an HTTPS URL, and the server has no authentication of its
+own, so it should only be reachable over a private network, or an overlay network
+such as Tailscale. [Tailscale Serve](https://tailscale.com/kb/1312/serve) does both
+jobs: it provides the HTTPS endpoint and limits who can reach it to the devices on
+your tailnet. A private network plus an HTTPS reverse proxy works too.
 
 Point Tailscale at the server's local port:
 

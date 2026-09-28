@@ -54,8 +54,9 @@ Obsidian vault (filesystem)
 
 - Node.js 18+
 - A way to expose the server over HTTPS to your remote client —
-  [Tailscale Serve](https://tailscale.com/kb/1312/serve) is what I use, but any
-  HTTPS reverse proxy works
+  [Tailscale Serve](https://tailscale.com/kb/1312/serve) is recommended, because it
+  also keeps the server on an overlay network, but any HTTPS reverse proxy on a
+  private network works
 - **Optional:** The `query-graph` tool (which queries a vault using a natural-language
   knowledge graph) requires the `graphify` CLI to be installed and on `PATH`, and
   a knowledge graph to be pre-built for that vault (run `graphify --obsidian`
@@ -460,7 +461,8 @@ vault files as resources or prompts, only as tools.
 ## Security
 
 The OAuth flow is intentionally public — there are no real credentials. Access control
-relies on the network layer (Tailscale node authentication in the reference setup).
+relies on the network layer, so run the server on a private network, or an overlay
+network such as Tailscale, not on the public internet.
 The config file's `denyPaths` feature provides coarse-grained control over which
 parts of a vault the MCP client can touch, but it is not a substitute for
 network-level access control.

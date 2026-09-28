@@ -11,9 +11,10 @@ nav_order: 6
 The OAuth flow is deliberately public: it exists so that Claude Code's discovery
 handshake completes, and there are no real credentials behind it. Anyone who can
 reach the server's address can use every tool it exposes, so access control has to
-come from the network layer. In the reference setup that is
-[Tailscale Serve](install/install-tailscale), which limits the server to devices
-on your tailnet.
+come from the network layer. Do not expose the server to the public internet.
+Run it on a private network, or an overlay network such as
+[Tailscale](install/install-tailscale), so that only devices you trust can reach
+it.
 
 Treat the server as having the same reach as its most permissive vault: whatever
 the process user can read and write in a configured vault, a connected client can
