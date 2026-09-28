@@ -6,42 +6,76 @@
 import dns from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 
 const MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-function ipv4ToInt(ip) {
-  const parts = ip.split('.').map(Number);
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-}
-
-function ipv4InRange(ip, base, bits) {
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  return (ipv4ToInt(ip) & mask) === (ipv4ToInt(base) & mask);
-}
-
-// Loopback, link-local, and the three RFC1918 private ranges.
-const PRIVATE_V4_RANGES = [
-  ['0.0.0.0', 8],
-  ['127.0.0.0', 8],
-  ['169.254.0.0', 16],
-  ['10.0.0.0', 8],
-  ['172.16.0.0', 12],
-  ['192.168.0.0', 16],
+// Addresses a caller-supplied URL must never be allowed to reach. net.BlockList does
+// the range matching, and — unlike a hand-written regex — treats an IPv4-mapped IPv6
+// address (::ffff:a.b.c.d, in dotted or hex notation) as the IPv4 address it wraps.
+// That matters because URL and dns.lookup normalise "::ffff:127.0.0.1" to the hex
+// form "::ffff:7f00:1", so a check that only recognises the dotted form waves
+// loopback and the cloud metadata address (169.254.169.254) straight through.
+const BLOCKED = new net.BlockList();
+const BLOCKED_V4 = [
+  ['0.0.0.0', 8],        // "this network"
+  ['10.0.0.0', 8],       // RFC1918
+  ['100.64.0.0', 10],    // carrier-grade NAT
+  ['127.0.0.0', 8],      // loopback
+  ['169.254.0.0', 16],   // link-local, incl. cloud metadata
+  ['172.16.0.0', 12],    // RFC1918
+  ['192.0.0.0', 24],     // IETF protocol assignments
+  ['192.0.2.0', 24],     // documentation
+  ['192.168.0.0', 16],   // RFC1918
+  ['198.18.0.0', 15],    // benchmarking
+  ['198.51.100.0', 24],  // documentation
+  ['203.0.113.0', 24],   // documentation
+  ['224.0.0.0', 4],      // multicast
+  ['240.0.0.0', 4],      // reserved, incl. 255.255.255.255 broadcast
 ];
+// NAT64 and 6to4 embed or route to an arbitrary IPv4 address, so they are blocked
+// outright rather than unwrapped — no public web server needs to be reached that way.
+const BLOCKED_V6 = [
+  ['::', 96],            // unspecified, loopback, and deprecated IPv4-compatible ::a.b.c.d
+  ['100::', 64],         // discard-only
+  ['2001::', 32],        // Teredo
+  ['2001:db8::', 32],    // documentation
+  ['2002::', 16],        // 6to4
+  ['3fff::', 20],        // documentation
+  ['64:ff9b::', 96],     // NAT64
+  ['64:ff9b:1::', 48],   // local-use NAT64
+  ['fc00::', 7],         // unique-local
+  ['fe80::', 10],        // link-local
+  ['fec0::', 10],        // deprecated site-local
+  ['ff00::', 8],         // multicast
+];
+for (const [net4, bits] of BLOCKED_V4) BLOCKED.addSubnet(net4, bits, 'ipv4');
+for (const [net6, bits] of BLOCKED_V6) BLOCKED.addSubnet(net6, bits, 'ipv6');
 
+/**
+ * Checks if an IPv4 address falls within a blocked (non-public) range.
+ * "Private" means not safe to fetch — includes loopback, link-local, RFC1918,
+ * CGNAT, IETF protocol/benchmarking/documentation, multicast, and reserved ranges.
+ * Fails closed: non-IPv4 input returns true.
+ * @param {string} ip - IPv4 address to check.
+ * @returns {boolean} True if private (blocked), false if public.
+ */
 export function isPrivateIPv4(ip) {
-  return PRIVATE_V4_RANGES.some(([base, bits]) => ipv4InRange(ip, base, bits));
+  return !net.isIPv4(ip) || BLOCKED.check(ip, 'ipv4');
 }
 
+/**
+ * Checks if an IPv6 address falls within a blocked (non-public) range.
+ * "Private" means not safe to fetch — includes loopback, link-local, unique-local,
+ * IPv4-mapped IPv6 (unwraps and checks the embedded IPv4), IPv4-compatible (::a.b.c.d),
+ * discard-only, Teredo, documentation, 6to4, NAT64, site-local, and multicast ranges.
+ * Fails closed: non-IPv6 input returns true.
+ * @param {string} ip - IPv6 address to check (dotted or hex notation; IPv4-mapped unwrapped automatically).
+ * @returns {boolean} True if private (blocked), false if public.
+ */
 export function isPrivateIPv6(ip) {
-  const lower = ip.toLowerCase();
-  if (lower === '::1' || lower === '::') return true; // loopback / unspecified
-  if (/^fe[89ab][0-9a-f]:/.test(lower)) return true; // fe80::/10 link-local
-  if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true; // fc00::/7 unique-local
-  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/); // IPv4-mapped IPv6
-  if (mapped) return isPrivateIPv4(mapped[1]);
-  return false;
+  return !net.isIPv6(ip) || BLOCKED.check(ip, 'ipv6');
 }
 
 /**

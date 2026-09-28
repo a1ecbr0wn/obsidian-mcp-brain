@@ -320,7 +320,10 @@ MCP client. `fetch-binary-file` treats this as its primary risk:
 
 - Only `http`/`https` URLs are accepted.
 - The hostname is resolved and the request is refused if any resolved address is
-  loopback, link-local, unique-local, or in RFC1918 private space.
+  loopback, link-local, RFC1918, CGNAT, IETF protocol/benchmarking/documentation,
+  multicast, reserved (all IPv4); loopback, link-local, site-local, unique-local,
+  Teredo, discard-only, 6to4, NAT64, IPv4-compatible, and multicast (all IPv6);
+  or IPv4-mapped IPv6 (automatically unwrapped to check the embedded IPv4).
 - Every redirect hop is re-validated the same way — not just the initial URL — since
   a public hostname can redirect to a private address.
 - The response body is size-checked while streaming, so an oversized response is

@@ -5,13 +5,14 @@ import http from 'node:http';
 import dns from 'node:dns/promises';
 import { validateUrl, fetchToBuffer, isPrivateIPv4, isPrivateIPv6 } from '../lib/fetch.mjs';
 
-// fetchToBuffer tests mock node:http's request() — no real network access, matching
-// this project's existing tests. dns.lookup on a literal IP resolves offline (no
-// network call), so validateUrl tests use literal IPs (public: 8.8.8.8; private: per
-// range). fetchToBuffer uses http.request directly (not the global fetch) so it can
-// pin the connection to the already-validated address — see lib/fetch.mjs's
-// pinnedLookup comment. One test (hanging DNS lookup) mocks dns.lookup itself to
-// verify that even unresponsive resolvers don't stall past the timeout.
+// Tests cover isPrivateIPv4/isPrivateIPv6 (fail-closed on malformed input, handle
+// IPv4-mapped IPv6 in dotted and hex notation), validateUrl (rejects blocked ranges:
+// loopback, link-local, RFC1918, CGNAT, IETF/benchmarking/documentation, multicast,
+// reserved, IPv6 unique-local/site-local/Teredo/discard/NAT64/6to4/IPv4-compatible,
+// and IPv4-mapped IPv6 wrapping any blocked IPv4), and fetchToBuffer (streams with
+// size limits, follows redirects with re-validation, respects timeouts including
+// hanging DNS). Real network access is never used; dns.lookup on a literal IP
+// resolves offline, and http.request is mocked.
 
 let originalRequest;
 /**
@@ -80,6 +81,41 @@ describe('isPrivateIPv4', () => {
     assert.ok(!isPrivateIPv4('8.8.8.8'));
     assert.ok(!isPrivateIPv4('1.1.1.1'));
   });
+
+  test('flags other non-public ranges: CGNAT, IETF protocol, benchmarking, multicast, reserved, broadcast', () => {
+    assert.ok(isPrivateIPv4('100.64.0.1'));
+    assert.ok(isPrivateIPv4('100.127.255.255'));
+    assert.ok(isPrivateIPv4('192.0.0.1'));
+    assert.ok(isPrivateIPv4('198.18.0.1'));
+    assert.ok(isPrivateIPv4('198.19.255.255'));
+    assert.ok(isPrivateIPv4('224.0.0.1'));
+    assert.ok(isPrivateIPv4('240.0.0.1'));
+    assert.ok(isPrivateIPv4('255.255.255.255'));
+  });
+
+  test('correctly bounds those ranges', () => {
+    assert.ok(!isPrivateIPv4('100.63.255.255'));
+    assert.ok(!isPrivateIPv4('100.128.0.1'));
+    assert.ok(!isPrivateIPv4('198.17.255.255'));
+    assert.ok(!isPrivateIPv4('198.20.0.1'));
+    assert.ok(!isPrivateIPv4('223.255.255.255'));
+  });
+});
+
+describe('fail-closed on input that is not an address of the expected family', () => {
+  test('treats non-IP strings and family mismatches as private rather than public', () => {
+    assert.ok(isPrivateIPv4('garbage'));
+    assert.ok(isPrivateIPv4(''));
+    assert.ok(isPrivateIPv4('::1'));
+    assert.ok(isPrivateIPv6('garbage'));
+    assert.ok(isPrivateIPv6(''));
+    assert.ok(isPrivateIPv6('8.8.8.8'));
+  });
+
+  test('a public address of the right family is still public', () => {
+    assert.ok(!isPrivateIPv4('8.8.8.8'));
+    assert.ok(!isPrivateIPv6('2001:4860:4860::8888'));
+  });
 });
 
 describe('isPrivateIPv6', () => {
@@ -97,6 +133,49 @@ describe('isPrivateIPv6', () => {
 
   test('does not flag a public IPv6 address', () => {
     assert.ok(!isPrivateIPv6('2001:4860:4860::8888'));
+  });
+
+  // Regression: URL and dns.lookup normalise "::ffff:127.0.0.1" to the hex form
+  // "::ffff:7f00:1", which the old dotted-only check never matched — so a URL like
+  // http://[::ffff:a9fe:a9fe]/ (cloud metadata) was treated as public.
+  test('unwraps an IPv4-mapped IPv6 address written in hex, as URL normalisation produces', () => {
+    assert.ok(isPrivateIPv6('::ffff:7f00:1'));      // 127.0.0.1
+    assert.ok(isPrivateIPv6('::ffff:a9fe:a9fe'));   // 169.254.169.254
+    assert.ok(isPrivateIPv6('::ffff:a00:1'));       // 10.0.0.1
+    assert.ok(isPrivateIPv6('::ffff:c0a8:101'));    // 192.168.1.1
+    assert.ok(!isPrivateIPv6('::ffff:808:808'));    // 8.8.8.8
+  });
+
+  test('flags IPv4-compatible (::a.b.c.d), site-local, and other special-purpose IPv6 ranges', () => {
+    assert.ok(isPrivateIPv6('::7f00:1'));            // ::127.0.0.1 after normalisation
+    assert.ok(isPrivateIPv6('::a9fe:a9fe'));         // ::169.254.169.254
+    assert.ok(isPrivateIPv6('fec0::1'));             // site-local
+    assert.ok(isPrivateIPv6('100::1'));              // discard-only
+    assert.ok(isPrivateIPv6('2001::1'));             // Teredo
+    assert.ok(isPrivateIPv6('2001:db8::1'));         // documentation
+    assert.ok(isPrivateIPv6('3fff::1'));             // documentation
+  });
+
+  test('correctly bounds the IPv6 ranges', () => {
+    assert.ok(isPrivateIPv6('febf:ffff::1'));        // last of fe80::/10
+    assert.ok(!isPrivateIPv6('fe7f::1'));            // just below fe80::/10
+    assert.ok(isPrivateIPv6('fdff::1'));             // inside fc00::/7
+    assert.ok(!isPrivateIPv6('fbff::1'));            // just below fc00::/7
+    assert.ok(!isPrivateIPv6('2001:ffff::1'));       // just past Teredo 2001::/32
+    assert.ok(!isPrivateIPv6('2003::1'));            // just past 6to4 2002::/16
+    assert.ok(!isPrivateIPv6('2001:4860:4860::8888'));
+  });
+
+  test('is case-insensitive and treats a mapped public address as public', () => {
+    assert.ok(isPrivateIPv6('::FFFF:7F00:1'));
+    assert.ok(!isPrivateIPv6('::ffff:808:808'));
+  });
+
+  test('flags multicast, NAT64, and 6to4 prefixes, which can embed or route to private IPv4', () => {
+    assert.ok(isPrivateIPv6('ff02::1'));
+    assert.ok(isPrivateIPv6('64:ff9b::7f00:1'));
+    assert.ok(isPrivateIPv6('64:ff9b:1::1'));
+    assert.ok(isPrivateIPv6('2002:7f00:1::'));
   });
 });
 
@@ -135,6 +214,40 @@ describe('validateUrl', () => {
 
   test('rejects an IPv6 link-local literal', async () => {
     await assert.rejects(() => validateUrl('http://[fe80::1]/'), /disallowed address/i);
+  });
+
+  test('rejects IPv4-mapped IPv6 literals wrapping loopback, cloud metadata, and RFC1918, in either notation', async () => {
+    for (const url of [
+      'http://[::ffff:127.0.0.1]/',
+      'http://[::ffff:7f00:1]/',
+      'http://[::ffff:169.254.169.254]/',
+      'http://[::ffff:a9fe:a9fe]/',
+      'http://[::ffff:10.0.0.1]/',
+    ]) {
+      await assert.rejects(() => validateUrl(url), /disallowed address/i, url);
+    }
+  });
+
+  test('rejects IPv4-compatible and site-local IPv6 literals, which URL normalises to hex', async () => {
+    for (const url of ['http://[::127.0.0.1]/', 'http://[::a9fe:a9fe]/', 'http://[fec0::1]/']) {
+      await assert.rejects(() => validateUrl(url), /disallowed address/i, url);
+    }
+  });
+
+  test('still accepts a public address written as an IPv4-mapped IPv6 literal', async () => {
+    const { addresses } = await validateUrl('http://[::ffff:8.8.8.8]/');
+    assert.ok(addresses.length > 0);
+  });
+
+  test('rejects IPv4 documentation ranges', async () => {
+    for (const url of ['http://192.0.2.1/', 'http://198.51.100.1/', 'http://203.0.113.1/']) {
+      await assert.rejects(() => validateUrl(url), /disallowed address/i, url);
+    }
+  });
+
+  test('rejects CGNAT and multicast IPv4 literals', async () => {
+    await assert.rejects(() => validateUrl('http://100.64.0.1/'), /disallowed address/i);
+    await assert.rejects(() => validateUrl('http://224.0.0.1/'), /disallowed address/i);
   });
 
   // Regression: URL.hostname serializes IPv6 literals with brackets (e.g. "[::1]"),
