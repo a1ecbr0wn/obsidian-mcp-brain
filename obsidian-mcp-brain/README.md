@@ -155,6 +155,49 @@ launchctl unload ~/Library/LaunchAgents/com.obsidian-mcp-brain.plist
 launchctl load   ~/Library/LaunchAgents/com.obsidian-mcp-brain.plist
 ```
 
+### Docker
+
+Instead of installing Node.js, you can run the server from the container image
+published to the GitHub Container Registry for `linux/amd64` and `linux/arm64`. It
+is configured with the same JSON file as every other install; only two things
+differ from a native run:
+
+- `listenHost` must be `"0.0.0.0"`, so the port you publish can reach the server
+  inside the container (the default, `127.0.0.1`, is unreachable from outside it).
+- Vault paths in the config are paths *inside* the container, so mount each vault
+  there (below, at `/vaults/knowledge`).
+
+```json
+{
+  "listenHost": "0.0.0.0",
+  "mcpBaseUrl": "https://your-hostname:4001",
+  "vaults": {
+    "knowledge": { "path": "/vaults/knowledge" }
+  }
+}
+```
+
+```bash
+docker run -d --name obsidian-mcp-brain --restart unless-stopped \
+  --user "$(id -u):$(id -g)" \
+  -v /path/to/your/obsidian/vault:/vaults/knowledge \
+  -v /path/to/obsidian-mcp.json:/config/obsidian-mcp.json:ro \
+  -p 127.0.0.1:3002:3002 \
+  ghcr.io/a1ecbr0wn/obsidian-mcp-brain
+```
+
+The port is published on the host's loopback only, so put HTTPS in front of it the
+same way as for a native install (the Tailscale Serve command below works
+unchanged). `--user` makes the container write to your vault as you; without it the
+container runs as an unprivileged user with UID 1000. If you change `listenPort`,
+publish that port instead of `3002`.
+
+The image does not include `graphify`, so `query-graph` returns its "graphify
+command not found" error in a container; use a native install if you need that tool.
+Everything else works. See the
+[Docker install guide](https://brain.a1ecbr0wn.com/install/install-docker) for a
+`docker compose` example and hardening options.
+
 ### Tailscale Serve (HTTPS tunnel)
 
 Point Tailscale at the server's local port:
