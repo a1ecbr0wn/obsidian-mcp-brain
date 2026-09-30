@@ -3,11 +3,16 @@ version: 2
 updates:
   # Keeps the digest-pinned node:22-alpine base image in the Dockerfile current.
   # Each update is a pull request, so the image build and smoke test in test.yml
-  # gate it before it can be merged.
+  # gate it before it can be merged. A Node major is a deliberate move, not a weekly
+  # pull request: it has to change together with the CI Node versions and the docs,
+  # and Dependabot can't tell an LTS line from a Current one.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
 
   # Keeps the SHA-pinned third-party actions in the workflows current.
   - package-ecosystem: github-actions

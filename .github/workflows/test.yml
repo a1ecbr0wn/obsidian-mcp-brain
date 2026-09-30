@@ -1,11 +1,14 @@
 name: test
 
+# Runs on every push, so every commit on a branch is tested, including the branches
+# that pull requests and Dependabot come from. There is deliberately no pull_request
+# trigger: it would only run everything a second time for the same commit. The
+# exception is a pull request from a fork, whose pushes never reach this repository.
 on:
   push:
-  pull_request:
 
-# A newer push to the same branch or pull request supersedes the run in progress, so
-# a quick series of pushes doesn't queue up runs (including the emulated arm64 build).
+# A newer push to the same branch supersedes the run in progress, so a quick series
+# of pushes doesn't queue up runs (including the emulated arm64 build).
 # Runs on main are never cancelled, so every merge gets a complete result.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
