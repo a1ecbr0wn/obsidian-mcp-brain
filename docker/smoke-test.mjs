@@ -90,6 +90,9 @@ try {
   const vault = join(dir, 'vault');
   mkdirSync(vault);
   writeFileSync(join(vault, 'hello.md'), '# hello\n');
+  // A graph file to trigger query-graph to invoke the graphify CLI (not available in container).
+  mkdirSync(join(vault, 'graphify-out'));
+  writeFileSync(join(vault, 'graphify-out', 'graph.json'), '{}');
   const config = join(dir, 'obsidian-mcp.json');
   writeFileSync(config, JSON.stringify({
     listenHost: '0.0.0.0',
@@ -138,8 +141,8 @@ try {
   console.log('ok: vault is readable and writable through the mount');
 
   const graph = await call('query-graph', { question: 'anything' });
-  assert.ok(graph.isError && /graphify/i.test(graph.content[0].text), 'query-graph should report that graphify is unavailable');
-  console.log('ok: query-graph reports graphify is unavailable');
+  assert.ok(graph.isError && /graphify command not found/.test(graph.content[0].text), `query-graph should report that the graphify command is not found, got ${JSON.stringify(graph)}`);
+  console.log('ok: query-graph reports graphify command not found');
 
   docker('stop', NAME);
   const exit = docker('inspect', NAME, '--format', '{{.State.ExitCode}}');

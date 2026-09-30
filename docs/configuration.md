@@ -22,6 +22,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 ```json
 {
   "listenPort": 3002,
+  "listenHost": "127.0.0.1",
   "mcpBaseUrl": "https://your-hostname:4001",
   "denyPaths": ["private"],
   "graphifyQueryTimeoutMs": 60000,
@@ -44,6 +45,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 | `mcpBaseUrl`             | Yes      | none       | Public HTTPS base URL of the server, used in OAuth responses and SSE endpoint events    |
 | `vaults`                 | Yes      | none       | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
+| `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a [container](install/install-docker), where `0.0.0.0` is needed for the published port to reach it |
 | `denyPaths`              | No       | `[]`       | Vault-relative paths to block, applied to every vault                                   |
 | `graphifyQueryTimeoutMs` | No       | `60000`    | Timeout for a `graphify query` subprocess, in milliseconds                              |
 | `fetchMaxBytes`          | No       | `10485760` | Default maximum response size for `fetch-binary-file`, in bytes; overridable per call   |

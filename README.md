@@ -200,9 +200,9 @@ unchanged). `--user` makes the container write to your vault as you; without it 
 container runs as an unprivileged user with UID 1000. If you change `listenPort`,
 publish that port instead of `3002`.
 
-The image does not include `graphify`, so `query-graph` returns its "graphify
-command not found" error in a container; use a native install if you need that tool.
-Everything else works. See the
+The image does not include `graphify`, so `query-graph` always returns an error in a
+container ("graphify command not found on PATH" once the vault has a graph); use a
+native install if you need that tool. Everything else works. See the
 [Docker install guide](https://brain.a1ecbr0wn.com/install/install-docker) for a
 `docker compose` example and hardening options.
 
