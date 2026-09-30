@@ -1912,3 +1912,91 @@ describe('multi-vault configuration', () => {
     assert.ok(result.content[0].text.includes('Unknown vault'));
   });
 });
+
+// ── listenHost ──────────────────────────────────────────────────────────────
+
+describe('listenHost configuration', () => {
+  const HPORT = 19746;
+  let hVaultDir;
+  let hConfigDir;
+
+  before(async () => {
+    hVaultDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-host-vault-'));
+    hConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-host-config-'));
+  });
+
+  after(async () => {
+    await fs.rm(hVaultDir, { recursive: true, force: true });
+    await fs.rm(hConfigDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Starts a server with the given extra config and resolves once it has either
+   * announced it is listening or exited.
+   * @param {object} extra - Config fields merged over the required ones.
+   * @returns {Promise<{ proc: import('node:child_process').ChildProcess, out: string, code: number|null }>}
+   */
+  async function startWith(extra) {
+    const cfgPath = path.join(hConfigDir, `cfg-${Math.random().toString(36).slice(2)}.json`);
+    await fs.writeFile(cfgPath, JSON.stringify({
+      listenPort: HPORT,
+      mcpBaseUrl: `http://127.0.0.1:${HPORT}`,
+      vaults: { host: { path: hVaultDir } },
+      ...extra,
+    }));
+    const proc = spawn('node', [SERVER_ENTRY], {
+      env: { ...process.env, CONFIG_PATH: cfgPath },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return new Promise((resolve, reject) => {
+      let out = '';
+      const timer = setTimeout(() => { proc.kill(); reject(new Error(`startup timeout\n${out}`)); }, 15_000);
+      const onData = chunk => {
+        out += chunk.toString();
+        if (out.includes('listening')) { clearTimeout(timer); resolve({ proc, out, code: null }); }
+      };
+      proc.stdout.on('data', onData);
+      proc.stderr.on('data', onData);
+      // 'close' (not 'exit') so stdout/stderr are fully drained before we inspect `out`.
+      proc.on('close', code => { clearTimeout(timer); resolve({ proc, out, code }); });
+    });
+  }
+
+  /**
+   * Kills a server process and waits for it to exit so the port is free for the next test.
+   * No-op if the process has already exited.
+   * @param {import('node:child_process').ChildProcess} proc - The process to stop.
+   * @returns {Promise<void>}
+   */
+  function stop(proc) {
+    if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
+    return new Promise(resolve => { proc.once('exit', resolve); proc.kill(); });
+  }
+
+  it('listens on 127.0.0.1 when listenHost is not set', async () => {
+    const { proc, out } = await startWith({});
+    try {
+      assert.ok(out.includes(`listening on 127.0.0.1:${HPORT}`), out);
+    } finally {
+      await stop(proc);
+    }
+  });
+
+  it('listens on the configured listenHost', async () => {
+    const { proc, out } = await startWith({ listenHost: '0.0.0.0' });
+    try {
+      assert.ok(out.includes(`listening on 0.0.0.0:${HPORT}`), out);
+    } finally {
+      await stop(proc);
+    }
+  });
+
+  for (const bad of [123, '', '   ', null, ['0.0.0.0']]) {
+    it(`rejects listenHost ${JSON.stringify(bad)} with a clear error`, async () => {
+      const { proc, out, code } = await startWith({ listenHost: bad });
+      await stop(proc);
+      assert.equal(code, 1, out);
+      assert.ok(out.includes('"listenHost" must be a non-empty string'), out);
+    });
+  }
+});

@@ -2,8 +2,14 @@ name: test
 
 on:
   push:
-    branches: [main]
   pull_request:
+
+# A newer push to the same branch or pull request supersedes the run in progress, so
+# a quick series of pushes doesn't queue up runs (including the emulated arm64 build).
+# Runs on main are never cancelled, so every merge gets a complete result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -18,3 +24,32 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm ci
       - run: npm test --workspaces --if-present
+
+  # Proves the Dockerfile builds and that a container started from the image works,
+  # without publishing anything. This also gates Dependabot's base-image updates.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: docker build --build-arg REVISION="${GITHUB_SHA}" -t obsidian-mcp-brain:ci .
+      - run: node docker/smoke-test.mjs obsidian-mcp-brain:ci
+
+  # Builds the release platforms (nothing is pushed or run), so a problem specific to
+  # arm64, such as a package that fails to install under emulation, shows up in CI
+  # instead of in the release job after the npm publish.
+  image-multiarch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false

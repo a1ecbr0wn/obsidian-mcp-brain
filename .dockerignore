@@ -1,0 +1,6 @@
+# Allowlist: only what the image copies goes into the build context.
+*
+!obsidian-mcp-brain/package.json
+!obsidian-mcp-brain/obsidian-mcp-brain.mjs
+!obsidian-mcp-brain/lib
+!docker/healthcheck.mjs

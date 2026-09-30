@@ -1,0 +1,16 @@
+version: 2
+
+updates:
+  # Keeps the digest-pinned node:22-alpine base image in the Dockerfile current.
+  # Each update is a pull request, so the image build and smoke test in test.yml
+  # gate it before it can be merged.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Keeps the SHA-pinned third-party actions in the workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
