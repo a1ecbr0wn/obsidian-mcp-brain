@@ -11,11 +11,11 @@ The server needs Node.js 18 or later, or a container runtime if you'd rather use
 the Docker image. Either way, write a [config file](../configuration), then run it
 as a service and put HTTPS in front of it.
 
-- [Install from npm](install-npm)
-- [Run it in Docker](install-docker)
-- Linux - [Run as a systemd service](install-systemd)
-- macOS - [Run as a launchd agent](install-launchd)
-- [Expose it over HTTPS with Tailscale Serve](install-tailscale)
+- [Install from npm](install/install-npm)
+- [Run it in Docker](install/install-docker)
+- Linux - [Run as a systemd service](install/install-systemd)
+- macOS - [Run as a launchd agent](install/install-launchd)
+- [Expose it over HTTPS with Tailscale Serve](install/install-tailscale)
 
 ### Optional: `query-graph`
 
