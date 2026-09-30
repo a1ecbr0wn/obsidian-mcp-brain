@@ -2,8 +2,14 @@ name: test
 
 on:
   push:
-    branches: [main]
   pull_request:
+
+# A newer push to the same branch or pull request supersedes the run in progress, so
+# a quick series of pushes doesn't queue up runs (including the emulated arm64 build).
+# Runs on main are never cancelled, so every merge gets a complete result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -33,8 +39,8 @@ jobs:
       - run: node docker/smoke-test.mjs obsidian-mcp-brain:ci
 
   # Builds the release platforms (nothing is pushed or run), so a problem specific to
-  # arm64, such as a package that fails to install under emulation, shows up on the
-  # pull request instead of in the release job after the npm publish.
+  # arm64, such as a package that fails to install under emulation, shows up in CI
+  # instead of in the release job after the npm publish.
   image-multiarch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
