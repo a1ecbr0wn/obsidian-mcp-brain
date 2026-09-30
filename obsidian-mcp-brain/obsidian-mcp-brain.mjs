@@ -49,6 +49,7 @@ const logErr = (...a) => console.error(ts(), ...a);
 // Shape:
 //   {
 //     "listenPort": 3002,
+//     "listenHost": "127.0.0.1",
 //     "mcpBaseUrl": "https://host:4001",
 //     "denyPaths": ["private"],
 //     "graphifyQueryTimeoutMs": 60000,
@@ -73,6 +74,16 @@ function normDenyPaths(list, configPath, fieldLabel) {
     .filter(Boolean);
 }
 
+/**
+ * Loads and validates the configuration file from the given path.
+ * Config fields: listenPort (default 3002), listenHost (default "127.0.0.1"),
+ * mcpBaseUrl (required), denyPaths (default []), graphifyQueryTimeoutMs (default 60000),
+ * fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000), and vaults (required).
+ * listenHost must be a non-empty string (e.g. "127.0.0.1", "0.0.0.0", or "::1").
+ * Exits the process on validation failure.
+ * @param {string} configPath - Path to the configuration JSON file.
+ * @returns {object} Configuration object with validated and parsed fields.
+ */
 function loadConfig(configPath) {
   let raw;
   try {
@@ -98,6 +109,12 @@ function loadConfig(configPath) {
   const listenPort = parseInt(config.listenPort ?? 3002, 10);
   if (Number.isNaN(listenPort) || listenPort < 1 || listenPort > 65535) {
     logErr(`Config file at ${configPath}: "listenPort" must be a valid port number (1-65535)`);
+    process.exit(1);
+  }
+
+  const listenHost = config.listenHost === undefined ? '127.0.0.1' : config.listenHost;
+  if (typeof listenHost !== 'string' || !listenHost.trim()) {
+    logErr(`Config file at ${configPath}: "listenHost" must be a non-empty string (e.g. "127.0.0.1" or "0.0.0.0")`);
     process.exit(1);
   }
 
@@ -141,6 +158,7 @@ function loadConfig(configPath) {
 
   return {
     listenPort,
+    listenHost: listenHost.trim(),
     baseUrl: config.mcpBaseUrl,
     graphifyQueryTimeoutMs,
     fetchMaxBytes,
@@ -151,6 +169,7 @@ function loadConfig(configPath) {
 
 const {
   listenPort: LISTEN_PORT,
+  listenHost: LISTEN_HOST,
   baseUrl: BASE_URL,
   graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS,
   fetchMaxBytes: FETCH_MAX_BYTES,
@@ -1502,6 +1521,6 @@ function handleAuthorize(req, res) {
 
 // ── start ──────────────────────────────────────────────────────────────────
 
-server.listen(LISTEN_PORT, '127.0.0.1', () => {
-  log(`obsidian-mcp server listening on 127.0.0.1:${LISTEN_PORT}`);
+server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+  log(`obsidian-mcp server listening on ${LISTEN_HOST}:${LISTEN_PORT}`);
 });
