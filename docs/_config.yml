@@ -10,7 +10,7 @@ plugins:
 
 google_analytics: G-K1B7GJ3M5N
 
-footer_content: '<a href="https://a1ecbr0wn.com"><img alt="a1ecbr0wn" src="https://img.shields.io/badge/a1ecbr0wn-home-brightgreen"></a> <img alt="License" src="https://img.shields.io/npm/l/obsidian-mcp-brain"> <a href="https://www.npmjs.com/package/obsidian-mcp-brain"><img alt="npm version" src="https://img.shields.io/npm/v/obsidian-mcp-brain"></a>'
+footer_content: '<a href="https://a1ecbr0wn.com"><img alt="a1ecbr0wn" src="https://img.shields.io/badge/a1ecbr0wn-home-brightgreen"></a> <img alt="License" src="https://img.shields.io/npm/l/obsidian-mcp-brain"> <a href="https://www.npmjs.com/package/obsidian-mcp-brain"><img alt="npm version" src="https://img.shields.io/npm/v/obsidian-mcp-brain"></a> <a href="https://www.npmjs.com/package/obsidian-mcp-brain"><img alt="NPM Downloads" src="https://img.shields.io/npm/dw/obsidian-mcp-brain"></a>'
 aux_links:
   '<i class="fa-brands fa-2x fa-github"></i>':
     - "https://github.com/a1ecbr0wn/obsidian-mcp-brain"
