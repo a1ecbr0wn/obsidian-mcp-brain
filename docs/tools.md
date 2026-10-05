@@ -24,6 +24,7 @@ vault the call applies to. Use `list-vaults` to see the names.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (for example an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client sends only a URL |
+| `read-binary-file` | Return an existing binary file, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
 | `find-backlinks` | Find all notes that link to or embed a given note or binary file |
@@ -103,3 +104,39 @@ to the config file's `fetchMaxBytes` and `fetchTimeoutMs`. The `filename` must n
 end in `.md`; use `create-note` for notes. It fails if the destination already
 exists. Because the server makes the request itself, the URL is checked carefully
 first. See [Security](security#fetch-binary-file).
+
+### `read-binary-file`
+
+The other binary tools can create, move and delete a file but not hand its contents
+to the agent. `read-binary-file` does that: it returns the file as two content
+blocks, a short text line (`attachments/report.pdf (48213 bytes, application/pdf)`)
+followed by an MCP embedded `resource` carrying the file's bytes as base64, its
+`mimeType`, and a `file:///` URI built from the vault-relative path.
+
+```text
+read-binary-file -> { filename: "report.pdf", folder: "attachments" }
+```
+
+The parameters are `filename` and `folder` (optional). The `filename` must not end
+in `.md`; use `read-note` for notes. The file's size is checked before it is read,
+and a file larger than the config file's [`readMaxBytes`](configuration#shape)
+(10 MiB by default) is refused without being loaded. There is no per-call override.
+
+The server does not interpret the file. It never parses a PDF, extracts text,
+renders pages or runs OCR, so it needs no extra software. The client does that work,
+which is why one tool covers a PDF with a real text layer and a scanned PDF whose
+text is only in page images: a client that can read a PDF handles both. The `mimeType`
+comes from the file extension (`pdf`, `png`, `jpg`/`jpeg`, `gif`, `webp` and `svg`
+are recognised), and anything else is `application/octet-stream`.
+
+The path must pass the [`denyPaths`](configuration#path-deny-list) check, and it
+must not be covered by [`denyBinaryPaths`](configuration#binary-read-protection-denybinarypaths),
+which refuses with `Reading is restricted for '<path>'` while leaving the file
+visible to the other tools. To stop a protected file being read from somewhere else,
+`move-binary-file` (and `move-note`, for a file that isn't a `.md` file) refuses to
+move it to a path that is not protected. Moving it within the protected area, or
+moving an unprotected file in, is allowed. Symbolic links are resolved before the
+checks, and only regular files are returned.
+
+How the file reaches the model depends on the client; see
+[Reading PDFs and other binary files](connect#reading-pdfs-and-other-binary-files).

@@ -29,6 +29,21 @@ it has one exception: `query-graph` answers from a graphify knowledge graph with
 consulting the deny list, so a graph built over denied folders can reveal their
 content. Build the graph from a vault without that content, or don't use the tool.
 
+[`denyBinaryPaths`](configuration#binary-read-protection-denybinarypaths) is a
+narrower, read-only guard for binary files. It stops `read-binary-file` returning a
+protected file's bytes, and stops `move-binary-file` (and `move-note`, for a
+non-markdown file) moving a protected file out of protection, so the agent can't
+relocate a file to read it. `.trash` is protected along with it, and `read-note`
+refuses a protected non-markdown file. It doesn't affect markdown notes.
+
+Symbolic links are handled differently by different tools. `read-binary-file`
+resolves a link and checks the real location: it refuses a link that points outside
+the vault, and applies `denyPaths` and `denyBinaryPaths` to the target. The other
+tools, including `read-note`, judge a path as the client gives it and read through a
+link. If the process user can read the target, a connected client can read it with
+`read-note` by way of a symlink in the vault, whatever the deny lists say. Don't put
+symlinks to sensitive files inside a served vault.
+
 Other protections that apply to every request:
 
 - `redirect_uri` in the OAuth flow is restricted to loopback addresses, to prevent
@@ -69,6 +84,18 @@ main risk, the tool:
   follows redirects can take up to about six times `timeoutMs` in total;
 - checks the destination path against the deny list and for collisions before
   making any network request, so a denied or occupied path never causes one.
+
+### `read-binary-file`
+
+This tool is read-only and makes no network request or subprocess call. It checks
+the path against `denyPaths` and `denyBinaryPaths` before any filesystem access, and
+checks the file's size against `readMaxBytes` using `stat` before reading it, so an
+oversized or protected file is never loaded into memory. Symbolic links are resolved
+first, and only regular files are returned. The `denyBinaryPaths` matcher runs in
+time bounded by the pattern and path lengths, so a client can't slow the server with
+a crafted path. The size limit matters
+because the whole file is base64-encoded into one response, which is a third larger
+than the file itself.
 
 ### Reporting a problem
 
