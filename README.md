@@ -235,16 +235,19 @@ All configuration lives in one JSON file — no environment variables are read e
   "listenHost": "127.0.0.1",
   "mcpBaseUrl": "https://your-hostname:4001",
   "denyPaths": ["private"],
+  "denyBinaryPaths": ["**/*.pdf"],
   "graphifyQueryTimeoutMs": 60000,
   "fetchMaxBytes": 10485760,
   "fetchTimeoutMs": 30000,
+  "readMaxBytes": 10485760,
   "vaults": {
     "knowledge": {
       "path": "/path/to/your/obsidian/vault"
     },
     "work": {
       "path": "/path/to/another/vault",
-      "denyPaths": ["confidential"]
+      "denyPaths": ["confidential"],
+      "denyBinaryPaths": ["scans"]
     }
   }
 }
@@ -257,11 +260,13 @@ All configuration lives in one JSON file — no environment variables are read e
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a container, where `0.0.0.0` is needed for the published port to reach it |
 | `denyPaths`              | No       | `[]`       | Vault-relative paths to block, applied to every vault. See below                        |
+| `denyBinaryPaths`        | No       | `[]`       | Vault-relative files/folders, with wildcards, whose binary files `read-binary-file` refuses to return. See below |
 | `graphifyQueryTimeoutMs` | No       | `60000`    | Timeout for a `graphify query` subprocess (milliseconds)                                |
 | `fetchMaxBytes`          | No       | `10485760` | Default max response size for `fetch-binary-file` (bytes); overridable per call         |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file` (milliseconds); overridable per call    |
+| `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return (bytes, measured on disk)                   |
 
-Each vault entry can also set its own `denyPaths`, which are added on top of the
+Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which are added on top of the
 global list for that vault only (see below).
 
 ### Path deny list (`denyPaths`)
@@ -292,7 +297,7 @@ Blocked requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
 Affected tools: `read-note`, `create-note`, `edit-note`, `delete-note`, `move-note`
-(source and destination), `create-binary-file`, `fetch-binary-file`, `delete-binary-file`,
+(source and destination), `create-binary-file`, `fetch-binary-file`, `read-binary-file`, `delete-binary-file`,
 `move-binary-file` (source and destination), `find-backlinks`, `resolve-wikilink`,
 `add-tags`, `remove-tags`, `set-frontmatter-field`, `remove-frontmatter-field`,
 `create-folder`, `search-vault` (when a `path` scope is given).
@@ -394,6 +399,52 @@ config file's `fetchMaxBytes`/`fetchTimeoutMs`.
 
 ---
 
+### read-binary-file
+
+`read-binary-file` returns an existing binary file (a PDF, say) to the client as two
+content blocks: a text line (`attachments/report.pdf (48213 bytes, application/pdf)`)
+and an MCP embedded `resource` carrying the base64 bytes and the file's `mimeType`.
+
+```
+read-binary-file → { filename: "report.pdf", folder: "attachments" }
+```
+
+The server never parses a PDF, extracts text, renders pages or runs OCR, so it needs
+no extra software; the client does the reading, which is why one tool covers a PDF
+with a real text layer and a scanned PDF whose text is only in images. In Claude Code
+the bytes are saved to a file and the agent opens that path with its `Read` tool
+(checked end to end for both kinds of PDF); other clients have not been checked.
+The `filename` must not end in `.md`; use `read-note` for notes. A file larger than
+`readMaxBytes` (10 MiB by default) is refused before it is read.
+
+### Binary read protection (`denyBinaryPaths`)
+
+`denyPaths` removes a path from every tool; `denyBinaryPaths` only stops the agent
+reading a binary file's *contents* with `read-binary-file`. The files stay visible:
+the agent can still create, move and delete them, and `find-backlinks` still sees
+them. Each entry is a vault-relative path with optional wildcards:
+
+- `*` matches any run of characters within one path segment, `?` matches one
+  character within a segment, and `**` as a whole segment matches any number of
+  segments, including none. Everything else is literal; matching is case-sensitive.
+- An entry protects a path it matches and everything under a folder it matches.
+  `scans` protects `scans/a.pdf` and `scans/2026/b.pdf` but not `scans-old/a.pdf`;
+  `**/*.pdf` protects every PDF in the vault; `*/scans` protects `a/scans/x.pdf`.
+
+As with `denyPaths`, the top-level list applies to every vault and a vault's own list
+is added on top. A refused read returns `Reading is restricted for '<path>'`.
+`move-binary-file` (and `move-note`, for a non-`.md` file) refuses to move a protected
+file to a path that is not protected (judged by the destination's final path, so
+renaming `scan.pdf` to `scan.txt` under `**/*.pdf` is refused too); moving within the
+protected area, or moving an unprotected file in, is allowed.
+
+To keep the protection from being sidestepped, `.trash` is protected automatically
+whenever any `denyBinaryPaths` are set (a non-permanent delete moves a file there),
+`read-note` refuses a protected non-`.md` file, and `read-binary-file` resolves
+symbolic links and checks the real location, refusing a link that points outside the
+vault. The other tools judge a path as given and don't resolve symlinks, so don't put
+symlinks to sensitive files in a served vault.
+
 ## Connecting Claude Code
 
 Add the server to your Claude Code config (`~/.claude.json` or via `claude mcp add`):
@@ -467,6 +518,7 @@ Restart Claude Desktop after saving.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
+| `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
 | `find-backlinks` | Find all notes that link to or embed a given note or binary file |

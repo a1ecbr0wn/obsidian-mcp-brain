@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normPath, isDenied, checkAccess } from '../lib/access.mjs';
+import { normPath, isDenied, checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove } from '../lib/access.mjs';
 
 const DENY = ['people', 'private/journal'];
 
@@ -283,5 +283,183 @@ describe('checkAccess', () => {
     it('allows vault-wide search with no path', () => {
       assert.equal(checkAccess(DENY, 'search-vault', { query: 'foo' }), null);
     });
+  });
+});
+
+// ── denyBinaryPaths ─────────────────────────────────────────────────────────
+
+const protectedBy = (patterns, p) => isBinaryReadDenied(compileBinaryPatterns(patterns), p);
+
+describe('isBinaryReadDenied', () => {
+  it('protects nothing when the list is empty', () => {
+    assert.equal(protectedBy([], 'scans/a.pdf'), false);
+  });
+
+  it('never protects the empty path', () => {
+    assert.equal(protectedBy(['**'], ''), false);
+  });
+
+  it('matches an exact file path', () => {
+    assert.equal(protectedBy(['scans/a.pdf'], 'scans/a.pdf'), true);
+    assert.equal(protectedBy(['scans/a.pdf'], 'scans/b.pdf'), false);
+  });
+
+  it('matches everything under a folder, but not a sibling that shares the prefix', () => {
+    assert.equal(protectedBy(['scans'], 'scans/a.pdf'), true);
+    assert.equal(protectedBy(['scans'], 'scans/2026/deep/a.pdf'), true);
+    assert.equal(protectedBy(['scans'], 'scans-old/a.pdf'), false);
+    assert.equal(protectedBy(['scans'], 'other/scans.pdf'), false);
+  });
+
+  it('* matches within one segment only', () => {
+    assert.equal(protectedBy(['scans/*.pdf'], 'scans/a.pdf'), true);
+    assert.equal(protectedBy(['scans/*.pdf'], 'scans/sub/a.pdf'), false);
+    assert.equal(protectedBy(['scans/*.pdf'], 'scans/a.png'), false);
+  });
+
+  it('* can match zero characters and a mid-name run', () => {
+    assert.equal(protectedBy(['a*b.pdf'], 'ab.pdf'), true);
+    assert.equal(protectedBy(['a*b.pdf'], 'aXYZb.pdf'), true);
+    assert.equal(protectedBy(['a*b.pdf'], 'aXYZc.pdf'), false);
+  });
+
+  it('? matches exactly one character within a segment', () => {
+    assert.equal(protectedBy(['scan?.pdf'], 'scan1.pdf'), true);
+    assert.equal(protectedBy(['scan?.pdf'], 'scan.pdf'), false);
+    assert.equal(protectedBy(['scan?.pdf'], 'scan12.pdf'), false);
+    assert.equal(protectedBy(['a?b'], 'a/b'), false);
+  });
+
+  it('* as a mid-path segment matches exactly one folder level', () => {
+    assert.equal(protectedBy(['*/scans'], 'a/scans/x.pdf'), true);
+    assert.equal(protectedBy(['*/scans'], 'scans/x.pdf'), false);
+    assert.equal(protectedBy(['*/scans'], 'a/b/scans/x.pdf'), false);
+  });
+
+  it('** matches any number of whole segments, including none', () => {
+    assert.equal(protectedBy(['**/*.pdf'], 'a.pdf'), true);
+    assert.equal(protectedBy(['**/*.pdf'], 'a/b/c/a.pdf'), true);
+    assert.equal(protectedBy(['**/*.pdf'], 'a/b/c/a.png'), false);
+    assert.equal(protectedBy(['a/**/z.pdf'], 'a/z.pdf'), true);
+    assert.equal(protectedBy(['a/**/z.pdf'], 'a/b/c/z.pdf'), true);
+    assert.equal(protectedBy(['a/**/z.pdf'], 'b/a/z.pdf'), false);
+  });
+
+  it('a trailing ** protects everything beneath the folder', () => {
+    assert.equal(protectedBy(['private/**'], 'private/a.pdf'), true);
+    assert.equal(protectedBy(['private/**'], 'private/x/y/a.pdf'), true);
+    assert.equal(protectedBy(['private/**'], 'public/a.pdf'), false);
+  });
+
+  it('a lone ** protects everything', () => {
+    assert.equal(protectedBy(['**'], 'any/where/a.pdf'), true);
+  });
+
+  it('** inside a segment behaves like a single *', () => {
+    assert.equal(protectedBy(['a**b.pdf'], 'aXb.pdf'), true);
+    assert.equal(protectedBy(['a**b.pdf'], 'a/x/b.pdf'), false);
+  });
+
+  it('wildcards match dotfiles and dot folders', () => {
+    assert.equal(protectedBy(['*.pdf'], '.hidden.pdf'), true);
+    assert.equal(protectedBy(['**/*.pdf'], '.obsidian/x.pdf'), true);
+  });
+
+  it('is case-sensitive', () => {
+    assert.equal(protectedBy(['scans/*.pdf'], 'scans/A.PDF'), false);
+    assert.equal(protectedBy(['Scans'], 'scans/a.pdf'), false);
+  });
+
+  it('treats regular-expression characters in a pattern literally', () => {
+    assert.equal(protectedBy(['a.b(1)+[x]$^|{y}.pdf'], 'a.b(1)+[x]$^|{y}.pdf'), true);
+    assert.equal(protectedBy(['a.pdf'], 'aXpdf'), false);
+    assert.equal(protectedBy(['(a|b).pdf'], 'a.pdf'), false);
+    assert.equal(protectedBy(['a\\b.pdf'], 'aXb.pdf'), false);
+  });
+
+  it('normalises the candidate path (.. , ./ and duplicate slashes)', () => {
+    assert.equal(protectedBy(['scans'], 'other/../scans//a.pdf'), true);
+    assert.equal(protectedBy(['scans'], './scans/a.pdf'), true);
+    assert.equal(protectedBy(['scans'], '/scans/a.pdf'), true);
+  });
+
+  it('normalises the pattern (leading/trailing slashes)', () => {
+    assert.equal(protectedBy(['/scans/'], 'scans/a.pdf'), true);
+  });
+
+  it('protects a path if any pattern matches', () => {
+    assert.equal(protectedBy(['one', '**/*.pdf'], 'one/x.png'), true);
+    assert.equal(protectedBy(['one', '**/*.pdf'], 'two/x.pdf'), true);
+    assert.equal(protectedBy(['one', '**/*.pdf'], 'two/x.png'), false);
+  });
+
+  it('ignores patterns that normalise to nothing', () => {
+    assert.equal(protectedBy(['', '/', '.'], 'a.pdf'), false);
+  });
+
+  it('a trailing ** also covers the folder path itself', () => {
+    assert.equal(protectedBy(['private/**'], 'private'), true);
+  });
+
+  describe('worst-case input stays fast (no backtracking blow-up)', () => {
+    const timed = (fn) => { const t = Date.now(); const r = fn(); return { r, ms: Date.now() - t }; };
+
+    it('stacked ** against a very deep path', () => {
+      const deep = Array(5000).fill('a').join('/');
+      const { r, ms } = timed(() => protectedBy(['**/**/**/**/**/x.pdf'], deep));
+      assert.equal(r, false);
+      assert.ok(ms < 1000, `took ${ms} ms`);
+    });
+
+    it('stacked ** that does match, against a very deep path', () => {
+      const deep = Array(5000).fill('a').join('/') + '/x.pdf';
+      const { r, ms } = timed(() => protectedBy(['**/**/**/**/**/x.pdf'], deep));
+      assert.equal(r, true);
+      assert.ok(ms < 1000, `took ${ms} ms`);
+    });
+
+    it('many * in one segment against a long non-matching segment', () => {
+      const long = 'a'.repeat(100_000);
+      const { r, ms } = timed(() => protectedBy(['*a*a*a*a*a*b'], long));
+      assert.equal(r, false);
+      assert.ok(ms < 2000, `took ${ms} ms`);
+    });
+  });
+});
+
+describe('checkBinaryMove', () => {
+  const c = compileBinaryPatterns(['scans', '**/*.locked.pdf']);
+
+  it('refuses a move from a protected path to an unprotected one', () => {
+    const r = checkBinaryMove(c, 'scans/a.pdf', 'inbox/a.pdf');
+    assert.ok(r?.includes('Reading is restricted'));
+    assert.ok(r.includes("'scans/a.pdf'"));
+  });
+
+  it('refuses an in-place rename that leaves the pattern', () => {
+    const r = checkBinaryMove(c, 'docs/a.locked.pdf', 'docs/a.pdf');
+    assert.ok(r?.includes('Reading is restricted'));
+  });
+
+  it('allows a move between two protected locations', () => {
+    assert.equal(checkBinaryMove(c, 'scans/a.pdf', 'scans/2026/a.pdf'), null);
+    assert.equal(checkBinaryMove(c, 'scans/a.pdf', 'docs/a.locked.pdf'), null);
+  });
+
+  it('allows moving an unprotected file into a protected location', () => {
+    assert.equal(checkBinaryMove(c, 'inbox/a.pdf', 'scans/a.pdf'), null);
+  });
+
+  it('allows a move between two unprotected locations', () => {
+    assert.equal(checkBinaryMove(c, 'inbox/a.pdf', 'archive/a.pdf'), null);
+  });
+
+  it('judges the destination by its normalised path, so .. cannot disguise an escape', () => {
+    const r = checkBinaryMove(c, 'scans/a.pdf', 'scans/../inbox/a.pdf');
+    assert.ok(r?.includes('Reading is restricted'));
+  });
+
+  it('allows everything when nothing is protected', () => {
+    assert.equal(checkBinaryMove(compileBinaryPatterns([]), 'scans/a.pdf', 'inbox/a.pdf'), null);
   });
 });

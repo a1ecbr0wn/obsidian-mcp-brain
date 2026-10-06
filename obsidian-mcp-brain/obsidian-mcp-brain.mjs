@@ -17,7 +17,8 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
-import { normPath, isDenied as _isDenied, checkAccess as _checkAccess } from './lib/access.mjs';
+import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove } from './lib/access.mjs';
+import { mimeTypeFor } from './lib/mime.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
 import { replaceSection, deleteSection, toggleCheckbox } from './lib/sections.mjs';
@@ -31,6 +32,7 @@ import {
   moveNote as libMoveNote,
   searchContent as libSearchContent,
   searchFilename as libSearchFilename,
+  readBinaryFile as libReadBinaryFile,
   writeBinaryFile as libWriteBinaryFile,
   deleteBinaryFile as libDeleteBinaryFile,
   moveBinaryFile as libMoveBinaryFile,
@@ -75,10 +77,23 @@ function normDenyPaths(list, configPath, fieldLabel) {
 }
 
 /**
+ * When any denyBinaryPaths are set, `.trash` is protected too. A non-permanent
+ * delete-binary-file moves a file there, and without this a protected file could be
+ * deleted to the trash and then read, or moved out, from a path no pattern covers.
+ * @param {string[]} patterns - A vault's merged denyBinaryPaths.
+ * @returns {string[]} The same list plus `.trash`, or [] if nothing is protected.
+ */
+const withTrash = (patterns) => (patterns.length ? [...patterns, '.trash'] : patterns);
+
+/**
  * Loads and validates the configuration file from the given path.
  * Config fields: listenPort (default 3002), listenHost (default "127.0.0.1"),
- * mcpBaseUrl (required), denyPaths (default []), graphifyQueryTimeoutMs (default 60000),
- * fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000), and vaults (required).
+ * mcpBaseUrl (required), denyPaths (default []), denyBinaryPaths (default [], wildcard
+ * patterns whose binary files read-binary-file refuses to return), graphifyQueryTimeoutMs
+ * (default 60000), fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000),
+ * readMaxBytes (default 10MB), and vaults (required). Each vault may add its own
+ * denyPaths and denyBinaryPaths on top of the global lists. When any denyBinaryPaths are
+ * configured, '.trash' is automatically added to protect against reads/moves of deleted files.
  * listenHost must be a non-empty string (e.g. "127.0.0.1", "0.0.0.0", or "::1").
  * Exits the process on validation failure.
  * @param {string} configPath - Path to the configuration JSON file.
@@ -136,7 +151,14 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  const readMaxBytes = parseInt(config.readMaxBytes ?? 10 * 1024 * 1024, 10);
+  if (Number.isNaN(readMaxBytes) || readMaxBytes < 1) {
+    logErr(`Config file at ${configPath}: "readMaxBytes" must be a positive number`);
+    process.exit(1);
+  }
+
   const globalDenyPaths = normDenyPaths(config.denyPaths, configPath, 'denyPaths');
+  const globalDenyBinaryPaths = normDenyPaths(config.denyBinaryPaths, configPath, 'denyBinaryPaths');
 
   const rawVaults = config.vaults;
   if (!rawVaults || typeof rawVaults !== 'object' || Array.isArray(rawVaults) || Object.keys(rawVaults).length === 0) {
@@ -153,6 +175,10 @@ function loadConfig(configPath) {
     vaults[name] = {
       path: entry.path,
       denyPaths: [...globalDenyPaths, ...normDenyPaths(entry.denyPaths, configPath, `vaults.${name}.denyPaths`)],
+      denyBinaryPaths: compileBinaryPatterns(withTrash([
+        ...globalDenyBinaryPaths,
+        ...normDenyPaths(entry.denyBinaryPaths, configPath, `vaults.${name}.denyBinaryPaths`),
+      ])),
     };
   }
 
@@ -163,6 +189,7 @@ function loadConfig(configPath) {
     graphifyQueryTimeoutMs,
     fetchMaxBytes,
     fetchTimeoutMs,
+    readMaxBytes,
     vaults,
   };
 }
@@ -174,6 +201,7 @@ const {
   graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS,
   fetchMaxBytes: FETCH_MAX_BYTES,
   fetchTimeoutMs: FETCH_TIMEOUT_MS,
+  readMaxBytes: READ_MAX_BYTES,
   vaults: VAULTS,
 } = loadConfig(CONFIG_PATH);
 
@@ -378,6 +406,19 @@ const TOOLS = [
         timeoutMs: { type: 'integer', description: 'Optional override for the request timeout in milliseconds (default from server config)' },
       },
       required: ['vault', 'filename', 'url'],
+    },
+  },
+  {
+    name: 'read-binary-file',
+    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. Fails if the file is larger than the configured limit or its path is read-protected.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        filename: { type: 'string', description: 'Filename including extension' },
+        folder:   { type: 'string', description: 'Optional vault-relative folder' },
+      },
+      required: ['vault', 'filename'],
     },
   },
   {
@@ -990,6 +1031,11 @@ async function route(req, res, url, sid) {
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    // read-note reads any file as text, so a non-markdown file under denyBinaryPaths
+    // (an SVG, CSV, text-layer PDF...) must be refused here as well as in read-binary-file.
+    if (!relPath.toLowerCase().endsWith('.md') && isBinaryReadDenied(vault.denyBinaryPaths, relPath)) {
+      return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+    }
     try {
       const absPath = path.join(vault.path, relPath);
       const content = await libReadNote(absPath);
@@ -1098,6 +1144,12 @@ async function route(req, res, url, sid) {
     if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
+    // move-note does a plain rename and accepts any file, so it must not be a route for
+    // taking a protected non-markdown file out of protection; markdown notes are unaffected.
+    if (!srcRel.toLowerCase().endsWith('.md')) {
+      const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
+      if (escapes) return toolErr(res, sid, msgId, escapes);
+    }
     try {
       if (args.expectedMtime !== undefined) await assertUnmodified(path.join(vault.path, srcRel), args.expectedMtime);
       await libMoveNote(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
@@ -1171,6 +1223,50 @@ async function route(req, res, url, sid) {
     }
   }
 
+  if (msg.method === 'tools/call' && msg.params?.name === 'read-binary-file') {
+    const args = msg.params.arguments ?? {};
+    const vault = VAULTS[args.vault];
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use read-note for .md files');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (isBinaryReadDenied(vault.denyBinaryPaths, relPath)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+    const absPath = path.join(vault.path, relPath);
+    try {
+      // Resolve symlinks first and judge the real location, so a link can neither reach a
+      // file outside the vault nor alias a protected or denied file from an open folder.
+      const realVault = await fs.realpath(vault.path);
+      const realAbs = await fs.realpath(absPath);
+      const realRel = path.relative(realVault, realAbs);
+      if (realRel === '..' || realRel.startsWith('..' + path.sep) || path.isAbsolute(realRel)) {
+        return toolErr(res, sid, msgId, `Access denied: path resolves outside the vault: ${relPath}`);
+      }
+      const resolvedRel = realRel.split(path.sep).join('/');
+      if (_isDenied(vault.denyPaths, resolvedRel)) return toolErr(res, sid, msgId, 'Access denied');
+      if (isBinaryReadDenied(vault.denyBinaryPaths, resolvedRel)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+      // Size is checked from stat before the file is read, so an oversized file is never loaded.
+      const stat = await fs.stat(realAbs);
+      if (!stat.isFile()) return toolErr(res, sid, msgId, `Not a regular file: ${relPath}`);
+      if (stat.size > READ_MAX_BYTES) {
+        return toolErr(res, sid, msgId, `File is ${stat.size} bytes, which exceeds the ${READ_MAX_BYTES}-byte read limit: ${relPath}`);
+      }
+      const buffer = await libReadBinaryFile(realAbs);
+      // The file can grow between stat and read; the cap is enforced on what was actually read.
+      if (buffer.length > READ_MAX_BYTES) {
+        return toolErr(res, sid, msgId, `File is ${buffer.length} bytes, which exceeds the ${READ_MAX_BYTES}-byte read limit: ${relPath}`);
+      }
+      const mimeType = mimeTypeFor(relPath);
+      const uri = `file:///${relPath.split('/').map(encodeURIComponent).join('/')}`;
+      return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { content: [
+        { type: 'text', text: `${relPath} (${buffer.length} bytes, ${mimeType})` },
+        { type: 'resource', resource: { uri, mimeType, blob: buffer.toString('base64') } },
+      ] } }]);
+    } catch (err) {
+      return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+    }
+  }
+
   if (msg.method === 'tools/call' && msg.params?.name === 'delete-binary-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
@@ -1202,6 +1298,8 @@ async function route(req, res, url, sid) {
       return toolErr(res, sid, msgId, 'Use move-note for .md files');
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
+    const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
+    if (escapes) return toolErr(res, sid, msgId, escapes);
     try {
       if (args.expectedMtime !== undefined) await assertUnmodified(path.join(vault.path, srcRel), args.expectedMtime);
       await libMoveBinaryFile(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);

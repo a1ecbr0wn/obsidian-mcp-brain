@@ -90,3 +90,20 @@ an HTTPS POST to `MCP_URL`, opens a persistent SSE stream for server-initiated
 messages once the server has issued a session ID, reconnects that stream with
 exponential backoff if it drops, and sends an HTTP DELETE to end the session
 cleanly when Claude Desktop exits.
+
+### Reading PDFs and other binary files
+
+`read-binary-file` returns a file as an MCP embedded resource, and what a client does
+with that is up to the client.
+
+- **Claude Code** doesn't put the bytes into the conversation. It saves the file
+  under its own tool-results directory and tells the agent the path, and the agent
+  then opens that path with its `Read` tool, which reads PDFs. A PDF with a real text
+  layer is read as text, and an image-only (scanned) PDF is read from rendered page
+  images. Both were checked end to end. Because the bytes don't travel as text, a
+  large PDF costs the model's normal per-page PDF cost.
+- **Other clients**, including Claude Desktop, have not been checked. A client that
+  does nothing useful with an embedded resource can't read files this way.
+
+The server never extracts text itself, so it behaves the same whichever client
+connects.

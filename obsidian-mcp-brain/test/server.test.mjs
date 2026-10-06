@@ -121,6 +121,8 @@ before(async () => {
     listenPort: PORT,
     mcpBaseUrl: BASE_URL,
     denyPaths: [DENY_DIR],
+    denyBinaryPaths: ['protected-bin', '**/*.locked.pdf'],
+    readMaxBytes: 4096,
     vaults: { [vaultName]: { path: vaultDir } },
   }));
 
@@ -1070,6 +1072,326 @@ describe('move-binary-file', () => {
 
 // ── find-backlinks ────────────────────────────────────────────────────────
 
+describe('read-binary-file', () => {
+  const PDF_BYTES = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from([0x00, 0xff, 0x80, 0x0a, 0x25, 0x25]), Buffer.from('\n%%EOF')]);
+
+  async function writeBin(rel, bytes) {
+    const abs = path.join(vaultDir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, bytes);
+  }
+
+  it('returns a text block then an embedded resource carrying the exact bytes', async () => {
+    await writeBin('read-bin/report.pdf', PDF_BYTES);
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'report.pdf' });
+    assert.ok(!result.isError, JSON.stringify(result));
+    assert.equal(result.content.length, 2);
+    assert.equal(result.content[0].type, 'text');
+    assert.equal(result.content[0].text, `read-bin/report.pdf (${PDF_BYTES.length} bytes, application/pdf)`);
+    assert.equal(result.content[1].type, 'resource');
+    assert.equal(result.content[1].resource.mimeType, 'application/pdf');
+    assert.equal(result.content[1].resource.uri, 'file:///read-bin/report.pdf');
+    assert.deepEqual(Buffer.from(result.content[1].resource.blob, 'base64'), PDF_BYTES);
+  });
+
+  it('URI-encodes each path segment', async () => {
+    await writeBin('read-bin/my folder/my file.pdf', PDF_BYTES);
+    const result = await callTool('read-binary-file', { folder: 'read-bin/my folder', filename: 'my file.pdf' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[1].resource.uri, 'file:///read-bin/my%20folder/my%20file.pdf');
+  });
+
+  it('reads a file at the vault root', async () => {
+    await writeBin('root-read.png', Buffer.from([0x89, 0x50]));
+    const result = await callTool('read-binary-file', { filename: 'root-read.png' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[1].resource.mimeType, 'image/png');
+  });
+
+  it('labels an unknown extension application/octet-stream', async () => {
+    await writeBin('read-bin/data.xyz', Buffer.from([1, 2, 3]));
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'data.xyz' });
+    assert.ok(!result.isError);
+    assert.equal(result.content[1].resource.mimeType, 'application/octet-stream');
+  });
+
+  it('reads a file of exactly readMaxBytes', async () => {
+    await writeBin('read-bin/exact.bin', Buffer.alloc(4096, 7));
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'exact.bin' });
+    assert.ok(!result.isError, JSON.stringify(result));
+  });
+
+  it('refuses a file over readMaxBytes without returning any content', async () => {
+    await writeBin('read-bin/big.bin', Buffer.alloc(4097, 7));
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'big.bin' });
+    assert.ok(result.isError);
+    assert.equal(result.content.length, 1);
+    assert.match(result.content[0].text, /exceeds|limit/i);
+    assert.ok(result.content[0].text.includes('4096'));
+  });
+
+  it('rejects a .md filename and points at read-note', async () => {
+    await writeVaultNote('read-bin/note.md', '# hi');
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'note.md' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('read-note'));
+  });
+
+  it('requires a filename', async () => {
+    const result = await callTool('read-binary-file', {});
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('filename is required'));
+  });
+
+  it('returns isError for an unknown vault', async () => {
+    const sid = await initSession();
+    const r = await post({
+      jsonrpc: '2.0', id: '2', method: 'tools/call',
+      params: { name: 'read-binary-file', arguments: { vault: 'no-such-vault', filename: 'a.pdf' } },
+    }, sid);
+    assert.ok(r.msgs[0].result.isError);
+    assert.ok(r.msgs[0].result.content[0].text.includes('Unknown vault'));
+  });
+
+  it('reports a missing file with a vault-relative message only', async () => {
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'absent.pdf' });
+    assert.ok(result.isError);
+    assert.ok(!result.content[0].text.includes(vaultDir), result.content[0].text);
+  });
+
+  it('refuses a path under denyPaths and does not leak the content', async () => {
+    await writeBin(`${DENY_DIR}/secret.pdf`, PDF_BYTES);
+    const result = await callTool('read-binary-file', { folder: DENY_DIR, filename: 'secret.pdf' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Access denied'));
+    assert.equal(result.content.length, 1);
+  });
+
+  it('refuses a ..-traversal into a denied path', async () => {
+    await writeBin(`${DENY_DIR}/secret2.pdf`, PDF_BYTES);
+    const result = await callTool('read-binary-file', { folder: `read-bin/../${DENY_DIR}`, filename: 'secret2.pdf' });
+    assert.ok(result.isError);
+    assert.equal(result.content.length, 1);
+  });
+
+  describe('denyBinaryPaths', () => {
+    it('refuses a file under a protected folder, saying reading is restricted', async () => {
+      await writeBin('protected-bin/a.pdf', PDF_BYTES);
+      const result = await callTool('read-binary-file', { folder: 'protected-bin', filename: 'a.pdf' });
+      assert.ok(result.isError);
+      assert.equal(result.content.length, 1);
+      assert.equal(result.content[0].text, "Reading is restricted for 'protected-bin/a.pdf'");
+    });
+
+    it('refuses a file nested below a protected folder', async () => {
+      await writeBin('protected-bin/x/y/deep.pdf', PDF_BYTES);
+      const result = await callTool('read-binary-file', { folder: 'protected-bin/x/y', filename: 'deep.pdf' });
+      assert.ok(result.isError);
+      assert.ok(result.content[0].text.includes('Reading is restricted'));
+    });
+
+    it('refuses a file matching a wildcard entry anywhere in the vault', async () => {
+      await writeBin('anywhere/at/all/plan.locked.pdf', PDF_BYTES);
+      const result = await callTool('read-binary-file', { folder: 'anywhere/at/all', filename: 'plan.locked.pdf' });
+      assert.ok(result.isError);
+      assert.ok(result.content[0].text.includes('Reading is restricted'));
+    });
+
+    it('refuses a ..-traversal into a protected folder', async () => {
+      await writeBin('protected-bin/trav.pdf', PDF_BYTES);
+      const result = await callTool('read-binary-file', { folder: 'read-bin/../protected-bin', filename: 'trav.pdf' });
+      assert.ok(result.isError);
+      assert.equal(result.content.length, 1);
+    });
+
+    it('still reads unprotected files, including near-matches', async () => {
+      await writeBin('protected-bin-not/a.pdf', PDF_BYTES);
+      await writeBin('anywhere/plan.pdf', PDF_BYTES);
+      for (const [folder, filename] of [['protected-bin-not', 'a.pdf'], ['anywhere', 'plan.pdf']]) {
+        const result = await callTool('read-binary-file', { folder, filename });
+        assert.ok(!result.isError, `${folder}/${filename}: ${JSON.stringify(result)}`);
+      }
+    });
+
+    it('leaves the other binary tools working on a protected file', async () => {
+      await writeBin('protected-bin/other.pdf', PDF_BYTES);
+      await writeVaultNote('protected-bin-linker.md', 'See ![[protected-bin/other.pdf]]');
+      const backlinks = await callTool('find-backlinks', { folder: 'protected-bin', filename: 'other.pdf' });
+      assert.ok(!backlinks.isError);
+      assert.ok(backlinks.content[0].text.includes('protected-bin-linker.md'));
+
+      const created = await callTool('create-binary-file', {
+        folder: 'protected-bin', filename: 'created.pdf', content: PDF_BYTES.toString('base64'),
+      });
+      assert.ok(!created.isError, JSON.stringify(created));
+
+      const deleted = await callTool('delete-binary-file', { folder: 'protected-bin', filename: 'created.pdf', permanent: true });
+      assert.ok(!deleted.isError, JSON.stringify(deleted));
+    });
+  });
+});
+
+describe('denyBinaryPaths cannot be sidestepped through other tools or paths', () => {
+  async function writeBin(rel, bytes = Buffer.from('%PDF-bypass')) {
+    const abs = path.join(vaultDir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, bytes);
+  }
+
+  it('a non-permanent delete leaves the file in .trash, where it is still unreadable and cannot be moved out', async () => {
+    await writeBin('protected-bin/trash-me.pdf');
+    const del = await callTool('delete-binary-file', { folder: 'protected-bin', filename: 'trash-me.pdf' });
+    assert.ok(!del.isError, JSON.stringify(del));
+    const trashed = (await fs.readdir(path.join(vaultDir, '.trash'))).find(f => f.startsWith('trash-me'));
+    assert.ok(trashed, 'file should be in .trash');
+
+    const read = await callTool('read-binary-file', { folder: '.trash', filename: trashed });
+    assert.ok(read.isError);
+    assert.ok(read.content[0].text.includes('Reading is restricted'));
+
+    const out = await callTool('move-binary-file', {
+      folder: '.trash', filename: trashed, newFolder: 'inbox-open', newFilename: trashed,
+    });
+    assert.ok(out.isError);
+    assert.ok(out.content[0].text.includes('Reading is restricted'));
+  });
+
+  it('move-note cannot relocate a protected non-markdown file', async () => {
+    await writeBin('protected-bin/via-move-note.pdf');
+    const result = await callTool('move-note', {
+      folder: 'protected-bin', filename: 'via-move-note.pdf', newFolder: 'inbox-open', newFilename: 'via-move-note.pdf',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Reading is restricted'));
+    await fs.access(path.join(vaultDir, 'protected-bin/via-move-note.pdf'));
+  });
+
+  it('move-note still moves a markdown note out of a protected folder', async () => {
+    await writeVaultNote('protected-bin/a-note.md', '# note');
+    const result = await callTool('move-note', {
+      folder: 'protected-bin', filename: 'a-note.md', newFolder: 'inbox-open', newFilename: 'a-note.md',
+    });
+    assert.ok(!result.isError, JSON.stringify(result));
+  });
+
+  it('read-note refuses a protected non-markdown file, but reads a markdown note in the same folder', async () => {
+    await writeBin('protected-bin/data.txt', Buffer.from('secret text'));
+    const refused = await callTool('read-note', { folder: 'protected-bin', filename: 'data.txt' });
+    assert.ok(refused.isError);
+    assert.ok(refused.content[0].text.includes('Reading is restricted'));
+    assert.ok(!refused.content.some(c => c.text?.includes('secret text')));
+
+    await writeVaultNote('protected-bin/readable.md', '# fine');
+    const ok = await callTool('read-note', { folder: 'protected-bin', filename: 'readable.md' });
+    assert.ok(!ok.isError, JSON.stringify(ok));
+  });
+
+  it('read-binary-file follows a symlink to its real path before checking protection', async () => {
+    await writeBin('protected-bin/target.pdf');
+    await fs.mkdir(path.join(vaultDir, 'link-dir'), { recursive: true });
+    await fs.symlink(path.join(vaultDir, 'protected-bin/target.pdf'), path.join(vaultDir, 'link-dir/alias.pdf'));
+    const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'alias.pdf' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Reading is restricted'));
+    assert.equal(result.content.length, 1);
+  });
+
+  it('read-binary-file refuses a symlink to a file outside the vault', async () => {
+    const outside = path.join(os.tmpdir(), `outside-${Date.now()}.pdf`);
+    await fs.writeFile(outside, 'outside content');
+    try {
+      await fs.symlink(outside, path.join(vaultDir, 'link-dir/outside.pdf'));
+      const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'outside.pdf' });
+      assert.ok(result.isError);
+      assert.ok(result.content[0].text.includes('outside the vault'));
+      assert.equal(result.content.length, 1);
+    } finally {
+      await fs.rm(outside, { force: true });
+    }
+  });
+
+  it('read-binary-file follows a symlink that stays inside the vault and is unprotected', async () => {
+    await writeBin('read-bin/real-open.pdf');
+    await fs.symlink(path.join(vaultDir, 'read-bin/real-open.pdf'), path.join(vaultDir, 'link-dir/open-alias.pdf'));
+    const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'open-alias.pdf' });
+    assert.ok(!result.isError, JSON.stringify(result));
+  });
+
+  it('read-binary-file refuses a directory', async () => {
+    await fs.mkdir(path.join(vaultDir, 'read-bin/a-dir.pdf'), { recursive: true });
+    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'a-dir.pdf' });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Not a regular file'));
+  });
+});
+
+describe('move-binary-file with denyBinaryPaths', () => {
+  async function writeBin(rel, bytes = Buffer.from([0x01, 0x02])) {
+    const abs = path.join(vaultDir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, bytes);
+  }
+
+  it('refuses to move a protected file to an unprotected folder, leaving file and embeds untouched', async () => {
+    await writeBin('protected-bin/escape.pdf');
+    await writeVaultNote('mv-prot/linker.md', 'See ![[protected-bin/escape.pdf]]');
+    const result = await callTool('move-binary-file', {
+      folder: 'protected-bin', filename: 'escape.pdf', newFolder: 'inbox-open', newFilename: 'escape.pdf',
+    });
+    assert.ok(result.isError);
+    assert.match(result.content[0].text, /Reading is restricted for 'protected-bin\/escape\.pdf'/);
+    await fs.access(path.join(vaultDir, 'protected-bin/escape.pdf'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'inbox-open/escape.pdf')));
+    const linker = await fs.readFile(path.join(vaultDir, 'mv-prot/linker.md'), 'utf8');
+    assert.equal(linker, 'See ![[protected-bin/escape.pdf]]');
+  });
+
+  it('refuses an in-place rename that takes a file out of a wildcard entry', async () => {
+    await writeBin('mv-prot/doc.locked.pdf');
+    const result = await callTool('move-binary-file', {
+      folder: 'mv-prot', filename: 'doc.locked.pdf', newFolder: 'mv-prot', newFilename: 'doc.pdf',
+    });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('Reading is restricted'));
+    await fs.access(path.join(vaultDir, 'mv-prot/doc.locked.pdf'));
+  });
+
+  it('refuses a ..-disguised escape', async () => {
+    await writeBin('protected-bin/sneaky.pdf');
+    const result = await callTool('move-binary-file', {
+      folder: 'protected-bin', filename: 'sneaky.pdf', newFolder: 'protected-bin/../inbox-open', newFilename: 'sneaky.pdf',
+    });
+    assert.ok(result.isError);
+    await fs.access(path.join(vaultDir, 'protected-bin/sneaky.pdf'));
+  });
+
+  it('allows moving within the protected area', async () => {
+    await writeBin('protected-bin/inside.pdf');
+    const result = await callTool('move-binary-file', {
+      folder: 'protected-bin', filename: 'inside.pdf', newFolder: 'protected-bin/sub', newFilename: 'inside.pdf',
+    });
+    assert.ok(!result.isError, JSON.stringify(result));
+    await fs.access(path.join(vaultDir, 'protected-bin/sub/inside.pdf'));
+  });
+
+  it('allows moving an unprotected file into the protected area', async () => {
+    await writeBin('inbox-open/into.pdf');
+    const result = await callTool('move-binary-file', {
+      folder: 'inbox-open', filename: 'into.pdf', newFolder: 'protected-bin', newFilename: 'into.pdf',
+    });
+    assert.ok(!result.isError, JSON.stringify(result));
+    await fs.access(path.join(vaultDir, 'protected-bin/into.pdf'));
+  });
+
+  it('allows moving between unprotected folders', async () => {
+    await writeBin('inbox-open/free.pdf');
+    const result = await callTool('move-binary-file', {
+      folder: 'inbox-open', filename: 'free.pdf', newFolder: 'archive-open', newFilename: 'free.pdf',
+    });
+    assert.ok(!result.isError, JSON.stringify(result));
+  });
+});
+
 describe('find-backlinks', () => {
   it('finds notes linking to a target note', async () => {
     await writeVaultNote('backlink-target/note.md', '# Target');
@@ -1832,9 +2154,10 @@ describe('multi-vault configuration', () => {
       listenPort: MPORT,
       mcpBaseUrl: MBASE_URL,
       denyPaths: ['globally-denied'],
+      denyBinaryPaths: ['global-locked'],
       vaults: {
         alpha: { path: mAlphaDir },
-        beta:  { path: mBetaDir, denyPaths: ['beta-only-denied'] },
+        beta:  { path: mBetaDir, denyPaths: ['beta-only-denied'], denyBinaryPaths: ['beta-locked'] },
       },
     }));
 
@@ -1904,6 +2227,24 @@ describe('multi-vault configuration', () => {
     const alphaResult = await mCallTool('alpha', 'read-note', { folder: 'beta-only-denied', filename: 'secret.md' });
     assert.ok(alphaResult.isError);
     assert.ok(!alphaResult.content[0].text.includes('Access denied'));
+  });
+
+  it('merges global and per-vault denyBinaryPaths, applying the per-vault ones only to that vault', async () => {
+    for (const dir of ['global-locked', 'beta-locked']) {
+      await fs.mkdir(path.join(mAlphaDir, dir), { recursive: true });
+      await fs.writeFile(path.join(mAlphaDir, dir, 'f.pdf'), 'x');
+      await fs.mkdir(path.join(mBetaDir, dir), { recursive: true });
+      await fs.writeFile(path.join(mBetaDir, dir, 'f.pdf'), 'x');
+    }
+    const read = async (vault, folder) => mCallTool(vault, 'read-binary-file', { folder, filename: 'f.pdf' });
+
+    // global entry protects both vaults
+    assert.ok((await read('alpha', 'global-locked')).content[0].text.includes('Reading is restricted'));
+    assert.ok((await read('beta', 'global-locked')).content[0].text.includes('Reading is restricted'));
+    // per-vault entry protects beta only
+    assert.ok((await read('beta', 'beta-locked')).content[0].text.includes('Reading is restricted'));
+    const alphaOpen = await read('alpha', 'beta-locked');
+    assert.ok(!alphaOpen.isError, JSON.stringify(alphaOpen));
   });
 
   it('returns isError for an unknown vault name', async () => {
@@ -1999,4 +2340,40 @@ describe('listenHost configuration', () => {
       assert.ok(out.includes('"listenHost" must be a non-empty string'), out);
     });
   }
+
+  describe('read-binary-file settings', () => {
+    for (const bad of [0, -1, 'abc']) {
+      it(`rejects readMaxBytes ${JSON.stringify(bad)} with a clear error`, async () => {
+        const { proc, out, code } = await startWith({ readMaxBytes: bad });
+        await stop(proc);
+        assert.equal(code, 1, out);
+        assert.ok(out.includes('"readMaxBytes" must be a positive number'), out);
+      });
+    }
+
+    for (const bad of ['**/*.pdf', [1], [['a']], {}]) {
+      it(`rejects denyBinaryPaths ${JSON.stringify(bad)} with a clear error`, async () => {
+        const { proc, out, code } = await startWith({ denyBinaryPaths: bad });
+        await stop(proc);
+        assert.equal(code, 1, out);
+        assert.ok(out.includes('"denyBinaryPaths" must be an array of strings'), out);
+      });
+    }
+
+    it('rejects a per-vault denyBinaryPaths that is not an array of strings', async () => {
+      const { proc, out, code } = await startWith({ vaults: { host: { path: hVaultDir, denyBinaryPaths: 'x' } } });
+      await stop(proc);
+      assert.equal(code, 1, out);
+      assert.ok(out.includes('"vaults.host.denyBinaryPaths" must be an array of strings'), out);
+    });
+
+    it('starts with valid readMaxBytes and denyBinaryPaths', async () => {
+      const { proc, out } = await startWith({ readMaxBytes: 1024, denyBinaryPaths: ['**/*.pdf', 'scans'] });
+      try {
+        assert.ok(out.includes('listening'), out);
+      } finally {
+        await stop(proc);
+      }
+    });
+  });
 });
