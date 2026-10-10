@@ -275,6 +275,10 @@ const {
 // the folder's real path once that has been checked, so a symbolic link re-pointed afterwards
 // cannot move staging somewhere that was never checked.
 let UPLOAD_TEMP_DIR = CONFIGURED_UPLOAD_TEMP_DIR;
+// Set when the default staging folder cannot be created (a read-only container has no writable
+// temporary directory). Uploads are optional, so the server still starts and only upload-binary-file
+// refuses, with this as the reason. A folder the owner configured is never excused like this.
+let UPLOADS_UNAVAILABLE = null;
 
 // ── Path access control ────────────────────────────────────────────────────
 
@@ -1568,6 +1572,7 @@ async function route(req, res, url, sid) {
   }
 
   if (msg.method === 'tools/call' && msg.params?.name === 'upload-binary-file') {
+    if (UPLOADS_UNAVAILABLE) return toolErr(res, sid, msgId, `Uploads are not available: ${UPLOADS_UNAVAILABLE}`);
     const args = msg.params.arguments ?? {};
     const vault = Object.hasOwn(VAULTS, args.vault) ? VAULTS[args.vault] : undefined;
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
@@ -2011,11 +2016,20 @@ function handleAuthorize(req, res) {
 /**
  * Creates the staging folder, checks (after resolving symbolic links) that it is not inside a
  * vault, and removes stale staging files left by an earlier run. Exits if it cannot be used.
+ * The one exception: if the default folder cannot be created at all, uploads are switched off
+ * (UPLOADS_UNAVAILABLE) and the server starts without them.
  */
 async function prepareStagingDir() {
   const realOrResolved = async (p) => fs.realpath(p).catch(() => path.resolve(p));
   try {
-    await fs.mkdir(CONFIGURED_UPLOAD_TEMP_DIR, { recursive: true, mode: 0o700 });
+    try {
+      await fs.mkdir(CONFIGURED_UPLOAD_TEMP_DIR, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      if (!UPLOAD_TEMP_DIR_IS_DEFAULT || !['ENOENT', 'ENOTDIR', 'EROFS', 'EACCES', 'EPERM'].includes(err.code)) throw err;
+      UPLOADS_UNAVAILABLE = `the default staging folder ${CONFIGURED_UPLOAD_TEMP_DIR} cannot be created (${err.code}). Set "uploadTempDir" in the config file to a writable folder, such as a mounted volume, to enable uploads`;
+      logErr(`Uploads are disabled: ${UPLOADS_UNAVAILABLE}`);
+      return;
+    }
     // A symbolic link at the default location can only be someone else's doing, since the owner
     // never put it there. A configured folder may legitimately be a link, and is resolved once.
     if (UPLOAD_TEMP_DIR_IS_DEFAULT && (await fs.lstat(CONFIGURED_UPLOAD_TEMP_DIR)).isSymbolicLink()) {

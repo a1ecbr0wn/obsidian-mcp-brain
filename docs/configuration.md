@@ -196,7 +196,11 @@ checks it. A folder that belongs to another user is refused, and the server stop
 message asking you to choose one with `uploadTempDir`: whoever owns the folder could swap
 a file between its check and its placement. A folder of yours that others can read or
 write is tightened to owner-only, and a note is logged. A symbolic link at the default
-location is refused, since you never put one there. If you configure a folder that is a link,
+location is refused, since you never put one there. If the default folder cannot be
+created at all, as in a container with a read-only filesystem and no writable `/tmp`, the
+server still starts: it logs that uploads are disabled, and only `upload-binary-file`
+refuses, saying why. A folder you configure yourself that cannot be used stops the server,
+because you asked for it. If you configure a folder that is a link,
 it is resolved once at startup and the real folder is used from then on, so re-pointing the
 link afterwards changes nothing. Leftovers from an earlier run are
 removed, and only files this feature created are touched. Put it on disk with enough room

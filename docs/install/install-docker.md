@@ -76,6 +76,8 @@ services:
       - /path/to/your/obsidian/vault:/vaults/knowledge
       - ./obsidian-mcp.json:/config/obsidian-mcp.json:ro
     read_only: true
+    tmpfs:
+      - /tmp
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
@@ -103,9 +105,13 @@ user whichever UID the container uses, so this matters mainly on Linux.
 
 ### Hardening
 
-The server writes only inside the vaults, so the container runs with a read-only
-root filesystem, no Linux capabilities and no privilege escalation, as the compose
-example shows. These flags shrink what a compromised server process could do to the
+The server writes only inside the vaults, plus a staging folder for
+[uploads](../tools#upload-binary-file), so the container runs with a read-only root
+filesystem, no Linux capabilities and no privilege escalation, as the compose example
+shows. The `tmpfs: /tmp` line gives the server somewhere to stage an upload. Without it
+the server still starts, but `upload-binary-file` answers that uploads are not available;
+set [`uploadTempDir`](../configuration) to a folder on a mounted volume instead if you
+prefer. These flags shrink what a compromised server process could do to the
 container and the host; they do not limit what a connected client can do to your
 notes, because the vault is a writable mount. Only mounting the vault with `:ro`
 does that, and the write tools then fail. The [path deny list](../configuration)

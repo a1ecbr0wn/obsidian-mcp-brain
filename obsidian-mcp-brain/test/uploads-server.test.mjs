@@ -777,6 +777,35 @@ describe('upload settings', () => {
     } finally { await r.stop(); }
   });
 
+  it('still serves the other tools when the default staging folder cannot be created, and says why on upload-binary-file', async () => {
+    // A read-only container has no writable temporary directory; uploads are an optional
+    // feature, so the server must start and only that tool must refuse.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-ro-'));
+    try {
+      const blocker = path.join(root, 'not-a-folder');
+      await fs.writeFile(blocker, 'x');
+      const r = await tryStart({}, { env: { TMPDIR: path.join(blocker, 'tmp') } });
+      try {
+        assert.equal(r.code, null, r.out);
+        assert.ok(/uploads are disabled/i.test(r.out), r.out);
+        assert.ok(r.out.includes('"uploadTempDir"'), r.out);
+
+        const init = await mcpPost(r.port, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+        const sid = init.headers['mcp-session-id'];
+        const up = await mcpPost(r.port, {
+          jsonrpc: '2.0', id: 2, method: 'tools/call',
+          params: { name: 'upload-binary-file', arguments: { vault: 'v', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) } },
+        }, sid);
+        const result = up.msgs[0].result;
+        assert.ok(result.isError);
+        assert.ok(result.content[0].text.includes('"uploadTempDir"'), result.content[0].text);
+
+        const list = await mcpPost(r.port, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list-vaults', arguments: {} } }, sid);
+        assert.ok(!list.msgs[0].result.isError, JSON.stringify(list.msgs[0].result));
+      } finally { await r.stop(); }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it('refuses to start if the default staging folder is a symbolic link', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-tmpdir-'));
     try {
