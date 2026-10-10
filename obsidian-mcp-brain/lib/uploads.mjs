@@ -1,4 +1,4 @@
-// Pure helpers for upload-binary: the one-time upload slots, working out who a caller is,
+// Pure helpers for upload-binary-file: the one-time upload slots, working out who a caller is,
 // and the staging folder. Nothing here touches the HTTP server, so it is unit-testable.
 
 import crypto from 'node:crypto';

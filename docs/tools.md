@@ -24,7 +24,7 @@ vault the call applies to. Use `list-vaults` to see the names.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (for example an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client sends only a URL |
-| `upload-binary` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `upload-binary-file` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
@@ -150,12 +150,12 @@ checks, and only regular files are returned.
 How the file reaches the model depends on the client; see
 [Reading PDFs and other binary files](connect#reading-pdfs-and-other-binary-files).
 
-### `upload-binary`
+### `upload-binary-file`
 
 `create-binary-file` needs the model to write the whole file out as base64. That is
 impractical beyond a few tens of kilobytes (an 810 KB PDF is about a million tokens,
 more than one response can hold) and gives no way to tell whether the file arrived
-intact. `upload-binary` gives the agent a one-time URL to send the file to directly,
+intact. `upload-binary-file` gives the agent a one-time URL to send the file to directly,
 so the file's bytes never pass through the model.
 
 The flow:
@@ -165,7 +165,7 @@ The flow:
 2. It calls the tool:
 
    ```text
-   upload-binary -> { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hexadecimal characters>" }
+   upload-binary-file -> { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hexadecimal characters>" }
    ```
 
 3. The result holds a URL of the form `https://server:4001/up/<random token>`, when it
@@ -219,5 +219,13 @@ prints the server's explanation, which is what makes a failure readable.
 
 This needs an agent with a shell on a machine that can reach the server's address, such
 as Claude Code. A client without a shell, or whose network can't reach the server,
-can't use it, and falls back to `create-binary-file` for small files. See
-[Security](security#upload-binary) for what the URL does and doesn't protect.
+can't use it, and falls back to `create-binary-file` for small files.
+
+The repository includes an agent skill, [`skills/upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file),
+that does steps 1 and 4 for the agent. Its script, `scripts/upload-binary-file.sh`, has
+`prepare <file>` (prints the file name, size and SHA-256) and `send <file> <url>` (uploads, then
+compares the server's reply with the local file and never prints the token). It needs `curl` and one
+of `sha256sum`, `shasum` or `openssl`. The npm package contains only the server, so copy the skill
+folder into your agent's skills directory (for Claude Code, `~/.claude/skills/`) to use it. The tool
+works without the skill. See
+[Security](security#upload-binary-file) for what the URL does and doesn't protect.

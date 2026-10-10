@@ -480,14 +480,14 @@ const TOOLS = [
     },
   },
   {
-    name: 'upload-binary',
+    name: 'upload-binary-file',
     description: 'Reserve a one-time URL for uploading a binary file (a PDF, an image) to the vault without sending its contents through the model. '
       + 'Give the destination, the file\'s size in bytes and its SHA-256, both computed with a tool such as `wc -c` and `sha256sum`, never by hand. '
       + 'The result is a URL and a ready-to-run command: `curl --fail-with-body -sS -T <file> <url>`. '
       + 'The URL works for ONE request only, for a few minutes, and only from the machine that called this tool; if the upload fails for any reason, call this tool again for a new URL. '
       + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
       + 'Fails if the destination already exists. '
-      + 'If the obsidian-mcp-brain skill is installed, use its upload-binary.sh script, which does the hashing and the curl call for you.',
+      + 'If the upload-binary-file skill is installed, use its upload-binary-file.sh script, which does the hashing and the curl call for you.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1567,7 +1567,7 @@ async function route(req, res, url, sid) {
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'upload-binary') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'upload-binary-file') {
     const args = msg.params.arguments ?? {};
     const vault = Object.hasOwn(VAULTS, args.vault) ? VAULTS[args.vault] : undefined;
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);

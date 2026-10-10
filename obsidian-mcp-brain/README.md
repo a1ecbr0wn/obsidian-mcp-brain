@@ -261,7 +261,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | `fetchMaxBytes`          | No       | `10485760` | Default max response size for `fetch-binary-file` (bytes); overridable per call         |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file` (milliseconds); overridable per call    |
 | `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return (bytes, measured on disk)                   |
-| `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary` will reserve an upload for (bytes)                         |
+| `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for (bytes)                         |
 | `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts (seconds)                                                  |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below |
@@ -417,15 +417,15 @@ the bytes are saved to a file and the agent opens that path with its `Read` tool
 The `filename` must not end in `.md`; use `read-note` for notes. A file larger than
 `readMaxBytes` (10 MiB by default) is refused before it is read.
 
-### upload-binary
+### upload-binary-file
 
 `create-binary-file` needs the model to write the whole file out as base64, which is
 impractical beyond a few tens of kilobytes (an 810 KB PDF is about a million tokens) and
-gives no way to check the file arrived intact. `upload-binary` reserves a one-time URL
+gives no way to check the file arrived intact. `upload-binary-file` reserves a one-time URL
 that the agent sends the file to directly, so its bytes never pass through the model:
 
 ```
-upload-binary → { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hex characters>" }
+upload-binary-file → { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hex characters>" }
 curl --fail-with-body -sS -T report.pdf "https://server:4001/up/<random token>"
 ```
 
@@ -562,7 +562,7 @@ Restart Claude Desktop after saving.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
-| `upload-binary` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `upload-binary-file` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |

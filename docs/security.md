@@ -97,7 +97,7 @@ a crafted path. The size limit matters
 because the whole file is base64-encoded into one response, which is a third larger
 than the file itself.
 
-### `upload-binary`
+### `upload-binary-file`
 
 This tool reserves a one-time URL, and a file sent to it ends up in the vault, so the
 URL has to be hard to misuse. It is built like this:

@@ -110,7 +110,7 @@ connects.
 
 ### Uploading files
 
-[`upload-binary`](tools#upload-binary) gives the agent a URL to send a file to with
+[`upload-binary-file`](tools#upload-binary-file) gives the agent a URL to send a file to with
 `curl`, so the file doesn't pass through the model. It therefore needs an agent that can
 run commands on a machine that can reach the server's address (`mcpBaseUrl`).
 

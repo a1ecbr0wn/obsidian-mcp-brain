@@ -1,5 +1,5 @@
 /**
- * Integration tests for upload-binary and PUT /up/<token>.
+ * Integration tests for upload-binary-file and PUT /up/<token>.
  * Spawns real server processes with their own vaults, staging folders and ports
  * (19750 and up), and uses real HTTP requests, so what is tested is what runs.
  */
@@ -108,7 +108,7 @@ async function callTool(srv, name, args, extraHeaders = {}) {
 
 /** Reserves an upload and returns the parsed result. */
 async function reserve(srv, { filename, folder, content, size, sha, headers } = {}) {
-  const result = await callTool(srv, 'upload-binary', {
+  const result = await callTool(srv, 'upload-binary-file', {
     filename, ...(folder ? { folder } : {}),
     size: size === undefined ? content.length : size, sha256: sha === undefined ? sha256(content) : sha,
   }, headers);
@@ -181,12 +181,12 @@ const exists = (p) => fs.access(p).then(() => true, () => false);
 
 // ── the main server ─────────────────────────────────────────────────────────
 
-describe('upload-binary and PUT /up/<token>', () => {
+describe('upload-binary-file and PUT /up/<token>', () => {
   let srv;
   before(async () => { srv = await startServer(); });
   after(async () => { await srv.stop(); });
 
-  describe('upload-binary (the tool)', () => {
+  describe('upload-binary-file (the tool)', () => {
     const content = crypto.randomBytes(500);
 
     it('returns a URL of the form <base>/up/<random token>, a curl command and the terms', async () => {
@@ -263,22 +263,22 @@ describe('upload-binary and PUT /up/<token>', () => {
     });
 
     it('requires a filename', async () => {
-      const result = await callTool(srv, 'upload-binary', { size: 10, sha256: 'a'.repeat(64) });
+      const result = await callTool(srv, 'upload-binary-file', { size: 10, sha256: 'a'.repeat(64) });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('filename is required'));
     });
 
     it('returns isError for an unknown vault', async () => {
-      const result = await callTool(srv, 'upload-binary', { vault: 'no-such', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
+      const result = await callTool(srv, 'upload-binary-file', { vault: 'no-such', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('Unknown vault'));
     });
 
-    it('lists upload-binary, with a description that explains the curl upload', async () => {
+    it('lists upload-binary-file, with a description that explains the curl upload', async () => {
       const init = await mcpPost(srv.port, { jsonrpc: '2.0', id: '1', method: 'initialize', params: {} });
       const r = await mcpPost(srv.port, { jsonrpc: '2.0', id: '2', method: 'tools/list' }, init.headers['mcp-session-id']);
-      const tool = r.msgs[0].result.tools.find(t => t.name === 'upload-binary');
-      assert.ok(tool, 'upload-binary should be listed');
+      const tool = r.msgs[0].result.tools.find(t => t.name === 'upload-binary-file');
+      assert.ok(tool, 'upload-binary-file should be listed');
       assert.ok(tool.description.includes('curl'));
       assert.ok(tool.description.includes('sha256'));
       assert.ok(/one request/i.test(tool.description));
@@ -982,7 +982,7 @@ describe('upload failures and placement', () => {
 
     for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
       it(`treats a vault named ${name} as unknown`, async () => {
-        const result = await callTool(srv, 'upload-binary', { vault: name, filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
+        const result = await callTool(srv, 'upload-binary-file', { vault: name, filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
         assert.ok(result.isError);
         assert.ok(result.content[0].text.includes('Unknown vault'), result.content[0].text);
       });

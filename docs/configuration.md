@@ -59,7 +59,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 | `fetchMaxBytes`          | No       | `10485760` | Default maximum response size for `fetch-binary-file`, in bytes; overridable per call   |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file`, in milliseconds; overridable per call  |
 | `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return, in bytes, measured on disk                 |
-| `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary` will reserve an upload for, in bytes                       |
+| `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for, in bytes                       |
 | `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts, in seconds                                                |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies) |
@@ -174,7 +174,7 @@ See [Security](security).
 
 ### Uploads and reverse proxies
 
-[`upload-binary`](tools#upload-binary) hands out one-time upload URLs. Three settings
+[`upload-binary-file`](tools#upload-binary-file) hands out one-time upload URLs. Three settings
 shape how they behave.
 
 **`mcpBaseUrl`** is the address clients use to reach the server: scheme, host and port,
@@ -226,9 +226,9 @@ the range of the container network if the proxy runs in Docker. If a request arr
 `X-Forwarded-For` from a connection that isn't trusted, the server logs a hint once,
 which usually means this setting is missing. If a trusted proxy sends a header the server
 can't read (an entry that isn't an address, or one with a port), the caller can't be
-determined: `upload-binary` refuses to reserve a URL, and an upload to an existing one is
+determined: `upload-binary-file` refuses to reserve a URL, and an upload to an existing one is
 refused.
 
 The address check is a second line of defence. Callers behind the same NAT share an
 address, so the real protection is the random token, which works once, briefly, for one
-destination. See [Security](security#upload-binary).
+destination. See [Security](security#upload-binary-file).
