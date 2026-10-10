@@ -30,6 +30,10 @@ All configuration lives in one JSON file. No environment variables are read exce
   "fetchMaxBytes": 10485760,
   "fetchTimeoutMs": 30000,
   "readMaxBytes": 10485760,
+  "uploadMaxBytes": 52428800,
+  "uploadTtlSeconds": 300,
+  "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
+  "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
     "knowledge": {
       "path": "/path/to/your/obsidian/vault"
@@ -45,7 +49,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 
 | Field                    | Required | Default    | Description                                                                             |
 | ------------------------ | -------- | ---------- | --------------------------------------------------------------------------------------- |
-| `mcpBaseUrl`             | Yes      | none       | Public HTTPS base URL of the server, used in OAuth responses and SSE endpoint events    |
+| `mcpBaseUrl`             | Yes      | none       | Public HTTPS base URL of the server (scheme, host and port, no path or trailing slash), used in OAuth responses, SSE endpoint events and upload URLs |
 | `vaults`                 | Yes      | none       | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a [container](install/install-docker), where `0.0.0.0` is needed for the published port to reach it |
@@ -55,6 +59,10 @@ All configuration lives in one JSON file. No environment variables are read exce
 | `fetchMaxBytes`          | No       | `10485760` | Default maximum response size for `fetch-binary-file`, in bytes; overridable per call   |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file`, in milliseconds; overridable per call  |
 | `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return, in bytes, measured on disk                 |
+| `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for, in bytes                       |
+| `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts, in seconds                                                |
+| `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing |
+| `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which are
 added on top of the global lists for that vault only.
@@ -73,8 +81,8 @@ other:
 {
   "denyPaths": ["private"],
   "vaults": {
-    "knowledge": { "path": "/export/knowledge" },
-    "work": { "path": "/export/work", "denyPaths": ["confidential", "drafts"] }
+    "knowledge": { "path": "/path/to/your/obsidian/vault" },
+    "work": { "path": "/path/to/another/vault", "denyPaths": ["confidential", "drafts"] }
   }
 }
 ```
@@ -163,3 +171,68 @@ The protection also closes the other routes to a protected file's content:
 Apart from those, `denyBinaryPaths` changes nothing: notes stay under `denyPaths`
 alone. The other tools still judge a path as given and don't resolve symbolic links.
 See [Security](security).
+
+### Uploads and reverse proxies
+
+[`upload-binary-file`](tools#upload-binary-file) hands out one-time upload URLs. Three settings
+shape how they behave.
+
+**`mcpBaseUrl`** is the address clients use to reach the server: scheme, host and port,
+with no path and no trailing slash, such as `https://server:4001`. Upload URLs are built
+from it (`https://server:4001/up/<random token>`). The server can't work out its own
+address from a request, because behind a reverse proxy the `Host` header it sees is
+usually the proxy's internal address. A client that reaches the server at a different
+address from `mcpBaseUrl` can't use the URL as given.
+
+**`uploadTempDir`** is where a file is held while it is being received, before it has
+been checked. It defaults to an `obsidian-mcp-uploads-<user id>` folder under the
+system's temporary folder (just `obsidian-mcp-uploads` where there are no user ids), named
+for the user so that two users on one machine don't share it. It must be an absolute
+path, and must not be inside a vault or contain one, so that Obsidian or a sync tool never
+sees a half-received file.
+
+At startup the server creates the folder with permissions only its user can use, and
+checks it. A folder that belongs to another user is refused, and the server stops with a
+message asking you to choose one with `uploadTempDir`: whoever owns the folder could swap
+a file between its check and its placement. A folder of yours that others can read or
+write is tightened to owner-only, and a note is logged. A symbolic link at the default
+location is refused, since you never put one there. If the default folder cannot be
+created at all, as in a container with a read-only filesystem and no writable `/tmp`, the
+server still starts: it logs that uploads are disabled, and only `upload-binary-file`
+refuses, saying why. A folder you configure yourself that cannot be used stops the server,
+because you asked for it. If you configure a folder that is a link,
+it is resolved once at startup and the real folder is used from then on, so re-pointing the
+link afterwards changes nothing. Leftovers from an earlier run are
+removed, and only files this feature created are touched. Put it on disk with enough room
+for `uploadMaxBytes` times the 4 uploads that can be in progress.
+
+The server's per-request time limit is raised, for every request, so that the largest
+permitted upload can finish at 50 KB/s, up to a maximum of one hour (Node's default is
+five minutes). An upload that sends nothing for 30 seconds is cut off regardless.
+
+**`trustedProxies`** matters only if the server sits behind a reverse proxy (nginx,
+Caddy, a tunnel, Tailscale Serve and so on). An upload URL works only from the address
+that reserved it. Behind a proxy every connection comes from the proxy, so unless the
+server is told otherwise, every caller looks the same and that check always passes.
+List the proxy's address here and the server reads the real caller from the
+`X-Forwarded-For` header the proxy adds:
+
+```json
+{ "trustedProxies": ["127.0.0.1", "::1"] }
+```
+
+Entries are single addresses or CIDR ranges such as `10.0.0.0/8`, for both IPv4 and
+IPv6. The header is believed only when the connection comes from one of them,
+because anyone can send a forged one. When it does, the entries are read from the
+right, skipping any that are themselves trusted proxies, and the first remaining one is
+the caller. Typical values: `["127.0.0.1", "::1"]` for a proxy on the same machine, or
+the range of the container network if the proxy runs in Docker. If a request arrives with
+`X-Forwarded-For` from a connection that isn't trusted, the server logs a hint once,
+which usually means this setting is missing. If a trusted proxy sends a header the server
+can't read (an entry that isn't an address, or one with a port), the caller can't be
+determined: `upload-binary-file` refuses to reserve a URL, and an upload to an existing one is
+refused.
+
+The address check is a second line of defence. Callers behind the same NAT share an
+address, so the real protection is the random token, which works once, briefly, for one
+destination. See [Security](security#upload-binary-file).

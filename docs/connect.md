@@ -107,3 +107,15 @@ with that is up to the client.
 
 The server never extracts text itself, so it behaves the same whichever client
 connects.
+
+### Uploading files
+
+[`upload-binary-file`](tools#upload-binary-file) gives the agent a URL to send a file to with
+`curl`, so the file doesn't pass through the model. It therefore needs an agent that can
+run commands on a machine that can reach the server's address (`mcpBaseUrl`).
+
+- **Claude Code** has a shell, so it can use it directly.
+- **Clients without a shell**, such as Claude Desktop chat, can't run `curl` themselves,
+  and clients that call the server from the vendor's cloud need the server to be
+  reachable from there. Neither was tested. They can still use `create-binary-file` for
+  small files.

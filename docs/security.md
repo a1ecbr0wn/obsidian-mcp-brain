@@ -97,6 +97,58 @@ a crafted path. The size limit matters
 because the whole file is base64-encoded into one response, which is a third larger
 than the file itself.
 
+### `upload-binary-file`
+
+This tool reserves a one-time URL, and a file sent to it ends up in the vault, so the
+URL has to be hard to misuse. It is built like this:
+
+- The token in the URL is 256 random bits. The server keeps only a hash of it, so what
+  it holds in memory can't be turned back into a working URL, and reservations are lost
+  when it restarts.
+- A reservation is used up by the first request that names it, whatever that request is,
+  and expires after `uploadTtlSeconds`. A person who has seen a URL therefore gets one
+  attempt, not several. The cost is that they can make the agent's upload fail once, and
+  the agent recovers by asking for a new URL.
+- The destination, size and hash are fixed when the URL is reserved. The upload request
+  can't change them, and it carries no filename or path of its own.
+- The deny rules and the no-overwrite rule are checked when the URL is reserved and
+  again when the file is placed. A file that doesn't match the declared size and SHA-256
+  is deleted, never placed.
+- Symbolic links in the destination are followed before those checks, at both points. A
+  link inside the vault that points outside it, or into a denied folder, is refused, so an
+  upload can't be used to write outside the vault. (`create-binary-file` does not do this.)
+- The file is copied to a hidden temporary name beside its destination, its hash checked
+  again, and then linked to its real name, so the real name never shows a half-written
+  file and an existing file is never overwritten. It gets the permissions any new file
+  would get, not the private ones used while staging.
+- Requests carrying an `Origin` header are refused, so a web page can't use a URL.
+- The file is held outside every vault until it has been verified, with permissions only
+  the server's user can use. The staging folder is checked at startup: it must not be
+  inside a vault, it must belong to the server's user (otherwise someone else could swap a
+  file between its check and its placement), and if others could read or write it, it is
+  tightened to owner-only.
+- At most 16 URLs can be pending and 4 uploads in progress, and an upload that sends
+  nothing for 30 seconds is cut off, so one client can't fill the disk or exhaust the
+  server's file handles. One trade-off: Node's whole-request time limit can't be set per
+  request, so the server raises it for every request, enough for the largest permitted
+  upload to finish at 50 KB/s and never beyond an hour. That makes a slow client on any
+  endpoint hold a connection longer than the default five minutes.
+- The server's log never contains the token or the URL; an upload request is logged as
+  `/up/<redacted>`.
+
+What it doesn't do: it is not authentication. The server has no real credentials (see
+[Who can reach the server](#who-can-reach-the-server)), so anyone who can call its tools
+can reserve a URL. The token limits one upload to one destination; it doesn't decide who
+may upload. The URL also appears in the tool's result, so it is visible to the model and
+in the conversation transcript, which is why it is short-lived and works only once.
+
+The address check (the upload must come from the address that reserved it) adds a
+little: callers behind the same NAT share an address, and behind a reverse proxy the
+check does nothing unless [`trustedProxies`](configuration#uploads-and-reverse-proxies)
+is set. Set it only to proxies you run, because the `X-Forwarded-For` header from
+anywhere else is ignored; if the server can be reached directly as well as through the
+proxy, a forged header would otherwise defeat the check.
+
 ### Reporting a problem
 
 If you think you have found a security problem, please raise it through

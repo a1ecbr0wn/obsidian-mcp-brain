@@ -240,6 +240,10 @@ All configuration lives in one JSON file — no environment variables are read e
   "fetchMaxBytes": 10485760,
   "fetchTimeoutMs": 30000,
   "readMaxBytes": 10485760,
+  "uploadMaxBytes": 52428800,
+  "uploadTtlSeconds": 300,
+  "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
+  "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
     "knowledge": {
       "path": "/path/to/your/obsidian/vault"
@@ -255,7 +259,7 @@ All configuration lives in one JSON file — no environment variables are read e
 
 | Field                    | Required | Default    | Description                                                                             |
 | ------------------------ | -------- | ---------- | ----------------------------------------------------------------------------------------- |
-| `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the server (used in OAuth responses and SSE endpoint events)   |
+| `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the server (scheme, host and port, no path or trailing slash); used in OAuth responses, SSE endpoint events and upload URLs |
 | `vaults`                 | Yes      | —          | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a container, where `0.0.0.0` is needed for the published port to reach it |
@@ -265,6 +269,10 @@ All configuration lives in one JSON file — no environment variables are read e
 | `fetchMaxBytes`          | No       | `10485760` | Default max response size for `fetch-binary-file` (bytes); overridable per call         |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file` (milliseconds); overridable per call    |
 | `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return (bytes, measured on disk)                   |
+| `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for (bytes)                         |
+| `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts (seconds)                                                  |
+| `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user |
+| `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which are added on top of the
 global list for that vault only (see below).
@@ -283,8 +291,8 @@ further without affecting any other vault:
 {
   "denyPaths": ["private"],
   "vaults": {
-    "knowledge": { "path": "/export/knowledge" },
-    "work": { "path": "/export/work", "denyPaths": ["confidential", "drafts"] }
+    "knowledge": { "path": "/path/to/your/obsidian/vault" },
+    "work": { "path": "/path/to/another/vault", "denyPaths": ["confidential", "drafts"] }
   }
 }
 ```
@@ -417,6 +425,49 @@ the bytes are saved to a file and the agent opens that path with its `Read` tool
 The `filename` must not end in `.md`; use `read-note` for notes. A file larger than
 `readMaxBytes` (10 MiB by default) is refused before it is read.
 
+### upload-binary-file
+
+`create-binary-file` needs the model to write the whole file out as base64, which is
+impractical beyond a few tens of kilobytes (an 810 KB PDF is about a million tokens) and
+gives no way to check the file arrived intact. `upload-binary-file` reserves a one-time URL
+that the agent sends the file to directly, so its bytes never pass through the model:
+
+```
+upload-binary-file → { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hex characters>" }
+curl --fail-with-body -sS -T report.pdf "https://server:4001/up/<random token>"
+```
+
+The size and SHA-256 come from a tool (`wc -c`, `sha256sum`), never from the model. The
+URL is the config's `mcpBaseUrl` (scheme, host and port, no path or trailing slash), then
+`/up/`, then a random token. The server checks the received bytes against the declared
+size and hash and places the file only if both match; otherwise it discards it.
+
+- The URL works for **one request only**: the first request that names it uses it up,
+  whatever that request is. If anything goes wrong, request a new URL.
+- It works only from the **same address** as the call that reserved it, and lasts
+  `uploadTtlSeconds` (300 by default).
+- The `filename` must not end in `.md`, the destination must not exist, and `denyPaths`
+  is checked when the URL is reserved and again when the file is placed.
+- At most `uploadMaxBytes` (50 MiB by default), 16 pending URLs and 4 uploads at once.
+- The file is held in `uploadTempDir` until verified, never inside a vault. At startup the
+  server refuses a staging folder owned by another user, and tightens one that others can
+  access to owner-only.
+- Symbolic links in the destination are followed before the deny rules are checked, so an
+  upload can't be used to write outside the vault.
+- Behind a reverse proxy, set `trustedProxies` to the proxy's address (for example
+  `["127.0.0.1", "::1"]`) so the address check can see the real caller from
+  `X-Forwarded-For`. The header is ignored from any other connection. Without it the
+  check always passes, and a hint is logged once.
+
+It needs an agent with a shell on a machine that can reach the server's address, such as
+Claude Code. The token limits one upload to one destination but is not authentication:
+anyone who can call the server's tools can reserve a URL, and the URL is visible in the
+conversation, which is why it is short-lived and single-use. `curl` exits with code 22
+and prints the server's explanation on any failure: `403` wrong address or an `Origin`
+header, `404` unknown, used or expired URL, `409` destination appeared meanwhile, `411`
+no `Content-Length`, `413` or `400` size mismatch, `422` hash mismatch, `503` too many
+uploads at once.
+
 ### Binary read protection (`denyBinaryPaths`)
 
 `denyPaths` removes a path from every tool; `denyBinaryPaths` only stops the agent
@@ -518,6 +569,7 @@ Restart Claude Desktop after saving.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
+| `upload-binary-file` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
