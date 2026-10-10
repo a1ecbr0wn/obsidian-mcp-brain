@@ -2,6 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   findHeadings,
+  outlineSections,
+  readSection,
   replaceSection,
   deleteSection,
   findCheckboxes,
@@ -264,5 +266,150 @@ describe('toggleCheckbox', () => {
   test('a negative or fractional occurrence is rejected', () => {
     assert.throws(() => toggleCheckbox('- [ ] task', 'task', undefined, -1), /invalid occurrence/i);
     assert.throws(() => toggleCheckbox('- [ ] task', 'task', undefined, 1.5), /invalid occurrence/i);
+  });
+});
+
+describe('line endings', () => {
+  test('findHeadings recognises headings in a CRLF note and keeps the text clean', () => {
+    const headings = findHeadings('# A\r\nold\r\n## B\r\nx');
+    assert.deepEqual(headings.map(h => [h.text, h.level, h.line]), [['A', 1, 1], ['B', 2, 3]]);
+  });
+
+  test('replaceSection writes the new body with the note\'s own line ending', () => {
+    const result = replaceSection('# A\r\nold\r\n# B\r\nx', 'A', 'new\nline');
+    assert.equal(result, '# A\r\nnew\r\nline\r\n# B\r\nx');
+  });
+
+  test('replaceSection leaves a body with no line breaks alone in a CRLF note', () => {
+    assert.equal(replaceSection('# A\r\nold\r\n# B', 'A', 'new'), '# A\r\nnew\r\n# B');
+  });
+
+  test('deleteSection works on a CRLF note', () => {
+    assert.equal(deleteSection('# A\r\nkeep\r\n# B\r\ngone\r\n# C\r\nkeep', 'B'), '# A\r\nkeep\r\n# C\r\nkeep');
+  });
+
+  test('toggleCheckbox works on a CRLF note', () => {
+    assert.equal(toggleCheckbox('- [ ] a\r\n- [ ] b', 'a'), '- [x] a\r\n- [ ] b');
+  });
+
+  test('a fenced block in a CRLF note still hides its headings', () => {
+    assert.equal(findHeadings('```\r\n# not\r\n```\r\n# Real').length, 1);
+  });
+});
+
+describe('replaceSection keeps the blank lines after the section', () => {
+  test('a single blank line before the next heading is kept', () => {
+    assert.equal(replaceSection('# A\nold\n\n# B\nx', 'A', 'new'), '# A\nnew\n\n# B\nx');
+  });
+
+  test('several blank lines are kept as they were', () => {
+    assert.equal(replaceSection('# A\nold\n\n\n# B', 'A', 'new'), '# A\nnew\n\n\n# B');
+  });
+
+  test('a trailing newline in the new content does not add a blank line', () => {
+    assert.equal(replaceSection('# A\nold\n\n# B\nx', 'A', 'new\n'), '# A\nnew\n\n# B\nx');
+    assert.equal(replaceSection('# A\nold\n# B\nx', 'A', 'new\n\n'), '# A\nnew\n# B\nx');
+  });
+
+  test('no blank line is invented where there was none', () => {
+    assert.equal(replaceSection('# A\nold\n# B', 'A', 'new'), '# A\nnew\n# B');
+  });
+
+  test('the file\'s final newline survives replacing the last section', () => {
+    assert.equal(replaceSection('# A\nold\n', 'A', 'new'), '# A\nnew\n');
+  });
+
+  test('an empty body leaves the heading followed by whatever blank lines it had', () => {
+    assert.equal(replaceSection('# A\nold\n\n# B', 'A', ''), '# A\n\n# B');
+    assert.equal(replaceSection('# A\nold\n# B', 'A', ''), '# A\n# B');
+  });
+
+  test('blank lines inside the new content are kept', () => {
+    assert.equal(replaceSection('# A\nold\n\n# B', 'A', 'one\n\ntwo'), '# A\none\n\ntwo\n\n# B');
+  });
+});
+
+describe('outlineSections', () => {
+  const NOTE = '# A\nx\n## B\ny\n\n# A\nz';
+
+  test('reports totals for the note', () => {
+    const o = outlineSections(NOTE);
+    assert.equal(o.chars, NOTE.length);
+    assert.equal(o.lines, 7);
+  });
+
+  test('lists headings in order with level, line range, size and occurrence', () => {
+    const o = outlineSections(NOTE);
+    assert.deepEqual(o.headings, [
+      { text: 'A', level: 1, line: 1, endLine: 4, chars: 12, occurrence: 1, total: 2 },
+      { text: 'B', level: 2, line: 3, endLine: 4, chars: 6, occurrence: 1, total: 1 },
+      { text: 'A', level: 1, line: 6, endLine: 7, chars: 5, occurrence: 2, total: 2 },
+    ]);
+  });
+
+  test('a section\'s size includes its sub-sections and excludes trailing blank lines', () => {
+    const o = outlineSections('# A\nbody\n## Sub\nmore\n\n\n# Z\nend');
+    assert.equal(o.headings[0].chars, '# A\nbody\n## Sub\nmore'.length);
+    assert.equal(o.headings[0].endLine, 4);
+  });
+
+  test('headings inside fenced code are not listed', () => {
+    assert.deepEqual(outlineSections('```\n# not\n```\n# Real').headings.map(h => h.text), ['Real']);
+  });
+
+  test('a note with no headings has an empty list', () => {
+    assert.deepEqual(outlineSections('just text\nmore').headings, []);
+  });
+
+  test('an empty note has no lines', () => {
+    assert.deepEqual(outlineSections(''), { chars: 0, lines: 0, headings: [] });
+  });
+
+  test('a trailing newline does not count as a line', () => {
+    assert.equal(outlineSections('# A\nx\n').lines, 2);
+  });
+});
+
+describe('readSection', () => {
+  const NOTE = '# A\nx\n## B\ny\n\n# A\nz\n';
+
+  test('returns the heading line and the content, sub-sections included', () => {
+    assert.equal(readSection(NOTE, 'A', 1), '# A\nx\n## B\ny');
+  });
+
+  test('returns a nested section on its own', () => {
+    assert.equal(readSection(NOTE, 'B'), '## B\ny');
+  });
+
+  test('occurrence picks among repeated headings', () => {
+    assert.equal(readSection(NOTE, 'A', 2), '# A\nz');
+  });
+
+  test('an ambiguous heading without an occurrence lists the matches, as edit-note does', () => {
+    assert.throws(() => readSection(NOTE, 'A'), err => {
+      assert.match(err.message, /ambiguous/i);
+      assert.match(err.message, /line 1/);
+      assert.match(err.message, /line 6/);
+      return true;
+    });
+  });
+
+  test('an unknown heading is an error', () => {
+    assert.throws(() => readSection(NOTE, 'Nope'), /not found/i);
+  });
+
+  test('a bad occurrence is an error', () => {
+    assert.throws(() => readSection(NOTE, 'A', 0), /invalid occurrence/i);
+    assert.throws(() => readSection(NOTE, 'A', 3), /invalid occurrence/i);
+  });
+
+  test('the size in the outline is the length of what readSection returns', () => {
+    for (const h of outlineSections(NOTE).headings) {
+      assert.equal(readSection(NOTE, h.text, h.occurrence).length, h.chars);
+    }
+  });
+
+  test('works on a CRLF note', () => {
+    assert.equal(readSection('# A\r\nx\r\n# B\r\ny', 'A'), '# A\r\nx');
   });
 });
