@@ -123,6 +123,14 @@ in `.md`; use `read-note` for notes. The file's size is checked before it is rea
 and a file larger than the config file's [`readMaxBytes`](configuration#shape)
 (10 MiB by default) is refused without being loaded. There is no per-call override.
 
+A large file that has not been read recently, a scanned PDF of a few MB for example,
+can fail on the first call with a client-side timeout such as `The operation timed out`.
+The server received the request and was still reading the file; the response is the file
+plus a third again for base64, and the client's own request timeout is the limit. A retry
+is then fast because the file is cached. The tool's description tells an agent to retry
+up to twice before reporting a failure. If a client times out on every attempt, lower
+`readMaxBytes` so such files are refused outright instead.
+
 The server does not interpret the file. It never parses a PDF, extracts text,
 renders pages or runs OCR, so it needs no extra software. The client does that work,
 which is why one tool covers a PDF with a real text layer and a scanned PDF whose
