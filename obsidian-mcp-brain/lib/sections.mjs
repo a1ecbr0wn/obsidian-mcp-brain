@@ -1,9 +1,14 @@
-// Pure functions for heading-section replacement and checkbox toggling within note content.
-// All functions take and return strings; no filesystem I/O.
+// Pure functions for reading, replacing and deleting heading sections, and for toggling
+// checkboxes, within note content. All functions take and return strings; no filesystem I/O.
+// Notes may use LF or CRLF line endings: lines are split on '\n', matched without a trailing
+// '\r', and written back with the note's own ending.
 
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 const CHECKBOX_RE = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/;
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+const stripCr = (line) => (line.endsWith('\r') ? line.slice(0, -1) : line);
+const isBlank = (line) => line.trim() === '';
 
 /**
  * Computes which lines fall inside a fenced code block (``` or ~~~, optionally indented
@@ -47,7 +52,7 @@ export function findHeadings(content) {
   const headings = [];
   lines.forEach((line, i) => {
     if (inFence[i]) return;
-    const m = HEADING_RE.exec(line);
+    const m = HEADING_RE.exec(stripCr(line));
     if (m) headings.push({ text: m[2].trim(), level: m[1].length, line: i + 1 });
   });
   return headings.map((h, idx) => {
@@ -102,55 +107,137 @@ function pickMatch(matches, occurrence) {
 }
 
 /**
+ * Finds the one heading `heading` (exact text) names, using the 1-based `occurrence` to choose
+ * between several. Shared by every section operation, so they all agree on what a heading
+ * refers to and fail the same way.
+ * @throws {Error} if there is no such heading, if it is ambiguous and no occurrence was given,
+ *   or if the occurrence is invalid.
+ */
+function locateHeading(content, heading, occurrence) {
+  const matches = findHeadings(content).filter(h => h.text === heading);
+  if (matches.length === 0) {
+    throw new Error(`Heading not found: ${heading}`);
+  }
+  if (matches.length > 1 && occurrence === undefined) {
+    throw ambiguityError('heading', heading, matches, m => `line ${m.line} (level ${m.level})`);
+  }
+  return pickMatch(matches, occurrence);
+}
+
+/**
+ * The last line (1-based) of a section that is not a blank line: the section's own extent,
+ * without the blank lines that separate it from whatever follows.
+ */
+function contentEndLine(lines, h) {
+  let end = h.bodyEndLine;
+  while (end > h.line && isBlank(lines[end - 1])) end--;
+  return end;
+}
+
+function sectionText(lines, h, end) {
+  return stripCr(lines.slice(h.line - 1, end).join('\n'));
+}
+
+/**
  * Replaces the content under the heading matching `heading` (exact text) with `newBody`,
  * leaving the heading line itself untouched. The replaced span runs from immediately after
  * the heading line up to (but not including) the next heading of the same or shallower
- * level, or end of file.
+ * level, or end of file. The blank lines that separated the section from what follows are
+ * kept, and trailing newlines in `newBody` are ignored, so the result does not depend on
+ * whether the caller ended its text with one. `newBody` is written with the note's own line
+ * ending.
  *
  * Throws if `heading` matches no heading, or matches more than one and no `occurrence`
  * (1-based) is given to disambiguate.
  */
 export function replaceSection(content, heading, newBody, occurrence) {
-  const headings = findHeadings(content);
-  const matches = headings.filter(h => h.text === heading);
-  if (matches.length === 0) {
-    throw new Error(`Heading not found: ${heading}`);
-  }
-  if (matches.length > 1 && occurrence === undefined) {
-    throw ambiguityError('heading', heading, matches, m => `line ${m.line} (level ${m.level})`);
-  }
-  const match = pickMatch(matches, occurrence);
-
+  const match = locateHeading(content, heading, occurrence);
   const lines = content.split('\n');
+  const crlf = content.includes('\r\n');
+
+  const end = contentEndLine(lines, match);
+  const body = newBody.replace(/(\r?\n)+$/, '');
+  const bodyLines = body === '' ? [] : body.split(/\r?\n/).map(l => (crlf ? l + '\r' : l));
   const before = lines.slice(0, match.line);
+  const kept = lines.slice(end, match.bodyEndLine);
   const after = lines.slice(match.bodyEndLine);
-  return [...before, ...newBody.split('\n'), ...after].join('\n');
+
+  const result = [...before, ...bodyLines, ...kept, ...after];
+  // A new line that ends up last has no line break after it, so it must not carry the '\r'.
+  if (crlf && kept.length === 0 && after.length === 0 && bodyLines.length > 0) {
+    result[result.length - 1] = stripCr(result[result.length - 1]);
+  }
+  return result.join('\n');
 }
 
 /**
  * Removes the heading matching `heading` (exact text) along with its entire body — the
  * heading line itself plus everything up to (but not including) the next heading of the
- * same or shallower level, or end of file. Unlike replaceSection, nothing is left behind
- * in the heading's place.
+ * same or shallower level, or end of file. When deleting to end of file, removes any
+ * trailing \r from the last kept line. Unlike replaceSection, nothing is left behind.
  *
  * Throws if `heading` matches no heading, or matches more than one and no `occurrence`
  * (1-based) is given to disambiguate.
  */
 export function deleteSection(content, heading, occurrence) {
-  const headings = findHeadings(content);
-  const matches = headings.filter(h => h.text === heading);
-  if (matches.length === 0) {
-    throw new Error(`Heading not found: ${heading}`);
-  }
-  if (matches.length > 1 && occurrence === undefined) {
-    throw ambiguityError('heading', heading, matches, m => `line ${m.line} (level ${m.level})`);
-  }
-  const match = pickMatch(matches, occurrence);
-
+  const match = locateHeading(content, heading, occurrence);
   const lines = content.split('\n');
   const before = lines.slice(0, match.line - 1);
   const after = lines.slice(match.bodyEndLine);
+  // Cutting the end of a CRLF note leaves the last kept line's '\r' with no '\n' after it.
+  if (after.length === 0 && before.length > 0) {
+    before[before.length - 1] = stripCr(before[before.length - 1]);
+  }
   return [...before, ...after].join('\n');
+}
+
+/**
+ * Returns the section a heading names: the heading line and everything under it up to the
+ * next heading of the same or shallower level, sub-sections included, without the blank
+ * lines that follow it. This is the extent replaceSection and deleteSection work on, except that
+ * they also account for those blank lines (replaceSection keeps them, deleteSection removes them).
+ *
+ * Throws like replaceSection when the heading is unknown or ambiguous.
+ * @returns {string}
+ */
+export function readSection(content, heading, occurrence) {
+  const match = locateHeading(content, heading, occurrence);
+  const lines = content.split('\n');
+  return sectionText(lines, match, contentEndLine(lines, match));
+}
+
+/**
+ * Lists a note's headings with what a reader needs to choose one: its level, where it is,
+ * how large the section is (sub-sections included), and which occurrence of that text it is.
+ * `chars` is the length readSection returns for the same heading.
+ * @returns {{chars: number, lines: number, headings: Array<{text: string, level: number,
+ *   line: number, endLine: number, chars: number, occurrence: number, total: number}>}}
+ */
+export function outlineSections(content) {
+  const lines = content.split('\n');
+  const headings = findHeadings(content);
+  const totals = new Map();
+  for (const h of headings) totals.set(h.text, (totals.get(h.text) ?? 0) + 1);
+  const seen = new Map();
+  const total = content === '' ? 0 : lines.length - (content.endsWith('\n') ? 1 : 0);
+  return {
+    chars: content.length,
+    lines: total,
+    headings: headings.map(h => {
+      const endLine = contentEndLine(lines, h);
+      const occurrence = (seen.get(h.text) ?? 0) + 1;
+      seen.set(h.text, occurrence);
+      return {
+        text: h.text,
+        level: h.level,
+        line: h.line,
+        endLine,
+        chars: sectionText(lines, h, endLine).length,
+        occurrence,
+        total: totals.get(h.text),
+      };
+    }),
+  };
 }
 
 /**
@@ -164,7 +251,7 @@ export function findCheckboxes(content) {
   const boxes = [];
   lines.forEach((line, i) => {
     if (inFence[i]) return;
-    const m = CHECKBOX_RE.exec(line);
+    const m = CHECKBOX_RE.exec(stripCr(line));
     if (m) boxes.push({ text: m[2].trim(), checked: m[1].toLowerCase() === 'x', line: i + 1 });
   });
   return boxes;

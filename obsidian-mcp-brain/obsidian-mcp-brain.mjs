@@ -35,7 +35,7 @@ import {
 } from './lib/uploads.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
-import { replaceSection, deleteSection, toggleCheckbox } from './lib/sections.mjs';
+import { replaceSection, deleteSection, toggleCheckbox, readSection, outlineSections } from './lib/sections.mjs';
 import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
 import { fetchToBuffer } from './lib/fetch.mjs';
 import {
@@ -105,7 +105,8 @@ const withTrash = (patterns) => (patterns.length ? [...patterns, '.trash'] : pat
  * mcpBaseUrl (required), denyPaths (default []), denyBinaryPaths (default [], wildcard
  * patterns whose binary files read-binary-file refuses to return), graphifyQueryTimeoutMs
  * (default 60000), fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000),
- * readMaxBytes (default 10MB), uploadMaxBytes (default 50MB), uploadTtlSeconds (default 300),
+ * readMaxBytes (default 10MB), readNoteMaxChars (default 50000, the longest text read-note returns
+ * before it asks for an outline or a heading instead), uploadMaxBytes (default 50MB), uploadTtlSeconds (default 300),
  * uploadTempDir (default: obsidian-mcp-uploads-<uid> under the OS temp dir for per-user isolation;
  * where uploads are staged, never inside a vault), trustedProxies (default [], addresses or CIDR
  * ranges of reverse proxies whose X-Forwarded-For is believed), and vaults (required). Each vault
@@ -171,6 +172,12 @@ function loadConfig(configPath) {
   const readMaxBytes = parseInt(config.readMaxBytes ?? 10 * 1024 * 1024, 10);
   if (Number.isNaN(readMaxBytes) || readMaxBytes < 1) {
     logErr(`Config file at ${configPath}: "readMaxBytes" must be a positive number`);
+    process.exit(1);
+  }
+
+  const readNoteMaxChars = parseInt(config.readNoteMaxChars ?? 50000, 10);
+  if (Number.isNaN(readNoteMaxChars) || readNoteMaxChars < 1) {
+    logErr(`Config file at ${configPath}: "readNoteMaxChars" must be a positive number`);
     process.exit(1);
   }
 
@@ -246,6 +253,7 @@ function loadConfig(configPath) {
     fetchMaxBytes,
     fetchTimeoutMs,
     readMaxBytes,
+    readNoteMaxChars,
     uploadMaxBytes,
     uploadTtlSeconds,
     uploadTempDir: path.resolve(uploadTempDir),
@@ -263,6 +271,7 @@ const {
   fetchMaxBytes: FETCH_MAX_BYTES,
   fetchTimeoutMs: FETCH_TIMEOUT_MS,
   readMaxBytes: READ_MAX_BYTES,
+  readNoteMaxChars: READ_NOTE_MAX_CHARS,
   uploadMaxBytes: UPLOAD_MAX_BYTES,
   uploadTtlSeconds: UPLOAD_TTL_SECONDS,
   uploadTempDir: CONFIGURED_UPLOAD_TEMP_DIR,
@@ -377,13 +386,16 @@ const TOOLS = [
   },
   {
     name: 'read-note',
-    description: 'Read the content of a note. Returns the raw markdown, followed by a second content item with the note\'s ISO 8601 last-modified timestamp.',
+    description: 'Read the content of a note. Returns the raw markdown, followed by a second content item with the note\'s ISO 8601 last-modified timestamp. A long note is refused rather than cut short: call again with outline: true to list its headings (with line ranges and sizes), then with heading (and occurrence, if the heading repeats) to read one section. A section is the heading line and everything under it up to the next heading of the same or higher level, sub-sections included, the extent edit-note\'s section operations work on, without the blank lines that follow it.',
     inputSchema: {
       type: 'object',
       properties: {
-        vault:    { type: 'string', description: 'Vault name' },
-        filename: { type: 'string', description: 'Filename including .md extension' },
-        folder:   { type: 'string', description: 'Optional vault-relative folder' },
+        vault:      { type: 'string', description: 'Vault name' },
+        filename:   { type: 'string', description: 'Filename including .md extension' },
+        folder:     { type: 'string', description: 'Optional vault-relative folder' },
+        outline:    { type: 'boolean', description: 'If true, return the note\'s list of headings instead of its content. Cannot be combined with heading.' },
+        heading:    { type: 'string', description: 'Exact heading text: return only that section, as edit-note\'s heading parameter selects it' },
+        occurrence: { type: 'integer', description: 'Disambiguates when heading matches more than once (1-based), as in edit-note. Needs heading.' },
       },
       required: ['vault', 'filename'],
     },
@@ -404,16 +416,16 @@ const TOOLS = [
   },
   {
     name: 'edit-note',
-    description: 'Edit an existing note by appending, prepending, replacing its content, replacing or deleting the content under a heading, or toggling a checkbox.',
+    description: 'Edit an existing note: append or prepend content, replace the whole note, replace or delete one section, or toggle a checkbox. A section is a heading line and everything under it up to the next heading of the same or higher level, so its sub-sections are part of it. replace-section keeps the heading line and replaces everything beneath it, sub-sections included, with content; it cannot change the heading itself, so to rename a heading use replace. delete-section removes the heading line and everything beneath it, sub-sections included. Use read-note with outline: true to see a note\'s headings.',
     inputSchema: {
       type: 'object',
       properties: {
         vault:         { type: 'string', description: 'Vault name' },
         filename:      { type: 'string', description: 'Filename including .md extension' },
         folder:        { type: 'string', description: 'Optional vault-relative folder' },
-        operation:     { type: 'string', enum: ['append', 'prepend', 'replace', 'replace-section', 'delete-section', 'toggle-checkbox'], description: 'Edit operation' },
-        content:       { type: 'string', description: 'Content to apply (append/prepend/replace/replace-section)' },
-        heading:       { type: 'string', description: 'Exact heading text to match (replace-section/delete-section only)' },
+        operation:     { type: 'string', enum: ['append', 'prepend', 'replace', 'replace-section', 'delete-section', 'toggle-checkbox'], description: 'Edit operation. replace-section: replace everything under the heading (sub-sections included), keeping the heading line. delete-section: remove the heading line and everything under it.' },
+        content:       { type: 'string', description: 'Content to apply (append/prepend/replace/replace-section). For replace-section this is the new body only: do not repeat the heading line.' },
+        heading:       { type: 'string', description: 'Exact heading text to match, without the leading # characters (replace-section/delete-section only)' },
         taskText:      { type: 'string', description: 'Exact checkbox text after the [ ]/[x] marker (toggle-checkbox only)' },
         checked:       { type: 'boolean', description: 'Explicit checkbox state (toggle-checkbox only); omit to flip the current state' },
         occurrence:    { type: 'integer', description: 'Disambiguates when heading/taskText matches more than once (1-based)' },
@@ -1384,16 +1396,58 @@ async function route(req, res, url, sid) {
     if (!relPath.toLowerCase().endsWith('.md') && isBinaryReadDenied(vault.denyBinaryPaths, relPath)) {
       return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
     }
+    const wantsOutline = args.outline === true;
+    if (args.outline !== undefined && typeof args.outline !== 'boolean') {
+      return toolErr(res, sid, msgId, 'outline must be true or false');
+    }
+    if (args.heading !== undefined && (typeof args.heading !== 'string' || args.heading === '')) {
+      return toolErr(res, sid, msgId, 'heading must be the exact text of a heading');
+    }
+    if (wantsOutline && args.heading !== undefined) {
+      return toolErr(res, sid, msgId, 'outline and heading cannot be combined: use outline to list the headings, then heading to read one');
+    }
+    if (args.occurrence !== undefined && args.heading === undefined) {
+      return toolErr(res, sid, msgId, 'occurrence needs a heading');
+    }
+    if ((wantsOutline || args.heading !== undefined) && !relPath.toLowerCase().endsWith('.md')) {
+      return toolErr(res, sid, msgId, 'outline and heading work on markdown notes (.md files) only');
+    }
     try {
       const absPath = path.join(vault.path, relPath);
       const content = await libReadNote(absPath);
       const stat = await fs.stat(absPath);
-      return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [
-          { type: 'text', text: content },
-          { type: 'text', text: `Last-Modified: ${formatMtime(stat)}` },
-        ],
+      const lastModified = { type: 'text', text: `Last-Modified: ${formatMtime(stat)}` };
+      const reply = (text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
+        content: [{ type: 'text', text }, lastModified],
       } }]);
+      if (wantsOutline) {
+        const o = outlineSections(content);
+        const count = o.headings.length === 0 ? 'no headings' : `${o.headings.length} heading${o.headings.length === 1 ? '' : 's'}`;
+        const rows = o.headings.map(h =>
+          `lines ${h.line}-${h.endLine} | ${h.chars} chars | occurrence ${h.occurrence} of ${h.total} | ${'#'.repeat(h.level)} ${h.text}`);
+        return reply([`${o.chars} characters, ${o.lines} lines, ${count}`, ...rows].join('\n'));
+      }
+      if (args.heading !== undefined) {
+        const section = readSection(content, args.heading, args.occurrence);
+        if (section.length > READ_NOTE_MAX_CHARS) {
+          const base = `Section "${args.heading}" is ${section.length} characters, which exceeds the ${READ_NOTE_MAX_CHARS}-character read limit: ${relPath}.`;
+          const { headings } = outlineSections(content);
+          const target = headings.find(h => h.text === args.heading && h.occurrence === (args.occurrence ?? 1));
+          const hasSubSections = headings.some(h => h.line > target.line && h.line <= target.endLine);
+          return toolErr(res, sid, msgId, hasSubSections
+            ? `${base} Call read-note with outline: true and read one of its sub-sections by heading instead.`
+            : `${base} It has no sub-sections to read instead, so it cannot be read through read-note unless "readNoteMaxChars" in the server's config file is raised.`);
+        }
+        return reply(section);
+      }
+      if (content.length > READ_NOTE_MAX_CHARS) {
+        const base = `Note is ${content.length} characters, which exceeds the ${READ_NOTE_MAX_CHARS}-character read limit: ${relPath}.`;
+        const hasHeadings = relPath.toLowerCase().endsWith('.md') && outlineSections(content).headings.length > 0;
+        return toolErr(res, sid, msgId, hasHeadings
+          ? `${base} Call read-note with outline: true to list its sections, then call it again with heading (and occurrence, if the heading repeats) to read one.`
+          : `${base} It has no headings to read it in parts by, so it cannot be read through read-note unless "readNoteMaxChars" in the server's config file is raised.`);
+      }
+      return reply(content);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }

@@ -30,6 +30,7 @@ All configuration lives in one JSON file. No environment variables are read exce
   "fetchMaxBytes": 10485760,
   "fetchTimeoutMs": 30000,
   "readMaxBytes": 10485760,
+  "readNoteMaxChars": 50000,
   "uploadMaxBytes": 52428800,
   "uploadTtlSeconds": 300,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
@@ -59,6 +60,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 | `fetchMaxBytes`          | No       | `10485760` | Default maximum response size for `fetch-binary-file`, in bytes; overridable per call   |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file`, in milliseconds; overridable per call  |
 | `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return, in bytes, measured on disk                 |
+| `readNoteMaxChars`       | No       | `50000`    | Longest text `read-note` returns in one go, in characters. A longer note or section is refused with a pointer to `outline` and `heading` |
 | `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for, in bytes                       |
 | `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts, in seconds                                                |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing |

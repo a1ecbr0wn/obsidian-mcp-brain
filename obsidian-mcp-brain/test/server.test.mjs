@@ -123,6 +123,7 @@ before(async () => {
     denyPaths: [DENY_DIR],
     denyBinaryPaths: ['protected-bin', '**/*.locked.pdf'],
     readMaxBytes: 4096,
+    readNoteMaxChars: 2000,
     vaults: { [vaultName]: { path: vaultDir } },
   }));
 
@@ -439,6 +440,247 @@ describe('read-note', () => {
     assert.ok(result.isError);
   });
 });
+
+// ── read-note: outline, heading, size limit ───────────────────────────────
+
+describe('read-note sections', () => {
+  const NOTE = '# Top\nintro\n## One\nfirst\n\n## Two\nsecond\n### Deep\nnested\n# Top\nagain\n';
+  const filler = 'x'.repeat(1500);
+
+  before(async () => {
+    await writeVaultNote('sections/note.md', NOTE);
+    await writeVaultNote('sections/crlf.md', '# A\r\nbody\r\n## B\r\ninner\r\n');
+    await writeVaultNote('sections/plain.md', 'no headings here\n');
+    await writeVaultNote('sections/big.md', `# Small\nshort\n# Big\n${filler}\n## Part 1\n${filler}\n## Part 2\nend\n`);
+    await writeVaultNote('sections/huge.md', `# Only\n${'y'.repeat(2500)}\n`);
+    await writeVaultNote('sections/nohead.md', `${'z'.repeat(2500)}\n`);
+    await writeVaultNote('sections/pic.svg', '<svg/>');
+    await writeVaultNote(`${DENY_DIR}/sections.md`, '# Secret\nbody');
+  });
+
+  const outline = (args) => callTool('read-note', { folder: 'sections', outline: true, ...args });
+
+  describe('outline', () => {
+    it('lists headings with line range, size, occurrence and text', async () => {
+      const r = await outline({ filename: 'note.md' });
+      assert.ok(!r.isError, JSON.stringify(r));
+      const lines = r.content[0].text.split('\n');
+      assert.match(lines[0], /^\d+ characters, 11 lines, 5 headings$/);
+      const row = (range, heading, occurrence, total, text) =>
+        `lines ${range} | ${outlineChars(NOTE, heading, occurrence)} chars | occurrence ${occurrence} of ${total} | ${text}`;
+      assert.deepEqual(lines.slice(1), [
+        row('1-9', 'Top', 1, 2, '# Top'),
+        row('3-4', 'One', 1, 1, '## One'),
+        row('6-9', 'Two', 1, 1, '## Two'),
+        row('8-9', 'Deep', 1, 1, '### Deep'),
+        row('10-11', 'Top', 2, 2, '# Top'),
+      ]);
+    });
+
+    it('also returns the last-modified time', async () => {
+      const r = await outline({ filename: 'note.md' });
+      assert.ok(r.content[1].text.startsWith('Last-Modified: '));
+    });
+
+    it('says so when a note has no headings', async () => {
+      const r = await outline({ filename: 'plain.md' });
+      assert.ok(!r.isError);
+      assert.match(r.content[0].text, /no headings/i);
+    });
+
+    it('finds the headings of a CRLF note', async () => {
+      const r = await outline({ filename: 'crlf.md' });
+      assert.match(r.content[0].text, /2 headings/);
+      assert.ok(r.content[0].text.includes('| # A'));
+    });
+
+    it('is not subject to the size limit', async () => {
+      const r = await outline({ filename: 'huge.md' });
+      assert.ok(!r.isError, JSON.stringify(r));
+    });
+
+    it('is refused for a denied path', async () => {
+      const r = await callTool('read-note', { folder: DENY_DIR, filename: 'sections.md', outline: true });
+      assert.ok(r.isError);
+      assert.ok(r.content[0].text.includes('Access denied'));
+    });
+
+    it('is refused for a file that is not a markdown note', async () => {
+      const r = await outline({ filename: 'pic.svg' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /\.md/);
+    });
+  });
+
+  describe('heading', () => {
+    it('returns the heading line and the section, sub-sections included', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', heading: 'Two' });
+      assert.ok(!r.isError, JSON.stringify(r));
+      assert.equal(r.content[0].text, '## Two\nsecond\n### Deep\nnested');
+      assert.ok(r.content[1].text.startsWith('Last-Modified: '));
+    });
+
+    it('uses occurrence to choose between repeated headings', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', heading: 'Top', occurrence: 2 });
+      assert.equal(r.content[0].text, '# Top\nagain');
+    });
+
+    it('lists the matches when a heading is ambiguous', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', heading: 'Top' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /ambiguous/i);
+      assert.match(r.content[0].text, /occurrence/);
+    });
+
+    it('is an error for an unknown heading', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', heading: 'Nope' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /not found/i);
+    });
+
+    it('reads a section of a CRLF note', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'crlf.md', heading: 'A' });
+      assert.equal(r.content[0].text, '# A\r\nbody\r\n## B\r\ninner');
+    });
+
+    it('accepts a heading exactly as the outline printed it, then edit-note accepts the same', async () => {
+      const o = await outline({ filename: 'note.md' });
+      const line = o.content[0].text.split('\n').find(l => l.endsWith('| ## One'));
+      const text = line.split(' | ').slice(3).join(' | ').replace(/^#+ /, '');
+      const read = await callTool('read-note', { folder: 'sections', filename: 'note.md', heading: text });
+      assert.equal(read.content[0].text, '## One\nfirst');
+      const edit = await callTool('edit-note', { folder: 'sections', filename: 'note.md', operation: 'replace-section', heading: text, content: 'first' });
+      assert.ok(!edit.isError, JSON.stringify(edit));
+    });
+
+    it('is refused for a denied path', async () => {
+      const r = await callTool('read-note', { folder: DENY_DIR, filename: 'sections.md', heading: 'Secret' });
+      assert.ok(r.isError);
+      assert.ok(r.content[0].text.includes('Access denied'));
+    });
+
+    it('is refused for a file that is not a markdown note', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'pic.svg', heading: 'x' });
+      assert.ok(r.isError);
+    });
+  });
+
+  describe('argument combinations', () => {
+    it('refuses outline together with heading', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', outline: true, heading: 'One' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /outline.*heading|heading.*outline/i);
+    });
+
+    it('refuses occurrence without heading', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', occurrence: 1 });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /occurrence/i);
+    });
+
+    it('refuses an empty heading', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md', heading: '' });
+      assert.ok(r.isError);
+    });
+  });
+
+  describe('size limit (readNoteMaxChars)', () => {
+    it('refuses a whole note over the limit and points at the section reads', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'big.md' });
+      assert.ok(r.isError);
+      const text = r.content[0].text;
+      assert.match(text, /\d+ characters/);
+      assert.ok(text.includes('2000'), text);
+      assert.match(text, /outline/);
+      assert.match(text, /heading/);
+      assert.equal(r.content.length, 1, 'no part of the note is returned');
+      assert.ok(!text.includes('xxxxx'));
+    });
+
+    it('reads a whole note at or under the limit', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'note.md' });
+      assert.ok(!r.isError);
+    });
+
+    it('reads one section of an over-limit note', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'big.md', heading: 'Small' });
+      assert.ok(!r.isError, JSON.stringify(r));
+      assert.equal(r.content[0].text, '# Small\nshort');
+    });
+
+    it('refuses a section over the limit and suggests a sub-section', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'big.md', heading: 'Big' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /sub-section|outline/i);
+    });
+
+    it('says plainly that a too-long section with no sub-sections needs a higher limit', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'huge.md', heading: 'Only' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /no sub-sections/i);
+      assert.ok(r.content[0].text.includes('readNoteMaxChars'), r.content[0].text);
+      assert.ok(!/read one of its sub-sections/i.test(r.content[0].text));
+    });
+
+    it('says plainly that a too-long note with no headings needs a higher limit', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'nohead.md' });
+      assert.ok(r.isError);
+      assert.match(r.content[0].text, /no headings/i);
+      assert.ok(r.content[0].text.includes('readNoteMaxChars'), r.content[0].text);
+    });
+
+    it('reads a sub-section of that section', async () => {
+      const r = await callTool('read-note', { folder: 'sections', filename: 'big.md', heading: 'Part 2' });
+      assert.ok(!r.isError);
+      assert.equal(r.content[0].text, '## Part 2\nend');
+    });
+  });
+});
+
+describe('edit-note section wording (#30)', () => {
+  let tool;
+  before(async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '3', method: 'tools/list' }, sid);
+    tool = r.msgs[0].result.tools.find(t => t.name === 'edit-note');
+  });
+
+  it('says a section includes its sub-sections', () => {
+    assert.match(tool.description, /sub-sections/i);
+  });
+
+  it('says replace-section keeps the heading line and cannot rename it', () => {
+    assert.match(tool.description, /replace-section keeps the heading line/i);
+    assert.match(tool.description, /rename/i);
+  });
+
+  it('says delete-section removes the heading too', () => {
+    assert.match(tool.description, /delete-section removes the heading line/i);
+  });
+
+  it('tells the caller not to repeat the heading in content', () => {
+    assert.match(tool.inputSchema.properties.content.description, /do not repeat the heading/i);
+  });
+
+  it('points at read-note outline for finding headings', () => {
+    assert.match(tool.description, /read-note.*outline/i);
+  });
+});
+
+/** Size the outline should report for a heading, worked out from the note's text. */
+function outlineChars(note, heading, occurrence) {
+  const lines = note.split('\n');
+  const heads = lines.map((l, i) => ({ l, i })).filter(({ l }) => /^#{1,6} /.test(l));
+  const target = heads.filter(h => h.l.replace(/^#+ /, '') === heading)[occurrence - 1];
+  const level = target.l.match(/^#+/)[0].length;
+  let end = lines.length;
+  for (const h of heads) {
+    if (h.i > target.i && h.l.match(/^#+/)[0].length <= level) { end = h.i; break; }
+  }
+  const body = lines.slice(target.i, end);
+  while (body.length > 1 && body[body.length - 1].trim() === '') body.pop();
+  return body.join('\n').length;
+}
 
 // ── create-note ───────────────────────────────────────────────────────────
 
@@ -2366,6 +2608,15 @@ describe('listenHost configuration', () => {
       assert.equal(code, 1, out);
       assert.ok(out.includes('"vaults.host.denyBinaryPaths" must be an array of strings'), out);
     });
+
+    for (const bad of [0, -1, 'abc']) {
+      it(`rejects readNoteMaxChars ${JSON.stringify(bad)} with a clear error`, async () => {
+        const { proc, out, code } = await startWith({ readNoteMaxChars: bad });
+        await stop(proc);
+        assert.equal(code, 1, out);
+        assert.ok(out.includes('"readNoteMaxChars" must be a positive number'), out);
+      });
+    }
 
     it('starts with valid readMaxBytes and denyBinaryPaths', async () => {
       const { proc, out } = await startWith({ readMaxBytes: 1024, denyBinaryPaths: ['**/*.pdf', 'scans'] });

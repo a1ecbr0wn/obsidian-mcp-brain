@@ -46,15 +46,52 @@ section-scoped edits, so a large note doesn't have to be resent in full for a sm
 change:
 
 - **`replace-section`** replaces the content under a heading, matched by its exact
-  text, and leaves the heading line itself in place.
-- **`delete-section`** removes a heading and everything under it, heading line
-  included.
+  text (without the `#` characters), and leaves the heading line itself in place.
+  Everything under the heading goes, sub-sections included, up to the next heading
+  of the same or a higher level. `content` is the new body only, so don't repeat the
+  heading. To rename a heading, use `replace`.
+- **`delete-section`** removes a heading and everything under it, heading line and
+  sub-sections included.
 - **`toggle-checkbox`** flips, or explicitly sets, a `- [ ]` or `- [x]` line,
   matched by its exact text.
 
 If a `heading` or `taskText` matches more than once in the note, the call fails
 with a list of every match (line number, and heading level where relevant). Pass
 the 1-based `occurrence` from that list on a follow-up call to pick one.
+
+### Reading part of a note
+
+`read-note` returns a whole note, which fails for a note too long for the client to
+accept (a project spec can reach 100K characters). Rather than return something the
+client then rejects, `read-note` refuses a note longer than
+[`readNoteMaxChars`](configuration#shape) (50,000 characters by default) and says how
+to read it in parts. It takes two extra parameters, named like `edit-note`'s:
+
+- **`outline: true`** returns the note's headings instead of its content. The first
+  line gives the characters, lines and number of headings; each heading then has its
+  line range, the size of its section, which occurrence of that text it is, and the
+  heading itself:
+
+  ```text
+  18420 characters, 312 lines, 3 headings
+  lines 1-310 | 18390 chars | occurrence 1 of 1 | # Project
+  lines 12-140 | 7210 chars | occurrence 1 of 1 | ## Design
+  lines 141-310 | 10980 chars | occurrence 1 of 2 | ## Notes
+  ```
+
+- **`heading`**, with `occurrence` if the heading repeats, returns that section: the
+  heading line and everything under it up to the next heading of the same or a higher
+  level, sub-sections included, without the blank lines that follow it. This is the
+  extent `edit-note`'s section operations work on, so a heading
+  from the outline can be passed straight to `edit-note`. A section longer than the
+  limit is refused too; read one of its sub-sections instead.
+
+`outline` and `heading` can't be used together, `occurrence` needs a `heading`, and
+both need a `.md` note. The outline is not subject to the size limit. Both results
+carry the `Last-Modified:` timestamp, as a whole-note read does.
+
+Headings inside fenced code blocks are ignored, and notes with Windows (CRLF) line
+endings work the same as any other.
 
 ### Avoiding overwrites with `expectedMtime`
 

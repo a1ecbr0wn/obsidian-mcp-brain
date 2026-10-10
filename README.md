@@ -240,6 +240,7 @@ All configuration lives in one JSON file — no environment variables are read e
   "fetchMaxBytes": 10485760,
   "fetchTimeoutMs": 30000,
   "readMaxBytes": 10485760,
+  "readNoteMaxChars": 50000,
   "uploadMaxBytes": 52428800,
   "uploadTtlSeconds": 300,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
@@ -269,6 +270,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | `fetchMaxBytes`          | No       | `10485760` | Default max response size for `fetch-binary-file` (bytes); overridable per call         |
 | `fetchTimeoutMs`         | No       | `30000`    | Default request timeout for `fetch-binary-file` (milliseconds); overridable per call    |
 | `readMaxBytes`           | No       | `10485760` | Largest file `read-binary-file` will return (bytes, measured on disk)                   |
+| `readNoteMaxChars`       | No       | `50000`    | Longest text `read-note` returns in one go (characters); longer notes are read by outline and heading |
 | `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for (bytes)                         |
 | `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts (seconds)                                                  |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user |
@@ -361,15 +363,29 @@ section-scoped edits so a large note doesn't need to be resent in full for a sma
 change:
 
 - **`replace-section`** — replaces the content under a heading (matched by exact
-  text), leaving the heading line itself in place.
-- **`delete-section`** — removes a heading and everything under it, heading line
-  included.
+  text, without the `#` characters), leaving the heading line itself in place.
+  Everything under the heading goes, sub-sections included, up to the next heading of
+  the same or a higher level. `content` is the new body only, so don't repeat the
+  heading; to rename a heading, use `replace`.
+- **`delete-section`** — removes a heading and everything under it, heading line and
+  sub-sections included.
 - **`toggle-checkbox`** — flips (or explicitly sets) a `- [ ]`/`- [x]` line, matched
   by its exact text.
 
 If a `heading` or `taskText` match isn't unique in the note, the call fails with a
 list of every match (line number, and heading level where relevant); pass the
 1-based `occurrence` from that list on a follow-up call to disambiguate.
+
+#### Reading part of a note
+
+`read-note` refuses a note longer than `readNoteMaxChars` (50,000 characters by
+default) instead of returning something the client then rejects. Call it with
+`outline: true` to list the note's headings (line range, size of the section, which
+occurrence of that text it is), then with `heading` (and `occurrence`, if it repeats)
+to read one section: the heading line and everything under it up to the next heading
+of the same or a higher level, sub-sections included, without the blank lines that
+follow it. A heading from the outline can be passed straight to `edit-note`. See the
+[tools page](https://brain.a1ecbr0wn.com/tools#reading-part-of-a-note).
 
 ### fetch-binary-file
 
