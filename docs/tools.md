@@ -24,6 +24,7 @@ vault the call applies to. Use `list-vaults` to see the names.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (for example an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client sends only a URL |
+| `upload-binary` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
@@ -140,3 +141,75 @@ checks, and only regular files are returned.
 
 How the file reaches the model depends on the client; see
 [Reading PDFs and other binary files](connect#reading-pdfs-and-other-binary-files).
+
+### `upload-binary`
+
+`create-binary-file` needs the model to write the whole file out as base64. That is
+impractical beyond a few tens of kilobytes (an 810 KB PDF is about a million tokens,
+more than one response can hold) and gives no way to tell whether the file arrived
+intact. `upload-binary` gives the agent a one-time URL to send the file to directly,
+so the file's bytes never pass through the model.
+
+The flow:
+
+1. The agent works out the file's size and SHA-256 with a tool (`wc -c`, `sha256sum`),
+   never by hand.
+2. It calls the tool:
+
+   ```text
+   upload-binary -> { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hexadecimal characters>" }
+   ```
+
+3. The result holds a URL of the form `https://server:4001/up/<random token>`, when it
+   expires, and a ready-to-run command.
+4. The agent runs it: `curl --fail-with-body -sS -T report.pdf "<url>"`.
+5. The server checks the received bytes against the declared size and hash. If both
+   match it places the file at the destination and answers with
+   `{"path", "bytes", "sha256"}`. If not, it discards the file and says why.
+
+The address part of the URL (`https://server:4001` above) is the config file's
+`mcpBaseUrl`; `/up/` is always the same and only the token after it is secret and
+random.
+
+The rules:
+
+- **One request only.** The first request that names the URL uses it up, whatever it
+  turns out to be: a wrong address, a wrong method, a bad `Content-Length` or a hash
+  mismatch all kill it just as a good upload does. If anything goes wrong, call the
+  tool again for a new URL.
+- **Same address.** The upload must come from the same network address as the call
+  that reserved it. Behind a reverse proxy this needs `trustedProxies`; see
+  [Configuration](configuration#uploads-and-reverse-proxies).
+- **Short-lived.** A URL lasts `uploadTtlSeconds` (300 by default).
+- **The destination.** The `filename` must not end in `.md` (use `create-note`), the
+  destination must not already exist, and it must pass the
+  [`denyPaths`](configuration#path-deny-list) check, both when the URL is reserved and
+  again when the file is placed, after following any symbolic links, so a link that
+  leads out of the vault, or into a denied folder, is refused. Missing folders are created.
+- **Limits.** The declared `size` can be at most `uploadMaxBytes` (50 MiB by default).
+  At most 16 URLs can be pending and 4 uploads in progress at once.
+- **Nothing is left behind.** A file that is rejected, interrupted or stalled leaves
+  nothing in the vault and nothing in the staging folder.
+
+What `curl` receives:
+
+| Code | Meaning |
+| --- | --- |
+| `201` | The file was received, matched, and placed. The body is `{"path", "bytes", "sha256"}` |
+| `400` | The `Content-Length` was smaller than the declared size |
+| `403` | The request came from a different address, carried an `Origin` header, or the destination is denied |
+| `404` | The URL is unknown, already used or expired (the same answer in every case) |
+| `405` | The request was not a `PUT` |
+| `409` | The destination appeared after the URL was reserved |
+| `411` | No `Content-Length` was sent (chunked uploads are refused) |
+| `413` | The `Content-Length` was larger than the declared size |
+| `422` | The received bytes did not match the declared SHA-256. The file was discarded |
+| `503` | Too many uploads are already in progress. Request a new URL and try again shortly |
+
+Because of `--fail-with-body`, `curl` exits with code 22 on any of the error codes and
+prints the server's explanation, which is what makes a failure readable.
+
+This needs an agent with a shell on a machine that can reach the server's address, such
+as Claude Code. A client without a shell, or whose network can't reach the server,
+can't use it, and falls back to `create-binary-file` for small files. See
+[Security](security#upload-binary) for what the URL does and doesn't protect.

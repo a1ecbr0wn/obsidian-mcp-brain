@@ -11,14 +11,28 @@
  */
 
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, createReadStream, createWriteStream, constants as fsConstants } from 'node:fs';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove } from './lib/access.mjs';
 import { mimeTypeFor } from './lib/mime.mjs';
+import {
+  UploadSlots,
+  normalizeAddress,
+  compileTrustedProxies,
+  callerAddress,
+  checkStagingDir,
+  checkStagingDirOwner,
+  defaultUploadTempDir,
+  resolveDestination,
+  sweepStaging,
+  stagingFileName,
+} from './lib/uploads.mjs';
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
 import { replaceSection, deleteSection, toggleCheckbox } from './lib/sections.mjs';
@@ -91,9 +105,12 @@ const withTrash = (patterns) => (patterns.length ? [...patterns, '.trash'] : pat
  * mcpBaseUrl (required), denyPaths (default []), denyBinaryPaths (default [], wildcard
  * patterns whose binary files read-binary-file refuses to return), graphifyQueryTimeoutMs
  * (default 60000), fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000),
- * readMaxBytes (default 10MB), and vaults (required). Each vault may add its own
- * denyPaths and denyBinaryPaths on top of the global lists. When any denyBinaryPaths are
- * configured, '.trash' is automatically added to protect against reads/moves of deleted files.
+ * readMaxBytes (default 10MB), uploadMaxBytes (default 50MB), uploadTtlSeconds (default 300),
+ * uploadTempDir (default: obsidian-mcp-uploads-<uid> under the OS temp dir for per-user isolation;
+ * where uploads are staged, never inside a vault), trustedProxies (default [], addresses or CIDR
+ * ranges of reverse proxies whose X-Forwarded-For is believed), and vaults (required). Each vault
+ * may add its own denyPaths and denyBinaryPaths on top of the global lists. When any denyBinaryPaths
+ * are configured, '.trash' is automatically added to protect against reads/moves of deleted files.
  * listenHost must be a non-empty string (e.g. "127.0.0.1", "0.0.0.0", or "::1").
  * Exits the process on validation failure.
  * @param {string} configPath - Path to the configuration JSON file.
@@ -157,6 +174,39 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  const uploadMaxBytes = parseInt(config.uploadMaxBytes ?? 50 * 1024 * 1024, 10);
+  if (Number.isNaN(uploadMaxBytes) || uploadMaxBytes < 1) {
+    logErr(`Config file at ${configPath}: "uploadMaxBytes" must be a positive number`);
+    process.exit(1);
+  }
+
+  const uploadTtlSeconds = parseInt(config.uploadTtlSeconds ?? 300, 10);
+  if (Number.isNaN(uploadTtlSeconds) || uploadTtlSeconds < 1) {
+    logErr(`Config file at ${configPath}: "uploadTtlSeconds" must be a positive number`);
+    process.exit(1);
+  }
+
+  const uploadTempDirIsDefault = config.uploadTempDir === undefined;
+  const uploadTempDirRaw = config.uploadTempDir ?? defaultUploadTempDir();
+  if (typeof uploadTempDirRaw !== 'string' || !uploadTempDirRaw.trim()) {
+    logErr(`Config file at ${configPath}: "uploadTempDir" must be a non-empty string`);
+    process.exit(1);
+  }
+  const uploadTempDir = uploadTempDirRaw.trim();
+
+  if (config.trustedProxies !== undefined
+      && (!Array.isArray(config.trustedProxies) || config.trustedProxies.some(p => typeof p !== 'string'))) {
+    logErr(`Config file at ${configPath}: "trustedProxies" must be an array of strings`);
+    process.exit(1);
+  }
+  let trustedProxies;
+  try {
+    trustedProxies = compileTrustedProxies(config.trustedProxies ?? []);
+  } catch (err) {
+    logErr(`Config file at ${configPath}: "trustedProxies": ${err.message}`);
+    process.exit(1);
+  }
+
   const globalDenyPaths = normDenyPaths(config.denyPaths, configPath, 'denyPaths');
   const globalDenyBinaryPaths = normDenyPaths(config.denyBinaryPaths, configPath, 'denyBinaryPaths');
 
@@ -182,6 +232,12 @@ function loadConfig(configPath) {
     };
   }
 
+  const stagingProblem = checkStagingDir(uploadTempDir, Object.values(vaults).map(v => v.path));
+  if (stagingProblem) {
+    logErr(`Config file at ${configPath}: "uploadTempDir" ${stagingProblem}`);
+    process.exit(1);
+  }
+
   return {
     listenPort,
     listenHost: listenHost.trim(),
@@ -190,6 +246,11 @@ function loadConfig(configPath) {
     fetchMaxBytes,
     fetchTimeoutMs,
     readMaxBytes,
+    uploadMaxBytes,
+    uploadTtlSeconds,
+    uploadTempDir: path.resolve(uploadTempDir),
+    uploadTempDirIsDefault,
+    trustedProxies,
     vaults,
   };
 }
@@ -202,8 +263,18 @@ const {
   fetchMaxBytes: FETCH_MAX_BYTES,
   fetchTimeoutMs: FETCH_TIMEOUT_MS,
   readMaxBytes: READ_MAX_BYTES,
+  uploadMaxBytes: UPLOAD_MAX_BYTES,
+  uploadTtlSeconds: UPLOAD_TTL_SECONDS,
+  uploadTempDir: CONFIGURED_UPLOAD_TEMP_DIR,
+  uploadTempDirIsDefault: UPLOAD_TEMP_DIR_IS_DEFAULT,
+  trustedProxies: TRUSTED_PROXIES,
   vaults: VAULTS,
 } = loadConfig(CONFIG_PATH);
+
+// Where uploads are staged. Starts as the configured path; prepareStagingDir() replaces it with
+// the folder's real path once that has been checked, so a symbolic link re-pointed afterwards
+// cannot move staging somewhere that was never checked.
+let UPLOAD_TEMP_DIR = CONFIGURED_UPLOAD_TEMP_DIR;
 
 // ── Path access control ────────────────────────────────────────────────────
 
@@ -406,6 +477,27 @@ const TOOLS = [
         timeoutMs: { type: 'integer', description: 'Optional override for the request timeout in milliseconds (default from server config)' },
       },
       required: ['vault', 'filename', 'url'],
+    },
+  },
+  {
+    name: 'upload-binary',
+    description: 'Reserve a one-time URL for uploading a binary file (a PDF, an image) to the vault without sending its contents through the model. '
+      + 'Give the destination, the file\'s size in bytes and its SHA-256, both computed with a tool such as `wc -c` and `sha256sum`, never by hand. '
+      + 'The result is a URL and a ready-to-run command: `curl --fail-with-body -sS -T <file> <url>`. '
+      + 'The URL works for ONE request only, for a few minutes, and only from the machine that called this tool; if the upload fails for any reason, call this tool again for a new URL. '
+      + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
+      + 'Fails if the destination already exists. '
+      + 'If the obsidian-mcp-brain skill is installed, use its upload-binary.sh script, which does the hashing and the curl call for you.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:    { type: 'string', description: 'Vault name' },
+        filename: { type: 'string', description: 'Filename including extension' },
+        folder:   { type: 'string', description: 'Optional vault-relative folder' },
+        size:     { type: 'integer', description: 'Size of the file in bytes (for example from `wc -c`)' },
+        sha256:   { type: 'string', description: 'SHA-256 of the file as 64 hexadecimal characters (for example from `sha256sum`)' },
+      },
+      required: ['vault', 'filename', 'size', 'sha256'],
     },
   },
   {
@@ -652,15 +744,56 @@ function sendSse(res, statusCode, sessionId, msgs) {
 
 // ── HTTP server ────────────────────────────────────────────────────────────
 
-const server = http.createServer(async (req, res) => {
+// ── upload state ───────────────────────────────────────────────────────────
+
+const UPLOAD_PREFIX = '/up/';
+const MAX_OUTSTANDING_UPLOADS = 16;
+const MAX_CONCURRENT_UPLOADS = 4;
+const UPLOAD_STALL_MS = 30_000; // an upload that sends nothing for this long is cut off
+const UPLOAD_MIN_RATE = 50_000; // bytes per second a slow but steady upload is allowed to drop to
+
+const uploads = new UploadSlots({ ttlMs: UPLOAD_TTL_SECONDS * 1000, maxOutstanding: MAX_OUTSTANDING_UPLOADS });
+setInterval(() => uploads.sweep(), 30_000).unref();
+let activeUploads = 0;
+let warnedForwardedFor = false;
+
+/**
+ * The address a request really comes from (see callerAddress). Logs a hint, once, if a
+ * request carries X-Forwarded-For but its connection is not a trusted proxy: that is usually
+ * a server behind a reverse proxy that has not set trustedProxies, where every caller would
+ * otherwise look like the proxy.
+ * @param {http.IncomingMessage} req
+ * @returns {string}
+ */
+function clientAddress(req) {
+  if (!warnedForwardedFor && req.headers['x-forwarded-for']
+      && !TRUSTED_PROXIES.check(normalizeAddress(req.socket.remoteAddress))) {
+    warnedForwardedFor = true;
+    log('NOTE: a request carried X-Forwarded-For from a connection that is not in "trustedProxies", so the header was ignored. '
+      + 'If this server runs behind a reverse proxy, set "trustedProxies" so upload addresses are checked correctly.');
+  }
+  return callerAddress(req, TRUSTED_PROXIES);
+}
+
+/**
+ * Handles all incoming HTTP requests, including those with Expect: 100-continue.
+ * Routes to upload handling, OAuth endpoints, or the MCP request handler.
+ * @param {http.IncomingMessage} req - The incoming HTTP request.
+ * @param {http.ServerResponse} res - The HTTP response to send.
+ */
+async function handleRequest(req, res) {
   const url = req.url?.split('?')[0];
+  // Only requests that say 'Expect: 100-continue' arrive through the 'checkContinue' listener,
+  // and Node then leaves answering it to us. Upload requests are answered after their checks.
+  if (EXPECTS_CONTINUE.test(req.headers.expect ?? '') && !url?.startsWith(UPLOAD_PREFIX)) res.writeContinue();
   // Validate session ID as a UUID — all legitimate IDs are created by randomUUID().
   // Non-matching values become '' so sessions.has('') is always false.
   const rawSid = req.headers['mcp-session-id']?.trim() || '';
   const sid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawSid)
     ? rawSid : '';
   const safeMethod = req.method?.replace(/[^\w-]/g, '?') ?? 'UNKNOWN';
-  const safeUrl    = (url ?? '').replace(/[^\w/.-]/g, '?');
+  // An upload URL's last part is a secret, so it is never logged.
+  const safeUrl    = url?.startsWith(UPLOAD_PREFIX) ? '/up/<redacted>' : (url ?? '').replace(/[^\w/.-]/g, '?');
   const safeSid    = sid.slice(0, 8) || 'none';
   log(`${safeMethod} ${safeUrl} sid=${safeSid}`);
 
@@ -670,11 +803,222 @@ const server = http.createServer(async (req, res) => {
     logErr('unhandled:', err);
     if (!res.headersSent) { res.writeHead(500); res.end(); }
   }
-});
+}
+
+const server = http.createServer(handleRequest);
+server.on('checkContinue', handleRequest);
+// Node's default allows a whole request 300 s, and cannot be changed per request. The largest
+// permitted upload must be able to finish at UPLOAD_MIN_RATE, so the limit is raised for every
+// request on the server, but never beyond an hour. A stalled upload is cut off by UPLOAD_STALL_MS.
+server.requestTimeout = Math.min(3_600_000, Math.max(300_000, Math.ceil(UPLOAD_MAX_BYTES / UPLOAD_MIN_RATE) * 1000));
+
+// ── PUT /up/<token>: receiving an upload ───────────────────────────────────
+
+// Node sends Expect: 100-continue requests to 'checkContinue' for any value containing the token.
+const EXPECTS_CONTINUE = /(?:^|\W)100-continue(?:$|\W)/i;
+
+/**
+ * Answers an upload request, closing the connection afterwards. Whatever the client is still
+ * sending (up to a limit) is read and discarded first, which gives it a chance to read the
+ * answer instead of seeing the connection reset.
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {number} status
+ * @param {string|object} body - Plain text, or an object sent as JSON.
+ * @param {object} [headers] - Extra response headers.
+ */
+function rejectUpload(req, res, status, body, headers = {}) {
+  if (res.headersSent || res.destroyed) return;
+  const isText = typeof body === 'string';
+  res.writeHead(status, { 'Content-Type': isText ? 'text/plain' : 'application/json', Connection: 'close', ...headers });
+  res.end(isText ? body : JSON.stringify(body));
+  if (req.destroyed) return;
+  let drained = 0;
+  req.on('data', chunk => {
+    drained += chunk.length;
+    if (drained > 1_048_576) req.destroy();
+  });
+  req.resume();
+}
+
+/**
+ * Reads an upload's body into a staging file, hashing it as it goes. Unlike stream.pipeline
+ * this never destroys the request on failure, so the caller can still send an answer.
+ * @param {http.IncomingMessage} req
+ * @param {string} stagePath - Staging file to create (it must not exist).
+ * @param {number} size - Declared size; more data than this is an error.
+ * @returns {Promise<{received: number, digest: string}>}
+ * @throws {Error} with message 'more data than declared', 'upload stalled',
+ *   'upload aborted by the client', or the underlying file error.
+ */
+function receiveUpload(req, stagePath, size) {
+  return new Promise((resolve, reject) => {
+    const out = createWriteStream(stagePath, { flags: 'wx', mode: 0o600 });
+    const hash = createHash('sha256');
+    let received = 0;
+    let settled = false;
+    const cleanup = () => {
+      req.off('data', onData);
+      req.socket?.off('timeout', onStall);
+    };
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      out.destroy();
+      reject(err);
+    };
+    const onStall = () => fail(new Error('upload stalled'));
+    const onData = (chunk) => {
+      received += chunk.length;
+      if (received > size) return fail(new Error('more data than declared'));
+      hash.update(chunk);
+      if (!out.write(chunk)) {
+        req.pause();
+        out.once('drain', () => req.resume());
+      }
+    };
+    out.on('error', fail);
+    out.on('finish', () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ received, digest: hash.digest('hex') });
+    });
+    req.on('data', onData);
+    req.on('error', fail);
+    req.on('end', () => { if (!settled) out.end(); });
+    req.on('close', () => { if (!req.complete) fail(new Error('upload aborted by the client')); });
+    req.socket?.setTimeout(UPLOAD_STALL_MS);
+    req.socket?.once('timeout', onStall);
+  });
+}
+
+/**
+ * Puts a received file in its place in the vault without overwriting anything. The file is
+ * first copied to a hidden temporary name beside its destination (re-checking its hash as it
+ * goes, and taking its permissions from the process's umask like any other file the vault
+ * gets), then hard-linked to its real name, so the real name appears complete or not at all.
+ * @param {object} vault - A configured vault.
+ * @param {string} relPath - Vault-relative destination.
+ * @param {string} stagePath - The received file.
+ * @param {string} sha256 - The hash the received file must still have.
+ * @returns {Promise<'ok'|'exists'|'denied'|'outside'|'corrupt'>}
+ */
+async function placeUpload(vault, relPath, stagePath, sha256) {
+  if (_isDenied(vault.denyPaths, relPath)) return 'denied';
+  const resolved = await resolveDestination(vault.path, relPath);
+  if (!resolved.ok) return 'outside';
+  if (_isDenied(vault.denyPaths, resolved.rel)) return 'denied';
+  const dest = path.join(vault.path, relPath);
+  try {
+    await fs.access(dest);
+    return 'exists';
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  const tmp = path.join(path.dirname(dest), `.${stagingFileName()}`);
+  try {
+    const hash = createHash('sha256');
+    const hasher = new Transform({ transform(chunk, _e, cb) { hash.update(chunk); cb(null, chunk); } });
+    await pipeline(createReadStream(stagePath), hasher, createWriteStream(tmp, { flags: 'wx' }));
+    if (hash.digest('hex') !== sha256) return 'corrupt';
+    try {
+      await fs.link(tmp, dest);
+    } catch (err) {
+      if (err.code === 'EEXIST') return 'exists';
+      // Filesystems without hard links: fall back to an exclusive copy.
+      try {
+        await fs.copyFile(tmp, dest, fsConstants.COPYFILE_EXCL);
+      } catch (copyErr) {
+        if (copyErr.code === 'EEXIST') return 'exists';
+        await fs.unlink(dest).catch(() => {});
+        throw copyErr;
+      }
+    }
+    return 'ok';
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+/**
+ * Handles every request to /up/...: the one-time upload URL. The order matters: the slot is
+ * used up first, so whatever the request turns out to be, the URL is dead afterwards. The
+ * staging file is always removed before any answer (success or error) is sent to the client.
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} url - The request path.
+ */
+async function handleUpload(req, res, url) {
+  const slot = uploads.consume(url.slice(UPLOAD_PREFIX.length));
+  if (!slot) return rejectUpload(req, res, 404, 'not found');
+  if (req.method !== 'PUT') return rejectUpload(req, res, 405, 'method not allowed', { Allow: 'PUT' });
+  if (req.headers.origin !== undefined) return rejectUpload(req, res, 403, 'forbidden origin');
+  if (clientAddress(req) !== slot.address) return rejectUpload(req, res, 403, 'forbidden');
+
+  const contentLength = req.headers['content-length'];
+  if (req.headers['transfer-encoding'] !== undefined || contentLength === undefined) {
+    return rejectUpload(req, res, 411, { error: `Content-Length of ${slot.size} is required` });
+  }
+  if (!/^\d+$/.test(contentLength)) return rejectUpload(req, res, 400, { error: 'invalid Content-Length' });
+  const length = Number(contentLength);
+  if (length > slot.size) return rejectUpload(req, res, 413, { error: `Content-Length ${length} is larger than the declared size ${slot.size}` });
+  if (length < slot.size) return rejectUpload(req, res, 400, { error: `Content-Length ${length} is smaller than the declared size ${slot.size}` });
+  if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+    return rejectUpload(req, res, 503, { error: 'too many uploads in progress; request a new URL and try again shortly' }, { 'Retry-After': '5' });
+  }
+
+  const vault = VAULTS[slot.vault];
+  const stagePath = path.join(UPLOAD_TEMP_DIR, stagingFileName());
+  // The staging file is removed before any answer is sent, so a client that gets one can rely on it being gone.
+  const discard = () => fs.unlink(stagePath).catch(() => {});
+  const answer = async (status, body) => { await discard(); rejectUpload(req, res, status, body); };
+  activeUploads++;
+  try {
+    if (EXPECTS_CONTINUE.test(req.headers.expect ?? '')) res.writeContinue();
+    const { received, digest } = await receiveUpload(req, stagePath, slot.size);
+    req.socket?.setTimeout(0);
+    if (received !== slot.size) return await answer(400, { error: `received ${received} bytes, expected ${slot.size}` });
+    if (digest !== slot.sha256) {
+      return await answer(422, { error: 'sha256 does not match the declared hash', expected: slot.sha256, actual: digest });
+    }
+    const outcome = await placeUpload(vault, slot.relPath, stagePath, slot.sha256);
+    if (outcome === 'denied' || outcome === 'outside') return await answer(403, { error: 'Access denied' });
+    if (outcome === 'exists') return await answer(409, { error: 'destination already exists', path: slot.relPath });
+    if (outcome === 'corrupt') return await answer(500, { error: 'the file changed while it was being placed; request a new URL and try again' });
+    await discard();
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ path: slot.relPath, bytes: received, sha256: digest }));
+  } catch (err) {
+    const message = err.message.replaceAll(vault.path + '/', '').replaceAll(UPLOAD_TEMP_DIR + '/', '');
+    if (message === 'upload aborted by the client') {
+      log('upload aborted by the client');
+    } else if (message === 'more data than declared') {
+      log('upload refused: more data than declared');
+      await answer(413, { error: 'more data than declared' });
+    } else if (message === 'upload stalled') {
+      log('upload cut off: stalled');
+      await answer(408, { error: 'upload stalled' });
+    } else {
+      logErr('upload failed:', message);
+      await answer(500, { error: 'upload failed' });
+    }
+  } finally {
+    activeUploads--;
+    if (!req.socket?.destroyed) req.socket?.setTimeout(0);
+    await discard(); // a safety net for any path that did not already
+  }
+}
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1']);
 
 async function route(req, res, url, sid) {
+  // Upload URLs are handled first: the one-time slot must be used up by the first request
+  // that names it, before any other check (including the Origin check below) can turn it away.
+  if (url?.startsWith(UPLOAD_PREFIX)) return handleUpload(req, res, url);
+
   // Reject cross-origin browser requests to defend against DNS-rebinding.
   // Direct tool/CLI calls don't send Origin so this only fires for browsers.
   const origin = req.headers['origin'];
@@ -1223,6 +1567,51 @@ async function route(req, res, url, sid) {
     }
   }
 
+  if (msg.method === 'tools/call' && msg.params?.name === 'upload-binary') {
+    const args = msg.params.arguments ?? {};
+    const vault = Object.hasOwn(VAULTS, args.vault) ? VAULTS[args.vault] : undefined;
+    if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
+    const relPath = normPath(args.folder, args.filename);
+    if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
+    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
+    if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    const { size, sha256 } = args;
+    if (!Number.isInteger(size) || size < 1) return toolErr(res, sid, msgId, 'size must be a positive whole number of bytes');
+    if (size > UPLOAD_MAX_BYTES) return toolErr(res, sid, msgId, `size ${size} is larger than the ${UPLOAD_MAX_BYTES}-byte upload limit`);
+    if (typeof sha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
+      return toolErr(res, sid, msgId, 'sha256 must be 64 hexadecimal characters: the SHA-256 of the file, from a tool such as sha256sum');
+    }
+    try {
+      const resolved = await resolveDestination(vault.path, relPath);
+      if (!resolved.ok || _isDenied(vault.denyPaths, resolved.rel)) return toolErr(res, sid, msgId, 'Access denied');
+      await fs.access(path.join(vault.path, relPath));
+      return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+    }
+    let slot;
+    try {
+      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req) });
+    } catch (err) {
+      if (err.code === 'TOO_MANY_SLOTS') {
+        return toolErr(res, sid, msgId, 'Too many pending uploads. Wait for one to finish or expire, then try again');
+      }
+      if (err.code === 'NO_ADDRESS') {
+        return toolErr(res, sid, msgId, 'Could not work out the address this request came from, so an upload cannot be reserved. If the server is behind a reverse proxy, check "trustedProxies"');
+      }
+      throw err;
+    }
+    const url = `${BASE_URL.replace(/\/+$/, '')}${UPLOAD_PREFIX}${slot.token}`;
+    return toolOk(res, sid, msgId, [
+      `Upload reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()}).`,
+      `URL: ${url}`,
+      `Valid for ${UPLOAD_TTL_SECONDS} seconds, for one request only, and only from the address that made this request.`,
+      'Send the file with:',
+      `curl --fail-with-body -sS -T "<path-to-file>" "${url}"`,
+      'Replace <path-to-file> with the local file. If the upload fails for any reason, request a new URL.',
+    ].join('\n'));
+  }
+
   if (msg.method === 'tools/call' && msg.params?.name === 'read-binary-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
@@ -1618,6 +2007,45 @@ function handleAuthorize(req, res) {
 }
 
 // ── start ──────────────────────────────────────────────────────────────────
+
+/**
+ * Creates the staging folder, checks (after resolving symbolic links) that it is not inside a
+ * vault, and removes stale staging files left by an earlier run. Exits if it cannot be used.
+ */
+async function prepareStagingDir() {
+  const realOrResolved = async (p) => fs.realpath(p).catch(() => path.resolve(p));
+  try {
+    await fs.mkdir(CONFIGURED_UPLOAD_TEMP_DIR, { recursive: true, mode: 0o700 });
+    // A symbolic link at the default location can only be someone else's doing, since the owner
+    // never put it there. A configured folder may legitimately be a link, and is resolved once.
+    if (UPLOAD_TEMP_DIR_IS_DEFAULT && (await fs.lstat(CONFIGURED_UPLOAD_TEMP_DIR)).isSymbolicLink()) {
+      throw new Error('it is a symbolic link, which the default location must not be. Choose a folder of your own with "uploadTempDir"');
+    }
+    const realStaging = await fs.realpath(CONFIGURED_UPLOAD_TEMP_DIR);
+    // mkdir's mode only applies to a folder it creates. A folder that already existed, in a
+    // shared temporary directory for example, may belong to someone else or be open to them,
+    // and whoever controls it could swap a file between its hash check and its placement.
+    const stat = await fs.stat(realStaging);
+    const ownerProblem = checkStagingDirOwner(stat, process.getuid?.());
+    if (ownerProblem) throw new Error(`it ${ownerProblem}. Choose a folder of your own with "uploadTempDir"`);
+    if (stat.mode & 0o077) {
+      await fs.chmod(realStaging, 0o700);
+      log(`restricted the permissions of ${realStaging} to its owner`);
+    }
+    const problem = checkStagingDir(
+      realStaging,
+      await Promise.all(Object.values(VAULTS).map(v => realOrResolved(v.path))),
+    );
+    if (problem) throw new Error(`it ${problem}`);
+    UPLOAD_TEMP_DIR = realStaging;
+    const removed = await sweepStaging(UPLOAD_TEMP_DIR);
+    if (removed) log(`removed ${removed} stale upload file(s) from ${UPLOAD_TEMP_DIR}`);
+  } catch (err) {
+    logErr(`Cannot use "uploadTempDir" ${CONFIGURED_UPLOAD_TEMP_DIR}: ${err.message}`);
+    process.exit(1);
+  }
+}
+await prepareStagingDir();
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
   log(`obsidian-mcp server listening on ${LISTEN_HOST}:${LISTEN_PORT}`);
