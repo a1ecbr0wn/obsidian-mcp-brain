@@ -456,7 +456,9 @@ The server never parses a PDF, extracts text, renders pages or runs OCR, so it n
 no extra software; the client does the reading, which is why one tool covers a PDF
 with a real text layer and a scanned PDF whose text is only in images. In Claude Code
 the bytes are saved to a file and the agent opens that path with its `Read` tool
-(checked end to end for both kinds of PDF); other clients have not been checked.
+(checked end to end for both kinds of PDF). Claude Desktop chat shows images but silently
+drops a PDF and rejects other types, so use a code mode chat there; other clients have not
+been checked. The `skills/read-binary-file` skill makes an agent check this first.
 The `filename` must not end in `.md`; use `read-note` for notes. A file larger than
 `readMaxBytes` (10 MiB by default) is refused before it is read.
 
@@ -585,6 +587,23 @@ below with your server's actual address:
 ```
 
 Restart Claude Desktop after saving.
+
+---
+
+---
+
+## Agent skills
+
+The repository includes two agent skills, `read-binary-file` and `upload-binary-file`, in
+[`skills/`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills). The tools work
+without them; the skills tell an agent how to use the tools well and what to say when a client
+can't show a file.
+
+| Where you run Claude | How to get the skills |
+|---|---|
+| Claude Code, including the code mode of the Claude Desktop app | `/plugin marketplace add a1ecbr0wn/obsidian-mcp-brain`, then `/plugin install obsidian-mcp-brain@obsidian-mcp-brain` |
+| Cowork | Add the `obsidian-mcp-brain.plugin` file from the [latest release](https://github.com/a1ecbr0wn/obsidian-mcp-brain/releases/latest) |
+| Claude Desktop chat and claude.ai | Upload a `.skill` file from the latest release in **Settings → Capabilities → Skills** |
 
 ---
 

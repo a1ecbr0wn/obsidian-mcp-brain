@@ -213,6 +213,10 @@ checks, and only regular files are returned.
 
 How the file reaches the model depends on the client; see
 [Reading PDFs and other binary files](connect#reading-pdfs-and-other-binary-files).
+Claude Code reads any file this way. Claude Desktop chat shows images but silently drops
+a PDF and rejects other types, so use a code mode chat there. The repository includes an
+agent skill, [`skills/read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file),
+that checks this before reading and tells the user what to do.
 
 ### `upload-binary-file`
 
@@ -290,6 +294,6 @@ that does steps 1 and 4 for the agent. Its script, `scripts/upload-binary-file.s
 `prepare <file>` (prints the file name, size and SHA-256) and `send <file> <url>` (uploads, then
 compares the server's reply with the local file and never prints the token). It needs `curl` and one
 of `sha256sum`, `shasum` or `openssl`. The npm package contains only the server, so copy the skill
-folder into your agent's skills directory (for Claude Code, `~/.claude/skills/`) to use it. The tool
-works without the skill. See
+folder into your agent's skills directory (for Claude Code, `~/.claude/skills/`) to use it, or
+install the plugin; see [Agent skills](connect#agent-skills). The tool works without the skill. See
 [Security](security#upload-binary-file) for what the URL does and doesn't protect.
