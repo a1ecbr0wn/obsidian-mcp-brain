@@ -376,6 +376,33 @@ If a `heading` or `taskText` match isn't unique in the note, the call fails with
 list of every match (line number, and heading level where relevant); pass the
 1-based `occurrence` from that list on a follow-up call to disambiguate.
 
+#### Listing files other than notes
+
+`list-notes` lists notes by default. Give it `extension` to list any other kind of file, so
+an agent can find the PDFs and images that `read-binary-file`, `upload-binary-file` and
+the other binary-file tools work on.
+
+| `extension` | Lists |
+| --- | --- |
+| *(omitted)* or `md` | The notes: files ending in `.md`, in any letter case |
+| `pdf` | Every PDF |
+| `p*` | `pdf`, `png` and anything else starting with `p` |
+| `*` | Every file, whatever its extension |
+
+- Give the extension without a dot: `pdf`, not `.pdf` or `*.pdf`. `*` matches any run of
+  characters and `?` one character.
+- Case is ignored, so `jpg` finds `IMG_0001.JPG`.
+- The extension is the text after the last dot, so `gz` finds `backup.tar.gz`. A file with
+  no extension is listed only by `*`.
+- Each line is the vault-relative path, which includes the extension, then the
+  last-modified timestamp. `path` scopes the listing to a folder.
+- Hidden files and folders (names starting with a dot, such as `.obsidian` and `.trash`) and
+  symbolic links are not listed. If `path` is itself a hidden folder, only its notes are listed,
+  whatever `extension` says.
+- `extension` is at most 64 characters and has no spaces at either end.
+- `denyPaths` applies. [`denyBinaryPaths`](#binary-read-protection-denybinarypaths)
+  does not hide names: it only stops a file's content being read.
+
 #### Reading part of a note
 
 `read-note` refuses a note longer than `readNoteMaxChars` (50,000 characters by
@@ -572,7 +599,7 @@ Restart Claude Desktop after saving.
 
 | Tool | Description |
 | --- | --- |
-| `list-notes` | List all notes in the vault, or scoped to a folder. Returns sorted vault-relative paths, each with a last-modified timestamp |
+| `list-notes` | List the notes in the vault, or scoped to a folder, or other files with `extension` (such as `pdf`, or `*` for every file). Returns sorted vault-relative paths, each with a last-modified timestamp |
 | `list-tags` | List all unique tags (YAML frontmatter) used across vault notes, optionally scoped to a subdirectory |
 | `search-tags` | Find notes that have ALL of the specified tags |
 | `new-notes` | List notes created in the last 7 days, or since a provided timestamp |

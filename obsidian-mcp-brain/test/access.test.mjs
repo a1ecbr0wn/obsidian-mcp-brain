@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normPath, isDenied, checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove } from '../lib/access.mjs';
+import { normPath, isDenied, checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError, matchesExtension } from '../lib/access.mjs';
 
 const DENY = ['people', 'private/journal'];
 
@@ -477,5 +477,80 @@ describe('upload-binary-file access', () => {
 
   it('allows a permitted destination', () => {
     assert.equal(checkAccess(DENY, 'upload-binary-file', { folder: 'projects', filename: 'a.pdf' }), null);
+  });
+});
+
+// ── extension filter (list-notes) ───────────────────────────────────────────
+
+describe('extensionPatternError', () => {
+  it('accepts plain extensions and wildcards', () => {
+    for (const ok of ['md', 'pdf', 'p*', '*', 'j?g', '*g', 'tar*']) {
+      assert.equal(extensionPatternError(ok), null, ok);
+    }
+  });
+
+  it('refuses a pattern containing a dot or a slash, naming the fix', () => {
+    for (const bad of ['.pdf', '*.pdf', 'tar.gz', 'a/b', 'a\\b']) {
+      const msg = extensionPatternError(bad);
+      assert.ok(msg && /extension only/i.test(msg), `${bad}: ${msg}`);
+    }
+  });
+
+  it('refuses a pattern longer than 64 characters and one with surrounding spaces', () => {
+    assert.equal(extensionPatternError('a'.repeat(64)), null);
+    assert.ok(/at most 64/.test(extensionPatternError('a'.repeat(65))));
+    assert.ok(/space/.test(extensionPatternError('pdf ')));
+    assert.ok(/space/.test(extensionPatternError(' pdf')));
+  });
+
+  it('refuses an empty string and a non-string, pointing at *', () => {
+    for (const bad of ['', '   ', 5, null, ['pdf']]) {
+      const msg = extensionPatternError(bad);
+      assert.ok(msg && msg.includes('*'), `${JSON.stringify(bad)}: ${msg}`);
+    }
+  });
+});
+
+describe('matchesExtension', () => {
+  it('matches the extension exactly, ignoring case in both', () => {
+    assert.equal(matchesExtension('pdf', 'docs/a.pdf'), true);
+    assert.equal(matchesExtension('pdf', 'docs/A.PDF'), true);
+    assert.equal(matchesExtension('PDF', 'a.pdf'), true);
+    assert.equal(matchesExtension('pdf', 'a.png'), false);
+  });
+
+  it('does not match part of an extension or part of the name', () => {
+    assert.equal(matchesExtension('pd', 'a.pdf'), false);
+    assert.equal(matchesExtension('pdf', 'pdf'), false, 'a file called pdf has no extension');
+    assert.equal(matchesExtension('md', 'notes.md.bak'), false);
+  });
+
+  it('supports * and ?', () => {
+    assert.equal(matchesExtension('p*', 'a.pdf'), true);
+    assert.equal(matchesExtension('p*', 'a.png'), true);
+    assert.equal(matchesExtension('p*', 'a.jpg'), false);
+    assert.equal(matchesExtension('j?g', 'a.jpg'), true);
+    assert.equal(matchesExtension('j?g', 'a.jpeg'), false);
+    assert.equal(matchesExtension('*g', 'a.jpg'), true);
+  });
+
+  it('uses the text after the last dot', () => {
+    assert.equal(matchesExtension('gz', 'backup.tar.gz'), true);
+    assert.equal(matchesExtension('tar', 'backup.tar.gz'), false);
+  });
+
+  it('matches a file with no extension only with *', () => {
+    assert.equal(matchesExtension('*', 'LICENSE'), true);
+    assert.equal(matchesExtension('md', 'LICENSE'), false);
+    assert.equal(matchesExtension('p*', 'LICENSE'), false);
+    assert.equal(matchesExtension('*', 'folder/trailing.'), true);
+  });
+
+  it('runs in bounded time on a hostile pattern, the longest allowed, against a long name', () => {
+    const pattern = '*a'.repeat(31) + '*b'; // 64 characters
+    assert.equal(extensionPatternError(pattern), null);
+    const start = Date.now();
+    for (let i = 0; i < 200; i++) matchesExtension(pattern, `x.${'a'.repeat(255)}`);
+    assert.ok(Date.now() - start < 1000, 'matcher must not backtrack');
   });
 });

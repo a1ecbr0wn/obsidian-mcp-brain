@@ -115,6 +115,51 @@ export function checkBinaryMove(compiled, srcPath, dstPath) {
   return null;
 }
 
+// ── extension filter: the `extension` argument of list-notes ────────────────
+//
+// The same wildcards as denyBinaryPaths ('*' any run of characters, '?' one character),
+// applied to the text after the last dot of a file name, and matched without regard to case
+// (cameras and scanners write `.JPG` and `.PDF`). It reuses segmentMatches, so a pattern
+// from the client cannot make the server backtrack. Its length is capped for the same
+// reason: the cost of a match is the pattern length times the (short) extension, once per file.
+const MAX_EXTENSION_PATTERN = 64;
+
+/**
+ * Returns a message if `pattern` is not a usable extension filter, else null.
+ * @param {unknown} pattern - The client-supplied `extension` value.
+ * @returns {string|null}
+ */
+export function extensionPatternError(pattern) {
+  if (typeof pattern !== 'string' || !pattern.trim()) {
+    return 'extension must be a non-empty string, for example "pdf", or "*" for every file';
+  }
+  if (pattern.length > MAX_EXTENSION_PATTERN) {
+    return `extension must be at most ${MAX_EXTENSION_PATTERN} characters`;
+  }
+  if (pattern !== pattern.trim()) {
+    return 'extension must not start or end with a space';
+  }
+  if (/[./\\]/.test(pattern)) {
+    return `Give the extension only, for example "pdf", not "${pattern}" (no dot and no slash; "*" matches any extension)`;
+  }
+  return null;
+}
+
+/**
+ * True if the file's extension (the text after its last dot, empty if it has none) matches
+ * the pattern, ignoring case. A name with no extension matches only patterns that match the
+ * empty string, which is `*`.
+ * @param {string} pattern - A pattern that passed extensionPatternError.
+ * @param {string} fileName - A file name or vault-relative path.
+ * @returns {boolean}
+ */
+export function matchesExtension(pattern, fileName) {
+  const base = fileName.slice(fileName.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  const ext = dot > 0 ? base.slice(dot + 1) : '';
+  return segmentMatches(pattern.toLowerCase(), ext.toLowerCase());
+}
+
 // Returns an error message string if the tool call should be blocked, else null.
 export function checkAccess(denyPaths, toolName, args) {
   if (!denyPaths.length) return null;
