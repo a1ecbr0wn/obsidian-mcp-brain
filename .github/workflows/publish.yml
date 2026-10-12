@@ -30,6 +30,14 @@ jobs:
 
       - run: npm test --workspace=obsidian-mcp-brain
 
+      # The skills as .skill files (for Claude Desktop chat and claude.ai, which cannot
+      # use a plugin marketplace) and the plugin as a .plugin file (for Cowork). Claude
+      # Code installs the plugin from the repository and needs neither. Packaged before
+      # the npm publish so that a packaging failure stops the release before anything
+      # is published.
+      - name: Package skills and plugin
+        run: sh scripts/package-skills.sh dist
+
       # No NODE_AUTH_TOKEN: authentication is via GitHub Actions' OIDC identity
       # (npm Trusted Publishing), configured on the package's npmjs.com settings,
       # not a long-lived secret.
@@ -48,6 +56,10 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           body_path: CHANGELOG.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.skill
+            dist/*.plugin
           tag_name: "${{ github.ref_name }}"
           name: "Release ${{ github.ref_name }}"
           token: "${{ secrets.GITHUB_TOKEN }}"

@@ -64,7 +64,7 @@ jobs:
         env:
           PKG_VERSION: ${{ env.pkg_version }}
         run: |
-          for f in obsidian-mcp-brain/package.json package.json; do
+          for f in obsidian-mcp-brain/package.json package.json .claude-plugin/plugin.json; do
             sed -i "s/\"version\": \".*\"/\"version\": \"${PKG_VERSION}\"/" "$f"
             grep -qF "\"version\": \"${PKG_VERSION}\"" "$f" || { echo "::error::failed to bump version in $f"; exit 1; }
           done
@@ -73,7 +73,7 @@ jobs:
         env:
           TAG: ${{ env.tag }}
         run: |
-          git add obsidian-mcp-brain/package.json package.json
+          git add obsidian-mcp-brain/package.json package.json .claude-plugin/plugin.json
           git commit -S -m "Release ${TAG}"
           git push
           git tag "${TAG}" -s -m "Release ${TAG}"

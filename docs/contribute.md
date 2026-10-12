@@ -39,7 +39,10 @@ release**. Leave the version blank to have it worked out from the commits since 
 last tag, or give one explicitly. The workflow bumps the version in both
 `package.json` files, then commits and tags with a GPG signature. It then
 starts the publish workflow, which runs the tests, publishes to npm with
-provenance, and creates a GitHub Release with the changelog.
+provenance, and creates a GitHub Release with the changelog. The release also carries
+the agent skills as `.skill` files and a `.plugin` file, built by
+`scripts/package-skills.sh`. The tag workflow bumps `.claude-plugin/plugin.json` with the
+two `package.json` files, so the plugin's version is the release's.
 
 Publishing to npm uses
 [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) rather than a
