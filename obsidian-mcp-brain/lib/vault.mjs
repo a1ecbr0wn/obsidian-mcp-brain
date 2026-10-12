@@ -7,6 +7,20 @@ import { rewriteLinks, extractReferences } from './wikilinks.mjs';
 import { isDenied } from './access.mjs';
 
 /**
+ * True if the file name is a markdown note: it ends in `.md`, in any letter case. This is
+ * the single definition of "a note" for the note walker and for the tools that send a caller
+ * to the note tools, so a name is always exactly one of note or not-a-note and cannot fall
+ * between two checks. Link match keys, the trash name and the move-rewrite use it too. Obsidian
+ * opens a `.MD` file as a note (checked by the owner), which is why the match is
+ * case-insensitive.
+ * @param {string} name - A file name or a vault-relative path.
+ * @returns {boolean}
+ */
+export function isNoteFile(name) {
+  return /\.md$/i.test(name);
+}
+
+/**
  * Recursively walks vault directories, calling callback for each markdown file.
  * Skips directories and files starting with '.' (e.g., .trash, .obsidian, .git).
  * @param {string} dir - Directory to walk
@@ -24,7 +38,7 @@ export async function walkVault(dir, cb) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       await walkVault(full, cb);
-    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+    } else if (entry.isFile() && isNoteFile(entry.name)) {
       await cb(full);
     }
   }
@@ -56,12 +70,13 @@ export async function walkAllFiles(dir, cb) {
 }
 
 /**
- * Computes the match key for a vault-relative path: the .md extension is stripped for
- * notes (so links match their extensionless target), kept for everything else (so embeds,
+ * Computes the match key for a vault-relative path: the .md extension, in any letter case,
+ * is stripped for notes (so links match their extensionless target, as Obsidian resolves
+ * [[Foo]] to Foo.MD), kept for everything else (so embeds,
  * which reference the full filename, match exactly).
  */
 function matchKeyFor(relPath) {
-  return relPath.endsWith('.md') ? relPath.replace(/\.md$/, '') : relPath;
+  return isNoteFile(relPath) ? relPath.replace(/\.md$/i, '') : relPath;
 }
 
 /**
@@ -154,12 +169,15 @@ export async function deleteNote(absPath, permanent, vaultPath) {
   } else {
     const trashDir = path.join(vaultPath, '.trash');
     await fs.mkdir(trashDir, { recursive: true });
-    const baseName = path.basename(absPath, '.md');
-    let dest = path.join(trashDir, path.basename(absPath));
+    const fileName = path.basename(absPath);
+    // Keep the note's own extension (.md or .MD) when a suffix is added.
+    const ext = isNoteFile(fileName) ? fileName.slice(-3) : '';
+    const stem = fileName.slice(0, fileName.length - ext.length);
+    let dest = path.join(trashDir, fileName);
     try {
       await fs.access(dest);
       // Collision — suffix with timestamp to avoid silent overwrite
-      dest = path.join(trashDir, `${baseName}_${Date.now()}.md`);
+      dest = path.join(trashDir, `${stem}_${Date.now()}${ext}`);
     } catch {
       // ENOENT: destination free, use it
     }
@@ -186,8 +204,8 @@ export async function moveNote(vaultPath, srcAbs, dstAbs, denyPaths) {
 
   await fs.mkdir(path.dirname(dstAbs), { recursive: true });
 
-  const oldRel = path.relative(vaultPath, srcAbs).replace(/\.md$/, '');
-  const newRel = path.relative(vaultPath, dstAbs).replace(/\.md$/, '');
+  const oldRel = path.relative(vaultPath, srcAbs).replace(/\.md$/i, '');
+  const newRel = path.relative(vaultPath, dstAbs).replace(/\.md$/i, '');
 
   await fs.rename(srcAbs, dstAbs);
 

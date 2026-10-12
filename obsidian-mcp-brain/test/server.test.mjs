@@ -250,6 +250,126 @@ describe('list-notes', () => {
     }, sid);
     assert.ok(r.msgs[0].result.isError);
   });
+
+  describe('extension filter', () => {
+    const DIR = 'ext-list';
+    const paths = (result) => result.content[0].text.split('\n').filter(Boolean).map(l => l.split('\t')[0]).sort();
+
+    before(async () => {
+      await writeVaultNote(`${DIR}/note.md`, '# Note');
+      await writeVaultNote(`${DIR}/UPPER.MD`, '# Upper');
+      await writeVaultNote(`${DIR}/scan.pdf`, '%PDF-1.4');
+      await writeVaultNote(`${DIR}/SCAN2.PDF`, '%PDF-1.4');
+      await writeVaultNote(`${DIR}/photo.png`, 'png');
+      await writeVaultNote(`${DIR}/photo.jpg`, 'jpg');
+      await writeVaultNote(`${DIR}/README`, 'no extension');
+      await writeVaultNote(`${DIR}/sub/deep.pdf`, '%PDF-1.4');
+      await writeVaultNote(`${DIR}/.obsidian/workspace.json`, '{}');
+      await writeVaultNote(`${DIR}/.hidden.pdf`, '%PDF-1.4');
+      await writeVaultNote(`${DENY_DIR}/secret.pdf`, '%PDF-1.4');
+      await writeVaultNote('protected-bin/locked.pdf', '%PDF-1.4');
+      await fs.symlink(path.join(vaultDir, DIR, 'scan.pdf'), path.join(vaultDir, DIR, 'link.pdf'));
+    });
+
+    it('defaults to md, so a call without extension is unchanged', async () => {
+      const without = await callTool('list-notes', { path: DIR });
+      const withMd = await callTool('list-notes', { path: DIR, extension: 'md' });
+      assert.deepEqual(paths(without), [`${DIR}/UPPER.MD`, `${DIR}/note.md`].sort());
+      assert.deepEqual(paths(withMd), paths(without));
+    });
+
+    it('lists files of one extension, case-insensitively, with their mtime and full name', async () => {
+      const r = await callTool('list-notes', { path: DIR, extension: 'pdf' });
+      assert.ok(!r.isError);
+      assert.deepEqual(paths(r), [`${DIR}/SCAN2.PDF`, `${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`].sort());
+      for (const line of r.content[0].text.split('\n')) {
+        const [name, iso] = line.split('\t');
+        assert.ok(/\.pdf$/i.test(name));
+        assert.ok(!Number.isNaN(Date.parse(iso)), iso);
+      }
+    });
+
+    it('supports wildcards', async () => {
+      const r = await callTool('list-notes', { path: DIR, extension: 'p*' });
+      assert.deepEqual(paths(r), [
+        `${DIR}/SCAN2.PDF`, `${DIR}/photo.png`, `${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`,
+      ].sort());
+    });
+
+    it('lists every file with *, including one with no extension, but not hidden or linked files', async () => {
+      const r = await callTool('list-notes', { path: DIR, extension: '*' });
+      const got = paths(r);
+      assert.ok(got.includes(`${DIR}/README`));
+      assert.ok(got.includes(`${DIR}/photo.jpg`));
+      assert.ok(got.includes(`${DIR}/note.md`));
+      assert.ok(!got.some(p => p.includes('.obsidian')), 'hidden folder skipped');
+      assert.ok(!got.includes(`${DIR}/.hidden.pdf`), 'hidden file skipped');
+      assert.ok(!got.includes(`${DIR}/link.pdf`), 'symbolic link not listed');
+    });
+
+    it('scopes with path', async () => {
+      const r = await callTool('list-notes', { path: `${DIR}/sub`, extension: '*' });
+      assert.deepEqual(paths(r), [`${DIR}/sub/deep.pdf`]);
+    });
+
+    it('applies denyPaths to the scope and to each file', async () => {
+      const scoped = await callTool('list-notes', { path: DENY_DIR, extension: 'pdf' });
+      assert.ok(scoped.isError, 'denied scope refused');
+      const whole = await callTool('list-notes', { extension: 'pdf' });
+      assert.ok(!paths(whole).includes(`${DENY_DIR}/secret.pdf`), 'denied file left out');
+    });
+
+    it('does not hide a name that denyBinaryPaths protects', async () => {
+      const r = await callTool('list-notes', { extension: 'pdf' });
+      assert.ok(paths(r).includes('protected-bin/locked.pdf'));
+    });
+
+    it('says which extension matched nothing', async () => {
+      const r = await callTool('list-notes', { path: DIR, extension: 'zip' });
+      assert.ok(!r.isError);
+      assert.ok(r.content[0].text.includes('zip'), r.content[0].text);
+    });
+
+    it('lists only notes when the scope is itself a hidden folder', async () => {
+      await writeVaultNote('.hidden-scope/secret.pdf', '%PDF-1.4');
+      await writeVaultNote('.hidden-scope/inside.md', '# Inside');
+      const r = await callTool('list-notes', { path: '.hidden-scope', extension: '*' });
+      assert.deepEqual(paths(r), ['.hidden-scope/inside.md']);
+      const pdf = await callTool('list-notes', { path: '.hidden-scope', extension: 'pdf' });
+      assert.ok(!paths(pdf).includes('.hidden-scope/secret.pdf'));
+    });
+
+    it('refuses a denied scope however it is written', async () => {
+      for (const p of [`../${DENY_DIR}`, `/${DENY_DIR}`, `ext-list/../${DENY_DIR}`, `${DENY_DIR}/`]) {
+        const r = await callTool('list-notes', { path: p, extension: '*' });
+        assert.ok(r.isError, p);
+      }
+    });
+
+    it('refuses an over-long pattern, surrounding spaces and a non-string', async () => {
+      for (const extension of ['a'.repeat(65), 'pdf ', 5, null, ['pdf']]) {
+        const r = await callTool('list-notes', { path: DIR, extension });
+        assert.ok(r.isError, JSON.stringify(extension));
+      }
+    });
+
+    it('refuses a pattern with a dot or a slash, and an empty one', async () => {
+      for (const extension of ['.pdf', '*.pdf', 'a/b', '']) {
+        const r = await callTool('list-notes', { path: DIR, extension });
+        assert.ok(r.isError, JSON.stringify(extension));
+        assert.ok(/extension/i.test(r.content[0].text));
+      }
+    });
+
+    it('states in the tool schema that it lists files and what extension does', async () => {
+      const sid = await initSession();
+      const r = await post({ jsonrpc: '2.0', id: '9', method: 'tools/list' }, sid);
+      const tool = r.msgs[0].result.tools.find(t => t.name === 'list-notes');
+      assert.ok(tool.inputSchema.properties.extension, 'extension parameter declared');
+      assert.ok(/default/i.test(tool.inputSchema.properties.extension.description));
+      assert.ok(/\*/.test(tool.inputSchema.properties.extension.description));
+    });
+  });
 });
 
 // ── list-tags ─────────────────────────────────────────────────────────────

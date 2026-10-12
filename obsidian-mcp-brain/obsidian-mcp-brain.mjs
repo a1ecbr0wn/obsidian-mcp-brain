@@ -19,7 +19,7 @@ import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
-import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove } from './lib/access.mjs';
+import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError, matchesExtension } from './lib/access.mjs';
 import { mimeTypeFor } from './lib/mime.mjs';
 import {
   UploadSlots,
@@ -39,6 +39,8 @@ import { replaceSection, deleteSection, toggleCheckbox, readSection, outlineSect
 import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
 import { fetchToBuffer } from './lib/fetch.mjs';
 import {
+  isNoteFile,
+  walkAllFiles as libWalkAllFiles,
   walkVault as libWalkVault,
   readNote as libReadNote,
   writeNote as libWriteNote,
@@ -318,12 +320,13 @@ const SERVER_CAPS = {
 const TOOLS = [
   {
     name: 'list-notes',
-    description: 'List all notes in the vault, or scoped to a folder. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
+    description: 'List the files in the vault, or scoped to a folder. By default it lists the notes (.md files); give extension to list other files, such as the PDFs or images that read-binary-file and the other binary-file tools work on. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
     inputSchema: {
       type: 'object',
       properties: {
         vault: { type: 'string', description: 'Vault name' },
         path:  { type: 'string', description: 'Optional vault-relative folder to scope the listing' },
+        extension: { type: 'string', description: 'Optional file extension to list, without a dot, ignoring case. Default: md (the notes). Wildcards: * matches any run of characters and ? one character, so pdf lists PDFs, p* lists pdf and png, and * lists every file whatever its extension.' },
       },
       required: ['vault'],
     },
@@ -467,7 +470,7 @@ const TOOLS = [
   },
   {
     name: 'create-binary-file',
-    description: 'Create a new binary file (e.g. an image) from base64-encoded content. Fails if the file already exists.',
+    description: 'Create a new binary file (e.g. an image) from base64-encoded content. Fails if the file already exists; list-notes with extension shows what is there.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -502,7 +505,7 @@ const TOOLS = [
       + 'The result is a URL and a ready-to-run command: `curl --fail-with-body -sS -T <file> <url>`. '
       + 'The URL works for ONE request only, for a few minutes, and only from the machine that called this tool; if the upload fails for any reason, call this tool again for a new URL. '
       + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
-      + 'Fails if the destination already exists. '
+      + 'Fails if the destination already exists; list-notes with extension shows what is there. '
       + 'If the upload-binary-file skill is installed, use its upload-binary-file.sh script, which does the hashing and the curl call for you.',
     inputSchema: {
       type: 'object',
@@ -518,7 +521,7 @@ const TOOLS = [
   },
   {
     name: 'read-binary-file',
-    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed.',
+    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. To find a file, call list-notes with extension (for example pdf). Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1237,10 +1240,23 @@ async function route(req, res, url, sid) {
       } }]);
     }
     const scopePath = relScope ? path.join(vault.path, relScope) : vault.path;
+    const extension = args.extension === undefined ? 'md' : args.extension;
+    const extensionError = extensionPatternError(extension);
+    if (extensionError) {
+      return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
+        content: [{ type: 'text', text: extensionError }], isError: true,
+      } }]);
+    }
+    // The walker skips hidden names inside a folder but cannot know the scope itself is one
+    // (.obsidian, .git, .trash). Scoping to such a folder has only ever listed its notes, so
+    // that stays the only thing listed there, whatever the extension.
+    const hiddenScope = relScope ? relScope.split('/').some(seg => seg.startsWith('.')) : false;
     try {
       const notes = [];
-      await libWalkVault(scopePath, async (filePath) => {
+      await libWalkAllFiles(scopePath, async (filePath) => {
         const rel = path.relative(vault.path, filePath);
+        if (hiddenScope && !isNoteFile(rel)) return;
+        if (!matchesExtension(extension, rel)) return;
         if (_isDenied(vault.denyPaths, rel)) return;
         notes.push(rel);
       });
@@ -1251,7 +1267,7 @@ async function route(req, res, url, sid) {
         lines.push(`${rel}\t${formatMtime(stat)}`);
       }
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No notes found' }],
+        content: [{ type: 'text', text: lines.length ? lines.join('\n') : (extension === 'md' ? 'No notes found' : `No files with extension "${extension}" found`) }],
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
@@ -1393,7 +1409,7 @@ async function route(req, res, url, sid) {
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     // read-note reads any file as text, so a non-markdown file under denyBinaryPaths
     // (an SVG, CSV, text-layer PDF...) must be refused here as well as in read-binary-file.
-    if (!relPath.toLowerCase().endsWith('.md') && isBinaryReadDenied(vault.denyBinaryPaths, relPath)) {
+    if (!isNoteFile(relPath) && isBinaryReadDenied(vault.denyBinaryPaths, relPath)) {
       return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
     }
     const wantsOutline = args.outline === true;
@@ -1409,7 +1425,7 @@ async function route(req, res, url, sid) {
     if (args.occurrence !== undefined && args.heading === undefined) {
       return toolErr(res, sid, msgId, 'occurrence needs a heading');
     }
-    if ((wantsOutline || args.heading !== undefined) && !relPath.toLowerCase().endsWith('.md')) {
+    if ((wantsOutline || args.heading !== undefined) && !isNoteFile(relPath)) {
       return toolErr(res, sid, msgId, 'outline and heading work on markdown notes (.md files) only');
     }
     try {
@@ -1442,7 +1458,7 @@ async function route(req, res, url, sid) {
       }
       if (content.length > READ_NOTE_MAX_CHARS) {
         const base = `Note is ${content.length} characters, which exceeds the ${READ_NOTE_MAX_CHARS}-character read limit: ${relPath}.`;
-        const hasHeadings = relPath.toLowerCase().endsWith('.md') && outlineSections(content).headings.length > 0;
+        const hasHeadings = isNoteFile(relPath) && outlineSections(content).headings.length > 0;
         return toolErr(res, sid, msgId, hasHeadings
           ? `${base} Call read-note with outline: true to list its sections, then call it again with heading (and occurrence, if the heading repeats) to read one.`
           : `${base} It has no headings to read it in parts by, so it cannot be read through read-note unless "readNoteMaxChars" in the server's config file is raised.`);
@@ -1548,7 +1564,7 @@ async function route(req, res, url, sid) {
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
     // move-note does a plain rename and accepts any file, so it must not be a route for
     // taking a protected non-markdown file out of protection; markdown notes are unaffected.
-    if (!srcRel.toLowerCase().endsWith('.md')) {
+    if (!isNoteFile(srcRel)) {
       const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
       if (escapes) return toolErr(res, sid, msgId, escapes);
     }
@@ -1567,7 +1583,7 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
+    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (typeof args.content !== 'string') return toolErr(res, sid, msgId, 'content must be a base64-encoded string');
     const b64Body = args.content.replace(/\s/g, '');
@@ -1596,7 +1612,7 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
+    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (!args.url) return toolErr(res, sid, msgId, 'url is required');
     // Number(), not parseInt() — parseInt silently truncates a decimal or trailing
@@ -1632,7 +1648,7 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use create-note for .md files');
+    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     const { size, sha256 } = args;
     if (!Number.isInteger(size) || size < 1) return toolErr(res, sid, msgId, 'size must be a positive whole number of bytes');
@@ -1677,7 +1693,7 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use read-note for .md files');
+    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use read-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (isBinaryReadDenied(vault.denyBinaryPaths, relPath)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
     const absPath = path.join(vault.path, relPath);
@@ -1721,7 +1737,7 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (relPath.toLowerCase().endsWith('.md')) return toolErr(res, sid, msgId, 'Use delete-note for .md files');
+    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use delete-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     const absPath = path.join(vault.path, relPath);
     try {
@@ -1742,7 +1758,7 @@ async function route(req, res, url, sid) {
     const dstRel = normPath(args.newFolder, args.newFilename);
     if (!srcRel) return toolErr(res, sid, msgId, 'filename is required');
     if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
-    if (srcRel.toLowerCase().endsWith('.md') || dstRel.toLowerCase().endsWith('.md'))
+    if (isNoteFile(srcRel) || isNoteFile(dstRel))
       return toolErr(res, sid, msgId, 'Use move-note for .md files');
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  isNoteFile,
   walkVault,
   readNote,
   writeNote,
@@ -60,6 +61,33 @@ describe('walkVault', () => {
 
   it('handles non-existent directory gracefully', async () => {
     await assert.doesNotReject(() => walkVault(path.join(vault, 'missing'), () => {}));
+  });
+
+  it('treats an upper-case or mixed-case .md extension as a note', async () => {
+    await fs.writeFile(path.join(vault, 'SHOUT.MD'), '# Shout\n');
+    await fs.writeFile(path.join(vault, 'Mixed.Md'), '# Mixed\n');
+    const visited = [];
+    await walkVault(vault, f => visited.push(path.relative(vault, f)));
+    await fs.rm(path.join(vault, 'SHOUT.MD'));
+    await fs.rm(path.join(vault, 'Mixed.Md'));
+    assert.ok(visited.includes('SHOUT.MD'));
+    assert.ok(visited.includes('Mixed.Md'));
+  });
+});
+
+// ── isNoteFile ────────────────────────────────────────────────────────────────
+
+describe('isNoteFile', () => {
+  it('is true for .md in any case', () => {
+    for (const n of ['a.md', 'A.MD', 'a.Md', 'dir/sub/a.md', 'two.words.md']) {
+      assert.equal(isNoteFile(n), true, n);
+    }
+  });
+
+  it('is false for everything else', () => {
+    for (const n of ['a.pdf', 'a.md.bak', 'md', 'a.mdx', 'amd', 'a.markdown', '', 'a.md/']) {
+      assert.equal(isNoteFile(n), false, n);
+    }
   });
 });
 
@@ -134,6 +162,18 @@ describe('deleteNote', () => {
     const trashed = path.join(vault, '.trash', 'to-delete-perm.md');
     await assert.rejects(() => fs.access(trashed));
   });
+
+  it('keeps the original extension when a trashed .MD note collides', async () => {
+    const p = path.join(vault, 'Dup.MD');
+    await fs.writeFile(p, '# one\n');
+    await deleteNote(p, false, vault);
+    await fs.writeFile(p, '# two\n');
+    await deleteNote(p, false, vault);
+    const trash = (await fs.readdir(path.join(vault, '.trash'))).filter(n => n.startsWith('Dup'));
+    assert.equal(trash.length, 2);
+    assert.ok(trash.includes('Dup.MD'));
+    assert.ok(trash.some(n => /^Dup_\d+\.MD$/.test(n)), trash.join(', '));
+  });
 });
 
 // ── moveNote ──────────────────────────────────────────────────────────────────
@@ -172,6 +212,14 @@ describe('moveNote', () => {
     const dst = path.join(vault, 'archive', 'new-note.md');
     await moveNote(vault, src, dst, []);
     await assert.doesNotReject(() => fs.access(dst));
+  });
+
+  it('rewrites links to a .MD note, as Obsidian resolves [[Foo]] to Foo.MD', async () => {
+    await fs.writeFile(path.join(vault, 'Foo.MD'), '# Foo\n');
+    await fs.writeFile(path.join(vault, 'refs-foo.md'), 'See [[Foo]] and [[Foo|alias]].\n');
+    await moveNote(vault, path.join(vault, 'Foo.MD'), path.join(vault, 'sub', 'Bar.MD'), []);
+    const refs = await fs.readFile(path.join(vault, 'refs-foo.md'), 'utf8');
+    assert.equal(refs, 'See [[sub/Bar]] and [[sub/Bar|alias]].\n');
   });
 });
 
@@ -373,6 +421,19 @@ describe('findBacklinks', () => {
     const results = await findBacklinks(vault, 'food/sauce.md', ['private']);
     assert.ok(!results.includes('private/refs-sauce.md'));
   });
+
+  it('finds notes linking to a .MD note by its extensionless name', async () => {
+    await fs.writeFile(path.join(vault, 'Upper.MD'), '# Upper\n');
+    await fs.writeFile(path.join(vault, 'links-upper.md'), 'See [[Upper]].\n');
+    const results = await findBacklinks(vault, 'Upper.MD', []);
+    assert.deepEqual(results, ['links-upper.md']);
+  });
+
+  it('walks a .MD note for links of its own', async () => {
+    await fs.writeFile(path.join(vault, 'Linker.MD'), 'See [[sauce]].\n');
+    const results = await findBacklinks(vault, 'food/sauce.md', []);
+    assert.ok(results.includes('Linker.MD'), results.join(', '));
+  });
 });
 
 // ── resolveWikilink ───────────────────────────────────────────────────────────
@@ -409,6 +470,18 @@ describe('resolveWikilink', () => {
     await fs.writeFile(path.join(vault, 'other', 'sauce.md'), '# Other Sauce\n');
     const results = await resolveWikilink(vault, 'sauce', []);
     assert.deepEqual(results, ['food/sauce.md', 'other/sauce.md']);
+  });
+
+  it('resolves an extensionless link to a .MD note', async () => {
+    await fs.writeFile(path.join(vault, 'Shout.MD'), '# Shout\n');
+    assert.deepEqual(await resolveWikilink(vault, 'Shout', []), ['Shout.MD']);
+  });
+
+  it('reports x.md and x.MD together as ambiguous', async () => {
+    await fs.writeFile(path.join(vault, 'twin.md'), '# a\n');
+    await fs.writeFile(path.join(vault, 'twin.MD'), '# b\n');
+    const results = await resolveWikilink(vault, 'twin', []);
+    assert.equal(results.length, 2, results.join(', '));
   });
 
   it('excludes denied files from the results', async () => {

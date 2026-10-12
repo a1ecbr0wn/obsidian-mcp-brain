@@ -34,7 +34,8 @@ narrower, read-only guard for binary files. It stops `read-binary-file` returnin
 protected file's bytes, and stops `move-binary-file` (and `move-note`, for a
 non-markdown file) moving a protected file out of protection, so the agent can't
 relocate a file to read it. `.trash` is protected along with it, and `read-note`
-refuses a protected non-markdown file. It doesn't affect markdown notes.
+refuses a protected non-markdown file. It doesn't affect markdown notes, and it doesn't hide
+names: `list-notes` with `extension` still lists a protected file, and its modification time.
 
 Symbolic links are handled differently by different tools. `read-binary-file`
 resolves a link and checks the real location: it refuses a link that points outside
