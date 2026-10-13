@@ -13,6 +13,9 @@ server so that the Claude mobile app and claude.ai can sign in. The server stays
 reachable over HTTPS at an address of its own and runs with
 [`auth`](../configuration#authentication-auth) set; the Worker is what clients talk to.
 
+To get a sign-in with settings only and no Worker, see
+[Cloudflare Tunnel and Access](install-cloudflare-access).
+
 ### How the two fit together
 
 The library issues opaque access tokens, and only its own Worker can check one: the

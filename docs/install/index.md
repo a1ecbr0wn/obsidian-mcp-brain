@@ -18,6 +18,7 @@ as a service and put HTTPS in front of it.
 - [Expose it over HTTPS with Tailscale Serve](install/install-tailscale)
 - [Expose it over HTTPS with nginx](install/install-nginx)
 - [Expose it over HTTPS with Caddy](install/install-caddy)
+- [Protect it with Cloudflare Tunnel and Access](install/install-cloudflare-access)
 - [Sign in with Cloudflare's workers-oauth-provider](install/install-cloudflare-oauth)
 
 ### Putting HTTPS in front of the server

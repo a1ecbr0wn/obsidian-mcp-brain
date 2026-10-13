@@ -285,7 +285,7 @@ no tokens itself, shows no login page and stores no passwords.
 | `userClaim` | No | `sub` | The claim that identifies the user. `sub` is the safe choice. An `email` claim is compared without regard to ASCII case, and a token with `email_verified` set to false is refused, but only an issuer that verifies addresses before it issues them makes an email a safe identity |
 | `users` | Yes | | Users who may call every tool. Must not be empty |
 | `readOnlyUsers` | No | `[]` | Users who may call only the tools that read the vault |
-| `tokenHeader` | No | `null` | A second header to read the token from, for a deployment where a fronting service passes the verified token on in its own header. `Authorization: Bearer` is always read first |
+| `tokenHeader` | No | `null` | A second header to read the token from, for a deployment where a fronting service passes the verified token on in its own header. When this header is present it is used; otherwise `Authorization: Bearer` is |
 
 What happens to a request to `/mcp`:
 

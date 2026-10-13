@@ -420,25 +420,28 @@ export async function verifyAccessToken(token, cfg, keys, { nowMs = Date.now(), 
 }
 
 /**
- * Reads the token from a request: `Authorization: Bearer <token>` first, then the configured
- * header. Whatever is not a single, plausible token is reported as no token.
+ * Reads the token from a request: the configured header first, when there is one and it is
+ * present, then `Authorization: Bearer <token>`. A fronting service that sets the header has
+ * already checked who is calling, while an `Authorization` value it passes on may be a
+ * token that only the fronting service can read. Whatever is not a single, plausible token
+ * is reported as no token.
  * @param {object} headers - Node's lower-cased request headers.
  * @param {object} cfg - Result of parseAuthConfig.
  * @returns {string|null}
  */
 export function extractToken(headers, cfg) {
   const candidates = [];
-  const authz = headers.authorization;
-  if (typeof authz === 'string') {
-    const m = authz.match(/^Bearer\s+(\S+)$/i);
-    if (m) candidates.push(m[1]);
-  }
   if (cfg.tokenHeader) {
     const raw = headers[cfg.tokenHeader];
     if (typeof raw === 'string') {
       const v = raw.trim().replace(/^Bearer\s+/i, '');
       if (v && !/\s/.test(v)) candidates.push(v);
     }
+  }
+  const authz = headers.authorization;
+  if (typeof authz === 'string') {
+    const m = authz.match(/^Bearer\s+(\S+)$/i);
+    if (m) candidates.push(m[1]);
   }
   return candidates.find(t => t.length <= MAX_TOKEN_BYTES) ?? null;
 }

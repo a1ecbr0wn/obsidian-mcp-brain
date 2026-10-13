@@ -165,10 +165,11 @@ describe('extractToken', () => {
     assert.equal(extractToken({ authorization: 'Bearer a b' }, plain), null);
   });
 
-  it('reads the configured header, with or without a Bearer prefix, and prefers Authorization', () => {
+  it('reads the configured header, with or without a Bearer prefix, and prefers it to Authorization', () => {
     assert.equal(extractToken({ 'x-token': 'raw' }, cfg), 'raw');
     assert.equal(extractToken({ 'x-token': 'Bearer raw' }, cfg), 'raw');
-    assert.equal(extractToken({ authorization: 'Bearer first', 'x-token': 'second' }, cfg), 'first');
+    assert.equal(extractToken({ authorization: 'Bearer first', 'x-token': 'second' }, cfg), 'second');
+    assert.equal(extractToken({ authorization: 'Bearer first' }, cfg), 'first');
   });
 
   it('does not read the configured header when none is configured', () => {
