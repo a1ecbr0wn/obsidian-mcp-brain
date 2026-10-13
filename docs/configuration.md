@@ -33,6 +33,7 @@ All configuration lives in one JSON file. No environment variables are read exce
   "readNoteMaxChars": 50000,
   "uploadMaxBytes": 52428800,
   "uploadTtlSeconds": 300,
+  "uploadStallSeconds": 30,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
   "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
@@ -63,6 +64,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 | `readNoteMaxChars`       | No       | `50000`    | Longest text `read-note` returns in one go, in characters. A longer note or section is refused with a pointer to `outline` and `heading` |
 | `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for, in bytes                       |
 | `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts, in seconds                                                |
+| `uploadStallSeconds`     | No       | `30`       | How long an upload may send nothing before it is cut off, in seconds. Raise it if clients on very slow links are cut off |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies) |
 
@@ -210,14 +212,23 @@ for `uploadMaxBytes` times the 4 uploads that can be in progress.
 
 The server's per-request time limit is raised, for every request, so that the largest
 permitted upload can finish at 50 KB/s, up to a maximum of one hour (Node's default is
-five minutes). An upload that sends nothing for 30 seconds is cut off regardless.
+five minutes). An upload that sends nothing for `uploadStallSeconds` (30 by default) is
+cut off regardless, with a `408` and the staging file removed, so a client that connects, sends
+part of a file and goes quiet cannot hold one of the 4 upload slots. The time is counted from
+the last byte received, or from the `100 Continue` answer for a client that waited for it. A
+proxy that buffers the whole body before forwarding it (nginx does by default) hands the
+server a complete upload at once, so the server never sees a slow client; it also means a
+refused upload is answered only after the whole body has arrived. See
+[Putting HTTPS in front of the server](install/#putting-https-in-front-of-the-server).
 
 **`trustedProxies`** matters only if the server sits behind a reverse proxy (nginx,
 Caddy, a tunnel, Tailscale Serve and so on). An upload URL works only from the address
 that reserved it. Behind a proxy every connection comes from the proxy, so unless the
 server is told otherwise, every caller looks the same and that check always passes.
 List the proxy's address here and the server reads the real caller from the
-`X-Forwarded-For` header the proxy adds:
+`X-Forwarded-For` header the proxy adds (the [nginx](install/install-nginx),
+[Caddy](install/install-caddy) and [Tailscale](install/install-tailscale) pages show
+the proxy side):
 
 ```json
 { "trustedProxies": ["127.0.0.1", "::1"] }

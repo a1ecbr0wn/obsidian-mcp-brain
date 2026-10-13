@@ -7,7 +7,8 @@ nav_order: 4
 ## Connect a client
 
 Use the HTTPS address you exposed the server on (see
-[Tailscale Serve](install/install-tailscale)) with `/mcp` on the end.
+[Tailscale Serve](install/install-tailscale), [nginx](install/install-nginx) or
+[Caddy](install/install-caddy)) with `/mcp` on the end.
 
 ### Claude Code
 

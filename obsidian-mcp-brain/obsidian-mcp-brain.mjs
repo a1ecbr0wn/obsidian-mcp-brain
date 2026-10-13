@@ -109,6 +109,7 @@ const withTrash = (patterns) => (patterns.length ? [...patterns, '.trash'] : pat
  * (default 60000), fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000),
  * readMaxBytes (default 10MB), readNoteMaxChars (default 50000, the longest text read-note returns
  * before it asks for an outline or a heading instead), uploadMaxBytes (default 50MB), uploadTtlSeconds (default 300),
+ * uploadStallSeconds (default 30, how long an upload may send nothing before it is cut off),
  * uploadTempDir (default: obsidian-mcp-uploads-<uid> under the OS temp dir for per-user isolation;
  * where uploads are staged, never inside a vault), trustedProxies (default [], addresses or CIDR
  * ranges of reverse proxies whose X-Forwarded-For is believed), and vaults (required). Each vault
@@ -195,6 +196,12 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  const uploadStallSeconds = parseInt(config.uploadStallSeconds ?? 30, 10);
+  if (Number.isNaN(uploadStallSeconds) || uploadStallSeconds < 1) {
+    logErr(`Config file at ${configPath}: "uploadStallSeconds" must be a positive number`);
+    process.exit(1);
+  }
+
   const uploadTempDirIsDefault = config.uploadTempDir === undefined;
   const uploadTempDirRaw = config.uploadTempDir ?? defaultUploadTempDir();
   if (typeof uploadTempDirRaw !== 'string' || !uploadTempDirRaw.trim()) {
@@ -258,6 +265,7 @@ function loadConfig(configPath) {
     readNoteMaxChars,
     uploadMaxBytes,
     uploadTtlSeconds,
+    uploadStallSeconds,
     uploadTempDir: path.resolve(uploadTempDir),
     uploadTempDirIsDefault,
     trustedProxies,
@@ -276,6 +284,7 @@ const {
   readNoteMaxChars: READ_NOTE_MAX_CHARS,
   uploadMaxBytes: UPLOAD_MAX_BYTES,
   uploadTtlSeconds: UPLOAD_TTL_SECONDS,
+  uploadStallSeconds: UPLOAD_STALL_SECONDS,
   uploadTempDir: CONFIGURED_UPLOAD_TEMP_DIR,
   uploadTempDirIsDefault: UPLOAD_TEMP_DIR_IS_DEFAULT,
   trustedProxies: TRUSTED_PROXIES,
@@ -768,7 +777,7 @@ function sendSse(res, statusCode, sessionId, msgs) {
 const UPLOAD_PREFIX = '/up/';
 const MAX_OUTSTANDING_UPLOADS = 16;
 const MAX_CONCURRENT_UPLOADS = 4;
-const UPLOAD_STALL_MS = 30_000; // an upload that sends nothing for this long is cut off
+const UPLOAD_STALL_MS = UPLOAD_STALL_SECONDS * 1000; // an upload that sends nothing for this long is cut off
 const UPLOAD_MIN_RATE = 50_000; // bytes per second a slow but steady upload is allowed to drop to
 
 const uploads = new UploadSlots({ ttlMs: UPLOAD_TTL_SECONDS * 1000, maxOutstanding: MAX_OUTSTANDING_UPLOADS });
@@ -878,7 +887,7 @@ function receiveUpload(req, stagePath, size) {
     let settled = false;
     const cleanup = () => {
       req.off('data', onData);
-      req.socket?.off('timeout', onStall);
+      req.off('timeout', onStall);
     };
     const fail = (err) => {
       if (settled) return;
@@ -908,8 +917,10 @@ function receiveUpload(req, stagePath, size) {
     req.on('error', fail);
     req.on('end', () => { if (!settled) out.end(); });
     req.on('close', () => { if (!req.complete) fail(new Error('upload aborted by the client')); });
+    // The listener is on the request, not the socket: when nothing listens on the request, the
+    // response or the server, Node destroys an idle socket itself, and the 408 could not be sent.
     req.socket?.setTimeout(UPLOAD_STALL_MS);
-    req.socket?.once('timeout', onStall);
+    req.once('timeout', onStall);
   });
 }
 
