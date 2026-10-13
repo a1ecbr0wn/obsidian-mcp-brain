@@ -50,7 +50,7 @@ Obsidian vault (filesystem)
 
 - Node.js 18+
 - A way to expose the server over HTTPS to your remote client —
-  [Tailscale Serve](https://tailscale.com/kb/1312/serve) is recommended, because it
+  [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is recommended, because it
   also keeps the server on an overlay network, but any HTTPS reverse proxy on a
   private network works
 - **Optional:** The `query-graph` tool (which queries a vault using a natural-language
