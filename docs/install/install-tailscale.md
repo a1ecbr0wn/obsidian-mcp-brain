@@ -86,7 +86,7 @@ the URL when you [connect a client](../connect).
 `mcpBaseUrl` has to be the address clients actually use. The `upload-binary-file`
 tool builds its URL from it, so a wrong name there gives an upload URL that does not
 resolve, or is refused with a 403. See
-[Putting HTTPS in front of the server](index#putting-https-in-front-of-the-server)
+[Putting HTTPS in front of the server](../install#putting-https-in-front-of-the-server)
 for the symptoms.
 
 ### Docker

@@ -26,8 +26,11 @@ Add the server to your Claude Code config (`~/.claude.json`, or with
 }
 ```
 
-Claude Code prompts you to authenticate the first time. Click through the OAuth
-flow: it uses a public, no-credentials token, so no real account is needed.
+Claude Code prompts you to authenticate the first time. On an unauthenticated server
+click through the OAuth flow: it uses a public, no-credentials token, so no real account
+is needed. When the server has [`auth`](configuration#authentication-auth) set, the same
+flow sends you to your OAuth service's login page, and the token you get is checked by the
+server.
 
 ### Claude Desktop
 
@@ -134,6 +137,27 @@ run commands on a machine that can reach the server's address (`mcpBaseUrl`).
   and clients that call the server from the vendor's cloud need the server to be
   reachable from there. Neither was tested. They can still use `create-binary-file` for
   small files.
+
+### When the server has authentication on
+
+With [`auth`](configuration#authentication-auth) set, every client needs a token for a user
+the server lists. How each one gets it:
+
+| Client | How it signs in |
+|---|---|
+| Claude Code | Follows the server's discovery documents to your OAuth service, opens the login in a browser and keeps the token; `/mcp` is where you sign in again |
+| Claude Desktop with `mcp-remote` | Runs the OAuth flow itself the first time it connects: opens your browser to the login page, receives the code on a local address, and caches the token on that machine. No change to the config entry is needed |
+| Claude Desktop with `mcp-shim` | The shim sends a fixed token from `MCP_TOKEN` and cannot refresh it, so it suits only an issuer that can hand out a long-lived token. Prefer `mcp-remote` |
+| claude.ai and the Claude mobile app | Add the server as a custom connector with its public `/mcp` address. The connector runs the sign-in flow from the vendor's cloud, so the server must be reachable from the internet over HTTPS |
+
+Your OAuth service has to support what the clients use:
+see [what the OAuth service has to do](configuration#authentication-auth).
+
+An agent's `curl` upload from a cloud sandbox is not signed in: it uses the one-time URL
+from `upload-binary-file`, which needs no token.
+
+If a client reports that it cannot sign in, check the server's log: each refusal is
+logged with its reason.
 
 ### Agent skills
 

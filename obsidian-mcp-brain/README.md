@@ -274,6 +274,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | `uploadStallSeconds`     | No       | `30`       | How long an upload may send nothing before it is cut off (seconds)                      |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below |
+| `auth`                   | No       | none       | Accept only signed tokens from an external OAuth service, for the users you list. Off by default. See [Authentication](https://brain.a1ecbr0wn.com/configuration#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which are added on top of the
 global list for that vault only (see below).

@@ -89,7 +89,7 @@ curl https://your-hostname/.well-known/oauth-authorization-server
 ```
 
 If step 3 fails, see
-[Putting HTTPS in front of the server](index#putting-https-in-front-of-the-server).
+[Putting HTTPS in front of the server](../install#putting-https-in-front-of-the-server).
 
 The server has no authentication of its own, so where Caddy is reachable from is what
 decides who can use your vault. Do not expose it to the internet unless you have put

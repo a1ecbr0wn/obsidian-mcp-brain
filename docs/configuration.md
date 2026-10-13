@@ -67,6 +67,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 | `uploadStallSeconds`     | No       | `30`       | How long an upload may send nothing before it is cut off, in seconds. Raise it if clients on very slow links are cut off |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies) |
+| `auth`                   | No       | none       | Turns on authentication: the server accepts only signed tokens from an external OAuth service, for the users you list. Without it the server is unauthenticated, as before. See [below](#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which are
 added on top of the global lists for that vault only.
@@ -249,3 +250,87 @@ refused.
 The address check is a second line of defence. Callers behind the same NAT share an
 address, so the real protection is the random token, which works once, briefly, for one
 destination. See [Security](security#upload-binary-file).
+
+### Authentication (`auth`)
+
+Without an `auth` object the server is unauthenticated: anyone who can reach it can use
+every tool, so it belongs on a private network. That is the default, and it is the right
+setting for a server on a local network or behind a VPN.
+
+Add an `auth` object when the server has to be reached from outside such a network, for
+example by the Claude mobile app or claude.ai, whose connectors call from the vendor's
+cloud. The server then runs as an OAuth *resource server*: an OAuth service of your
+choosing logs the user in and issues signed tokens, and this server checks them. It issues
+no tokens itself, shows no login page and stores no passwords.
+
+```json
+{
+  "mcpBaseUrl": "https://your-hostname",
+  "auth": {
+    "issuer": "https://auth.example.com",
+    "jwksUri": "https://auth.example.com/.well-known/jwks.json",
+    "audience": "https://your-hostname/mcp",
+    "userClaim": "email",
+    "users": ["you@example.com"],
+    "readOnlyUsers": ["reader@example.com"]
+  }
+}
+```
+
+| Field | Required | Default | Meaning |
+|---|---|---|---|
+| `issuer` | Yes | | The exact value a token's `iss` claim must have |
+| `jwksUri` | Yes | | Where the issuer's public signing keys are fetched from |
+| `audience` | No | `<mcpBaseUrl>/mcp` | A value a token's `aud` claim must contain. It is the server's address as a client names it in the `resource` parameter of its authorization request, so the OAuth service must put the requested resource in `aud` |
+| `userClaim` | No | `sub` | The claim that identifies the user. `sub` is the safe choice. An `email` claim is compared without regard to ASCII case, and a token with `email_verified` set to false is refused, but only an issuer that verifies addresses before it issues them makes an email a safe identity |
+| `users` | Yes | | Users who may call every tool. Must not be empty |
+| `readOnlyUsers` | No | `[]` | Users who may call only the tools that read the vault |
+| `tokenHeader` | No | `null` | A second header to read the token from, for a deployment where a fronting service passes the verified token on in its own header. `Authorization: Bearer` is always read first |
+
+What happens to a request to `/mcp`:
+
+- No token: `401` with a `WWW-Authenticate` header that points a client at the
+  server's protected resource metadata, so a client that implements the MCP
+  authorization flow can find the OAuth service and log in by itself.
+- A token that fails a check (signature, issuer, audience, expiry): `401` with
+  `error="invalid_token"`.
+- A valid token for a user who is not listed: `403`.
+- The issuer's keys cannot be fetched, and none are held: `503`, so a client does not
+  start a new login for a fault that is not its own.
+- Otherwise the request is served. Only signed tokens (RS256 and ES256) are accepted.
+  Opaque tokens, which need a call to the issuer to check, are not supported; an OAuth
+  service that issues them can be put in front of the server with a small Worker, as
+  [the Cloudflare page](install/install-cloudflare-oauth) shows.
+
+Notes:
+
+- **The server starts only in a safe configuration.** It refuses to start when `auth` is
+  set and `mcpBaseUrl` is not `https` (a loopback address is allowed, but then
+  `listenHost` must be loopback too), when `users` is empty or a user is in both lists,
+  or when `issuer` or `jwksUri` is not `https` (loopback allowed) or carries a user name
+  or password. An unknown setting inside `auth` is an error, so is a top-level setting
+  that looks like an authentication setting but is not named `auth`, so a misspelling
+  cannot leave the server open without a word. Any other unknown top-level setting is
+  reported and ignored.
+- **What the OAuth service has to do.** For a client to sign in, the service must publish
+  the standard discovery documents, accept the client's registration (dynamic client
+  registration, or a client you register by hand), implement PKCE, and honour the
+  `resource` parameter so that the token's `aud` is the `audience` above. Not every
+  service does all of these by default. A client that cannot sign in is most often failing
+  at one of them, and the server's log then shows `wrong audience` or no request at all.
+- **`readOnlyUsers`** see and may call only the read tools: `list-notes`, `list-tags`,
+  `search-tags`, `new-notes`, `changed-notes`, `list-vaults`, `read-note`,
+  `read-binary-file`, `find-backlinks`, `resolve-wikilink` and `search-vault`. Every tool that
+  changes the vault, including `upload-binary-file` and `fetch-binary-file`, is refused with
+  `This account is read-only`, and so is `query-graph`, because it ignores `denyPaths`.
+- **A session belongs to the user who made it.** A request for that session with a token for
+  another user is refused with `403`.
+- **`PUT /up/<token>` and the discovery documents need no token.** An upload URL's one-time
+  token is its credential, and an agent's sandbox has no OAuth token to present.
+- **In this mode** `/authorize`, `/token`, `/register` and
+  `/.well-known/oauth-authorization-server` answer `404`: they are the placeholder
+  endpoints that make an unauthenticated server look as if it issues tokens.
+- **Changing the user list takes a restart.** A token cannot be revoked before it
+  expires, so use the issuer's setting for a short lifetime.
+
+See [Security](security#authentication) for what this does and does not protect.

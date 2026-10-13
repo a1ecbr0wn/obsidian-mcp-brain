@@ -97,7 +97,7 @@ curl https://your-hostname/.well-known/oauth-authorization-server
 ```
 
 If step 3 fails, see
-[Putting HTTPS in front of the server](index#putting-https-in-front-of-the-server)
+[Putting HTTPS in front of the server](../install#putting-https-in-front-of-the-server)
 for what each symptom means. Setting `trustedProxies` right can also be checked in
 the server's log: it says when a request carried `X-Forwarded-For` from an address
 that is not trusted.
