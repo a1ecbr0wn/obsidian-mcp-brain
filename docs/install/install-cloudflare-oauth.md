@@ -6,9 +6,11 @@ title: "Sign in with Cloudflare's workers-oauth-provider | obsidian-mcp-brain"
 ## Sign in with Cloudflare's workers-oauth-provider
 
 [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider)
-turns a Cloudflare Worker into an OAuth service. This page puts such a Worker in front of
-the server, so that the Claude mobile app and claude.ai can sign in to it. The server
-stays reachable over HTTPS at an address of its own and runs with
+is a library for writing an OAuth service as a Cloudflare Worker. It is not a service you
+configure: you write a small Worker that uses it, and deploy that Worker yourself. This
+page gives that Worker in full, as a starting point, and shows how it connects to the
+server so that the Claude mobile app and claude.ai can sign in. The server stays
+reachable over HTTPS at an address of its own and runs with
 [`auth`](../configuration#authentication-auth) set; the Worker is what clients talk to.
 
 ### How the two fit together
@@ -38,7 +40,7 @@ the server refuses a `sub` that is not in its own lists with `403`.
 
 ### What you need
 
-- A Cloudflare account, with `wrangler` installed and logged in.
+- A Cloudflare account, and Node.js to build and deploy a Worker project with `wrangler`.
 - The server reachable over HTTPS by the Worker at its own hostname, for example
   `https://mcp-origin.example.com`, through any of the ways on the
   [install page](../install#putting-https-in-front-of-the-server). This is a different
@@ -51,6 +53,9 @@ the server refuses a `sub` that is not in its own lists with `403`.
 
 The Worker signs with an EC P-256 key. Generate it and store it as a Worker secret; the
 Worker's `/.well-known/jwks.json` publishes only the public half.
+
+Run the command from the Worker project directory that [step 3](#3-create-the-worker-project)
+creates, since `wrangler` takes the Worker's name from the `wrangler.jsonc` there.
 
 ```sh
 node -e "const c=require('crypto');const k=c.generateKeyPairSync('ec',{namedCurve:'P-256'}).privateKey.export({format:'jwk'});k.kid=c.randomUUID();console.log(JSON.stringify(k))" \
@@ -79,7 +84,29 @@ node -e "const c=require('crypto');const k=c.generateKeyPairSync('ec',{namedCurv
   GitHub numeric id (`curl https://api.github.com/users/<login>` shows it as `id`).
   Add `readOnlyUsers` for people who may only read.
 
-### 3. The Worker
+### 3. Create the Worker project
+
+This is a Worker project of your own, kept outside this repository. Make an empty
+directory with these files:
+
+```text
+mcp-front/
+├── package.json        npm install @cloudflare/workers-oauth-provider, and wrangler
+├── wrangler.jsonc      below
+└── src/index.ts        below
+```
+
+```sh
+mkdir mcp-front && cd mcp-front && npm init -y
+npm install @cloudflare/workers-oauth-provider
+npm install --save-dev wrangler
+npx wrangler kv namespace create OAUTH_KV      # prints the id for wrangler.jsonc
+```
+
+`src/index.ts` is the whole Worker. It does four things: it hands the library its
+settings, serves the key document, runs the sign-in (`authorize` and `callback`), and
+forwards each `/mcp` request to the server (`mcp`). Edit it for your own sign-in and
+hostnames.
 
 `src/index.ts`:
 
@@ -314,7 +341,7 @@ library accepts from clients. `ALLOWED_USERS` takes the same ids as the server's
 1. In GitHub, create an OAuth app with the callback URL `https://mcp.example.com/callback`.
 2. Put its client id in `GITHUB_CLIENT_ID` above, and its secret in the Worker:
    `npx wrangler secret put GITHUB_CLIENT_SECRET`.
-3. `npm install @cloudflare/workers-oauth-provider`, then `npx wrangler deploy`.
+3. From the project directory, run `npx wrangler deploy`.
 4. Restart the server so that it reads the `auth` settings.
 
 ### 5. Add the connector
