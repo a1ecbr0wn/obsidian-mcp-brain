@@ -644,6 +644,108 @@ describe('upload reservation cap frees up as uploads are used', () => {
   });
 });
 
+describe('upload stall limit', () => {
+  const STALL_S = 1;
+  let srv;
+  before(async () => { srv = await startServer({ uploadStallSeconds: STALL_S }); });
+  after(async () => { await srv.stop(); });
+
+  /** Rejects if `p` does not settle soon after the stall limit, so a regression fails instead of hanging. */
+  const within = (p, ms = STALL_S * 1000 + 3000) => Promise.race([
+    p, sleep(ms).then(() => { throw new Error(`no result within ${ms} ms`); }),
+  ]);
+
+  /** Waits until `check()` is true, or fails. */
+  async function until(check, what, ms = 2000) {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (await check()) return;
+      await sleep(25);
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  }
+
+  /** Opens a connection and sends the request head and the first `first` bytes of the body. */
+  async function openUpload(name, content, { first = 10, expect = false } = {}) {
+    const { token } = await reserve(srv, { filename: name, content });
+    const sock = net.connect(srv.port, '127.0.0.1');
+    await new Promise(r => sock.on('connect', r));
+    let received = '';
+    sock.on('data', c => { received += c.toString('latin1'); });
+    sock.on('error', () => {});
+    const closed = new Promise(r => sock.on('close', r));
+    sock.write(`PUT /up/${token} HTTP/1.1\r\nHost: x\r\nContent-Length: ${content.length}\r\n${expect ? 'Expect: 100-continue\r\n' : ''}Connection: close\r\n\r\n`);
+    if (first > 0) sock.write(content.subarray(0, first));
+    return { sock, closed, received: () => received };
+  }
+
+  it('cuts off an upload that goes quiet: 408, a log line, no staging file, no file in the vault', async () => {
+    const content = crypto.randomBytes(1000);
+    const up = await openUpload('quiet.bin', content);
+    await until(async () => (await stagingFiles(srv)).length === 1, 'the partial file to be staged');
+    const start = Date.now();
+    await within(up.closed);
+    assert.ok(Date.now() - start < STALL_S * 1000 + 2000, 'the connection should be closed soon after the stall limit');
+    assert.ok(up.received().includes('HTTP/1.1 408'), up.received());
+    assert.ok(up.received().includes('upload stalled'), up.received());
+    assert.ok(await waitForEmptyStaging(srv), 'the staging file should be removed');
+    assert.equal(await exists(path.join(srv.vaultDir, 'quiet.bin')), false);
+    await until(() => srv.log().includes('upload cut off: stalled'), 'the log line');
+  });
+
+  it('frees the upload slots: a fifth upload is refused while four are open, and succeeds once they are cut off', async () => {
+    const open = [];
+    for (let i = 0; i < 4; i++) open.push(await openUpload(`slot-${i}.bin`, crypto.randomBytes(1000)));
+    await until(async () => (await stagingFiles(srv)).length === 4, 'all four uploads to be staged');
+    const content = crypto.randomBytes(100);
+    const first = await reserve(srv, { filename: 'slot-fifth.bin', content });
+    assert.equal((await request(first.url, { body: content })).status, 503);
+    await within(Promise.all(open.map(u => u.closed)));
+    for (const u of open) assert.ok(u.received().includes('HTTP/1.1 408'), u.received());
+    const second = await reserve(srv, { filename: 'slot-sixth.bin', content });
+    const r = await request(second.url, { body: content });
+    assert.equal(r.status, 201, r.text);
+    assert.deepEqual(await fs.readFile(path.join(srv.vaultDir, 'slot-sixth.bin')), content);
+  });
+
+  it('lets a slow but steady upload finish when each gap is shorter than the limit', async () => {
+    const content = crypto.randomBytes(2000);
+    const up = await openUpload('steady.bin', content, { first: 0 });
+    const step = 500;
+    const start = Date.now();
+    for (let at = 0; at < content.length; at += step) {
+      up.sock.write(content.subarray(at, at + step));
+      await sleep(STALL_S * 1000 * 0.4);
+    }
+    await within(up.closed);
+    assert.ok(Date.now() - start > STALL_S * 1000, 'the upload should have lasted longer than the stall limit');
+    assert.ok(up.received().includes('HTTP/1.1 201'), up.received());
+    assert.deepEqual(await fs.readFile(path.join(srv.vaultDir, 'steady.bin')), content);
+  });
+
+  it('a client that waits half the stall limit after 100 Continue before sending the body is not cut off', async () => {
+    const content = crypto.randomBytes(1000);
+    const up = await openUpload('after-continue.bin', content, { first: 0, expect: true });
+    const deadline = Date.now() + 2000;
+    while (!up.received().includes('100 Continue') && Date.now() < deadline) await sleep(20);
+    assert.ok(up.received().includes('100 Continue'), up.received());
+    await sleep(STALL_S * 1000 * 0.5);
+    up.sock.write(content);
+    await within(up.closed);
+    assert.ok(up.received().includes('HTTP/1.1 201'), up.received());
+  });
+
+  it('cuts off a client that is sent 100 Continue and then sends nothing', async () => {
+    const content = crypto.randomBytes(1000);
+    const up = await openUpload('never-sent.bin', content, { first: 0, expect: true });
+    await within(up.closed);
+    assert.ok(up.received().includes('100 Continue'), up.received());
+    assert.ok(up.received().includes('HTTP/1.1 408'), up.received());
+    assert.equal(await exists(path.join(srv.vaultDir, 'never-sent.bin')), false);
+    assert.ok(await waitForEmptyStaging(srv), 'the staging file should be removed');
+  });
+});
+
 describe('upload expiry', () => {
   let srv;
   before(async () => { srv = await startServer({ uploadTtlSeconds: 1 }); });
@@ -712,6 +814,7 @@ describe('upload settings', () => {
   for (const bad of [0, -1, 'abc']) {
     rejects(`uploadMaxBytes ${JSON.stringify(bad)}`, { uploadMaxBytes: bad }, '"uploadMaxBytes" must be a positive number');
     rejects(`uploadTtlSeconds ${JSON.stringify(bad)}`, { uploadTtlSeconds: bad }, '"uploadTtlSeconds" must be a positive number');
+    rejects(`uploadStallSeconds ${JSON.stringify(bad)}`, { uploadStallSeconds: bad }, '"uploadStallSeconds" must be a positive number');
   }
 
   for (const bad of [123, '', '   ', ['/tmp/x'], {}]) {
@@ -741,7 +844,7 @@ describe('upload settings', () => {
 
   it('starts with valid settings and creates the staging folder with mode 0700', async () => {
     const r = await tryStart(({ root }) => ({
-      uploadMaxBytes: 1024, uploadTtlSeconds: 60, trustedProxies: ['127.0.0.1', '10.0.0.0/8', '::1'],
+      uploadMaxBytes: 1024, uploadTtlSeconds: 60, uploadStallSeconds: 5, trustedProxies: ['127.0.0.1', '10.0.0.0/8', '::1'],
       uploadTempDir: path.join(root, 'made', 'here'),
     }));
     try {

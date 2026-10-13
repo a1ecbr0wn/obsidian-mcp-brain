@@ -208,6 +208,11 @@ sudo tailscale serve --bg --https 4001 http://localhost:3002
 
 This exposes the server at `https://<your-tailscale-hostname>:4001`.
 
+There are step-by-step pages, with the settings this server needs and why, for
+[Tailscale Serve](https://brain.a1ecbr0wn.com/install/install-tailscale),
+[nginx](https://brain.a1ecbr0wn.com/install/install-nginx) and
+[Caddy](https://brain.a1ecbr0wn.com/install/install-caddy).
+
 ---
 
 ## Configuration
@@ -235,6 +240,7 @@ All configuration lives in one JSON file — no environment variables are read e
   "readNoteMaxChars": 50000,
   "uploadMaxBytes": 52428800,
   "uploadTtlSeconds": 300,
+  "uploadStallSeconds": 30,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
   "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
@@ -265,6 +271,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | `readNoteMaxChars`       | No       | `50000`    | Longest text `read-note` returns in one go (characters); longer notes are read by outline and heading |
 | `uploadMaxBytes`         | No       | `52428800` | Largest file `upload-binary-file` will reserve an upload for (bytes)                         |
 | `uploadTtlSeconds`       | No       | `300`      | How long an upload URL lasts (seconds)                                                  |
+| `uploadStallSeconds`     | No       | `30`       | How long an upload may send nothing before it is cut off (seconds)                      |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below |
 

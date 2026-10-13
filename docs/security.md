@@ -129,8 +129,8 @@ URL has to be hard to misuse. It is built like this:
   file between its check and its placement), and if others could read or write it, it is
   tightened to owner-only.
 - At most 16 URLs can be pending and 4 uploads in progress, and an upload that sends
-  nothing for 30 seconds is cut off, so one client can't fill the disk or exhaust the
-  server's file handles. One trade-off: Node's whole-request time limit can't be set per
+  nothing for `uploadStallSeconds` (30 by default) is cut off, so one client can't
+  fill the disk or exhaust the server's file handles. One trade-off: Node's whole-request time limit can't be set per
   request, so the server raises it for every request, enough for the largest permitted
   upload to finish at 50 KB/s and never beyond an hour. That makes a slow client on any
   endpoint hold a connection longer than the default five minutes.
