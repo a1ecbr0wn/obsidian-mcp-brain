@@ -228,7 +228,7 @@ function loadConfig(configPath) {
 
   // A misspelling must not leave the server open without a word: a setting for
   // authentication under any other name is an error, and any other unknown key is reported.
-  const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'denyPaths', 'denyBinaryPaths',
+  const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'mcpPath', 'denyPaths', 'denyBinaryPaths',
     'graphifyQueryTimeoutMs', 'fetchMaxBytes', 'fetchTimeoutMs', 'readMaxBytes', 'readNoteMaxChars',
     'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
   for (const key of Object.keys(config)) {
@@ -240,12 +240,27 @@ function loadConfig(configPath) {
     log(`WARNING: Config file at ${configPath}: "${key}" is not a known setting and is ignored`);
   }
 
+  // The path of the MCP endpoint. Upload and OAuth paths keep their own fixed names, so a
+  // value that starts with one of them would make two routes answer the same address.
+  const mcpPath = config.mcpPath === undefined ? '/mcp' : config.mcpPath;
+  // The value is compared with the raw request path, so a form that a client or proxy would
+  // rewrite (an escape, a backslash, a "." or ".." segment) could never match.
+  if (typeof mcpPath !== 'string' || !/^\/[^\s?#%\\]+$/.test(mcpPath) || mcpPath.endsWith('/')
+      || mcpPath.includes('//') || mcpPath.split('/').some(seg => seg === '.' || seg === '..')) {
+    logErr(`Config file at ${configPath}: "mcpPath" must start with "/", must not end with "/", and must have no spaces, empty segments, "." or ".." segments, or any of ? # % \\ (for example "/mcp")`);
+    process.exit(1);
+  }
+  if (/^\/(up|\.well-known|authorize|token|register)(\/|$)/.test(mcpPath)) {
+    logErr(`Config file at ${configPath}: "mcpPath" cannot be "${mcpPath}", because the server uses that path for something else`);
+    process.exit(1);
+  }
+
   // Resource server mode is on when "auth" is present. It is checked here, with mcpBaseUrl,
   // so an unsafe combination stops the server from starting.
   let auth = null;
   if (config.auth !== undefined) {
     try {
-      auth = parseAuthConfig(config.auth, config.mcpBaseUrl, listenHost);
+      auth = parseAuthConfig(config.auth, config.mcpBaseUrl, listenHost, mcpPath);
     } catch (err) {
       logErr(`Config file at ${configPath}: ${err.message}`);
       process.exit(1);
@@ -287,6 +302,7 @@ function loadConfig(configPath) {
     listenPort,
     listenHost: listenHost.trim(),
     baseUrl: config.mcpBaseUrl,
+    mcpPath,
     graphifyQueryTimeoutMs,
     fetchMaxBytes,
     fetchTimeoutMs,
@@ -307,6 +323,7 @@ const {
   listenPort: LISTEN_PORT,
   listenHost: LISTEN_HOST,
   baseUrl: BASE_URL,
+  mcpPath: MCP_PATH,
   graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS,
   fetchMaxBytes: FETCH_MAX_BYTES,
   fetchTimeoutMs: FETCH_TIMEOUT_MS,
@@ -742,7 +759,7 @@ const TOOLS = [
   },
 ];
 
-// ── SSE streams (GET /mcp per session) ────────────────────────────────────
+// ── SSE streams (GET on the MCP endpoint per session) ────────────────────────────────────
 
 const sseStreams = new Map(); // sessionId → ServerResponse
 
@@ -750,7 +767,7 @@ const sseStreams = new Map(); // sessionId → ServerResponse
 
 const sessions    = new Set();
 const sessionUsers = new Map(); // sessionId → user, only when authentication is on
-const SESSION_TTL = 60_000; // remove sessions that never open a GET /mcp stream
+const SESSION_TTL = 60_000; // remove sessions that never open a GET stream on the MCP endpoint
 
 function addSession(sid) {
   if (sessions.size >= 1000) return false;
@@ -766,8 +783,10 @@ function addSession(sid) {
 
 const AUTH_KEYS = AUTH ? new KeyStore({ jwksUri: AUTH.jwksUri }) : null;
 const PROTECTED_RESOURCE_URL = `${BASE_URL.replace(/\/+$/, '')}/.well-known/oauth-protected-resource`;
+// `resource` is the address clients connect to, not the token audience: they compare it with
+// the URL they were given, and an `audience` that is an opaque tag (Cloudflare Access) is not one.
 const AUTH_RESOURCE = AUTH ? JSON.stringify({
-  resource: AUTH.audience,
+  resource: `${BASE_URL.replace(/\/+$/, '')}${MCP_PATH}`,
   authorization_servers: [AUTH.issuer],
   bearer_methods_supported: ['header'],
 }) : null;
@@ -793,7 +812,7 @@ function refuseBody(req, res, status, headers, body) {
 }
 
 /**
- * Checks the token on a request to /mcp. Answers the request itself when it is refused.
+ * Checks the token on a request to the MCP endpoint. Answers the request itself when it is refused.
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  * @returns {Promise<{user: string, role: 'full'|'readonly'}|null>} null when a response was sent.
@@ -905,7 +924,7 @@ async function handleRequest(req, res) {
   // Only requests that say 'Expect: 100-continue' arrive through the 'checkContinue' listener,
   // and Node then leaves answering it to us. Upload requests are answered after their checks.
   if (EXPECTS_CONTINUE.test(req.headers.expect ?? '') && !url?.startsWith(UPLOAD_PREFIX)
-      && !(AUTH && url === '/mcp')) res.writeContinue();
+      && !(AUTH && url === MCP_PATH)) res.writeContinue();
   // Validate session ID as a UUID — all legitimate IDs are created by randomUUID().
   // Non-matching values become '' so sessions.has('') is always false.
   const rawSid = req.headers['mcp-session-id']?.trim() || '';
@@ -1155,7 +1174,7 @@ async function route(req, res, url, sid) {
   // ── OAuth ──────────────────────────────────────────────────────────────
   if (AUTH) {
     // This server issues no tokens in this mode. The stub endpoints would tell a client it does.
-    if (url === '/.well-known/oauth-protected-resource' || url === '/.well-known/oauth-protected-resource/mcp') {
+    if (url === '/.well-known/oauth-protected-resource' || url === `/.well-known/oauth-protected-resource${MCP_PATH}`) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(AUTH_RESOURCE);
     }
@@ -1206,9 +1225,9 @@ async function route(req, res, url, sid) {
     }));
   }
 
-  if (url !== '/mcp') { res.writeHead(404); return res.end('not found'); }
+  if (url !== MCP_PATH) { res.writeHead(404); return res.end('not found'); }
 
-  // ── resource server mode: every request to /mcp needs a valid token ───
+  // ── resource server mode: every request to the MCP endpoint needs a valid token ───
   let principal = null;
   if (AUTH) {
     principal = await authenticate(req, res);
@@ -1221,7 +1240,7 @@ async function route(req, res, url, sid) {
     if (EXPECTS_CONTINUE.test(req.headers.expect ?? '')) res.writeContinue();
   }
 
-  // ── GET /mcp — notification SSE stream ────────────────────────────────
+  // ── GET on the MCP endpoint — notification SSE stream ────────────────────────────────
   if (req.method === 'GET') {
     if (!sid || !sessions.has(sid)) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1248,7 +1267,7 @@ async function route(req, res, url, sid) {
     return;
   }
 
-  // ── POST /mcp ──────────────────────────────────────────────────────────
+  // ── POST on the MCP endpoint ──────────────────────────────────────────────────────────
   if (req.method !== 'POST') {
     res.writeHead(405);
     return res.end('method not allowed');

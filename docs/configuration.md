@@ -52,6 +52,7 @@ All configuration lives in one JSON file. No environment variables are read exce
 | Field                    | Required | Default    | Description                                                                             |
 | ------------------------ | -------- | ---------- | --------------------------------------------------------------------------------------- |
 | `mcpBaseUrl`             | Yes      | none       | Public HTTPS base URL of the server (scheme, host and port, no path or trailing slash), used in OAuth responses, SSE endpoint events and upload URLs |
+| `mcpPath`                | No       | `/mcp`     | Path of the MCP endpoint, added to `mcpBaseUrl` to make the address clients connect to. Starts with `/`, no trailing slash, no spaces, empty segments, `.` or `..` segments, or `?` `#` `%` `\` |
 | `vaults`                 | Yes      | none       | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a [container](install/install-docker), where `0.0.0.0` is needed for the published port to reach it |
@@ -189,6 +190,21 @@ address from a request, because behind a reverse proxy the `Host` header it sees
 usually the proxy's internal address. A client that reaches the server at a different
 address from `mcpBaseUrl` can't use the URL as given.
 
+**`mcpPath`** is the path of the MCP endpoint. The address a client connects to is
+`mcpBaseUrl` followed by `mcpPath`, `https://server:4001/mcp` by default. Set it when
+the endpoint should be served at a different path, for example `"/brain"`, so the
+connector address is `https://server:4001/brain`. It must start with `/`, must not end
+with `/`, and must not contain spaces, empty segments (`//`), `.` or `..` segments, or
+any of `?`, `#`, `%` and `\`. The server refuses to start with a value that breaks those
+rules, or one that begins with a path it uses for something else:
+`/up`, `/.well-known`, `/authorize`, `/token` or `/register`. The MCP endpoint answers
+on that path only, and `/mcp` answers `404` when another path is set. The protected
+resource metadata names `mcpBaseUrl` followed by `mcpPath` as its `resource`, whatever
+[`audience`](#authentication-auth) is, because clients compare it with the address they
+connected to. A proxy or tunnel
+that adds a path in front of the server still has to remove it before the request reaches
+the server.
+
 **`uploadTempDir`** is where a file is held while it is being received, before it has
 been checked. It defaults to an `obsidian-mcp-uploads-<user id>` folder under the
 system's temporary folder (just `obsidian-mcp-uploads` where there are no user ids), named
@@ -281,13 +297,13 @@ no tokens itself, shows no login page and stores no passwords.
 |---|---|---|---|
 | `issuer` | Yes | | The exact value a token's `iss` claim must have |
 | `jwksUri` | Yes | | Where the issuer's public signing keys are fetched from |
-| `audience` | No | `<mcpBaseUrl>/mcp` | A value a token's `aud` claim must contain. It is the server's address as a client names it in the `resource` parameter of its authorization request, so the OAuth service must put the requested resource in `aud` |
+| `audience` | No | `<mcpBaseUrl><mcpPath>` | A value a token's `aud` claim must contain. It is the server's address as a client names it in the `resource` parameter of its authorization request, so the OAuth service must put the requested resource in `aud` |
 | `userClaim` | No | `sub` | The claim that identifies the user. `sub` is the safe choice. An `email` claim is compared without regard to ASCII case, and a token with `email_verified` set to false is refused, but only an issuer that verifies addresses before it issues them makes an email a safe identity |
 | `users` | Yes | | Users who may call every tool. Must not be empty |
 | `readOnlyUsers` | No | `[]` | Users who may call only the tools that read the vault |
 | `tokenHeader` | No | `null` | A second header to read the token from, for a deployment where a fronting service passes the verified token on in its own header. When this header is present it is used; otherwise `Authorization: Bearer` is |
 
-What happens to a request to `/mcp`:
+What happens to a request to the MCP endpoint (`/mcp`, or your `mcpPath`):
 
 - No token: `401` with a `WWW-Authenticate` header that points a client at the
   server's protected resource metadata, so a client that implements the MCP

@@ -93,7 +93,7 @@ function request(srv, { method = 'POST', path: p = '/mcp', headers = {}, body, t
       let text = '';
       res.setEncoding('utf8');
       // A GET stream never ends: answer as soon as the headers are in.
-      if (method === 'GET' && p === '/mcp' && res.statusCode === 200) {
+      if (method === 'GET' && (p === '/mcp' || p === '/brain') && res.statusCode === 200) {
         res.destroy();
         return resolve({ status: res.statusCode, headers: res.headers, text: '', msgs: [] });
       }
@@ -307,7 +307,7 @@ describe('resource server mode', () => {
         const r = await request(srv, { method: 'GET', path: p });
         assert.equal(r.status, 200, p);
         assert.deepEqual(r.json, {
-          resource: iss.audience,
+          resource: `http://127.0.0.1:${srv.port}/mcp`,
           authorization_servers: [iss.issuer],
           bearer_methods_supported: ['header'],
         });
@@ -527,4 +527,108 @@ describe('start-up refusals', () => {
   refused('a misspelled top-level auth setting, which would leave the server open', () => ({ Auth: { issuer: 'https://a.example.test' } }), 'looks like an authentication setting');
   refused('authentication settings placed at the top level', () => ({ users: ['x'] }), 'looks like an authentication setting');
   refused('an auth value that is not an object', () => ({ auth: true }), '"auth" must be an object');
+});
+
+// ── a configured MCP endpoint path ────────────────────────────────────────
+
+describe('mcpPath', () => {
+  let iss;
+  let srv;
+  const tok = (email = OWNER, over = {}) => iss.sign(iss.claims({ email, ...over }));
+  const opened = (path, token) => request(srv, { path, body: INIT, token });
+
+  before(async () => {
+    iss = await createIssuer();
+    srv = await launch(() => ({ ...authFor(iss)(), mcpPath: '/brain' }));
+  });
+  after(async () => { await srv.stop(); await iss.stop(); });
+
+  it('answers the MCP endpoint on the configured path and not on /mcp', async () => {
+    const ok = await opened('/brain', tok());
+    assert.equal(ok.status, 200, ok.text);
+    assert.ok(ok.headers['mcp-session-id']);
+    assert.equal((await opened('/mcp', tok())).status, 404);
+    assert.equal((await opened('/brain/mcp', tok())).status, 404);
+  });
+
+  it('opens the notification stream on the configured path', async () => {
+    const sid = (await opened('/brain', tok())).headers['mcp-session-id'];
+    const r = await request(srv, { method: 'GET', path: '/brain', token: tok(), sid });
+    assert.equal(r.status, 200);
+    assert.equal((await request(srv, { method: 'GET', path: '/mcp', token: tok(), sid })).status, 404);
+  });
+
+  it('asks for a token on the configured path', async () => {
+    const r = await opened('/brain');
+    assert.equal(r.status, 401);
+    assert.match(r.headers['www-authenticate'], /resource_metadata="http:\/\/127\.0\.0\.1:\d+\/\.well-known\/oauth-protected-resource"/);
+  });
+
+  it('names the configured path as the resource, at the root and the path-suffixed address', async () => {
+    for (const p of ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/brain']) {
+      const r = await request(srv, { method: 'GET', path: p });
+      assert.equal(r.status, 200, p);
+      assert.equal(r.json.resource, `http://127.0.0.1:${srv.port}/brain`, p);
+    }
+    assert.equal((await request(srv, { method: 'GET', path: '/.well-known/oauth-protected-resource/mcp' })).status, 404);
+  });
+});
+
+describe('mcpPath and the default audience', () => {
+  let iss;
+  let srv;
+  before(async () => {
+    iss = await createIssuer();
+    srv = await launch(() => ({ ...authFor(iss, { audience: undefined })(), mcpPath: '/brain' }));
+  });
+  after(async () => { await srv.stop(); await iss.stop(); });
+
+  it('accepts a token for the configured address and refuses one for /mcp', async () => {
+    const good = iss.sign(iss.claims({ email: OWNER, aud: `${srv.base}/brain` }));
+    const wrong = iss.sign(iss.claims({ email: OWNER, aud: `${srv.base}/mcp` }));
+    assert.equal((await request(srv, { path: '/brain', body: INIT, token: good })).status, 200);
+    assert.equal((await request(srv, { path: '/brain', body: INIT, token: wrong })).status, 401);
+  });
+});
+
+describe('mcpPath without authentication', () => {
+  let srv;
+  before(async () => { srv = await launch(() => ({ mcpPath: '/x/y' })); });
+  after(async () => { await srv.stop(); });
+
+  it('serves the endpoint on the configured path only', async () => {
+    assert.equal((await request(srv, { path: '/x/y', body: INIT })).status, 200);
+    assert.equal((await request(srv, { path: '/mcp', body: INIT })).status, 404);
+  });
+});
+
+describe('mcpPath refusals', () => {
+  const refused = (label, value) => it(`refuses ${label}`, async () => {
+    const srv = await launch(() => ({ mcpPath: value }), { expectExit: true });
+    try {
+      assert.equal(srv.exited, true, 'the server should not have started');
+      assert.equal(srv.code, 1, srv.log());
+      assert.ok(srv.log().includes('"mcpPath"'), srv.log());
+    } finally { await srv.stop(); }
+  });
+
+  refused('a path with no leading slash', 'brain');
+  refused('a path with a trailing slash', '/brain/');
+  refused('the root', '/');
+  refused('a path with a space', '/a b');
+  refused('a path with a query', '/a?b=1');
+  refused('a path with an empty segment', '/a//b');
+  refused('a value that is not a string', 5);
+  refused('the upload path', '/up');
+  refused('a path under the upload path', '/up/x');
+  refused('a path under .well-known', '/.well-known/x');
+  refused('an OAuth stub path', '/token');
+  refused('another OAuth stub path', '/authorize');
+  refused('the registration stub path', '/register');
+  refused('the .well-known root', '/.well-known');
+  refused('an empty string', '');
+  refused('a path with an escape', '/a%2Fb');
+  refused('a path with a backslash', '/a\\b');
+  refused('a path with a dot segment', '/a/./b');
+  refused('a path with a parent segment', '/a/../b');
 });

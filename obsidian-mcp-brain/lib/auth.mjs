@@ -99,11 +99,12 @@ const foldEmail = (s) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
  * @param {*} raw - The value of the `auth` field (not undefined).
  * @param {string} mcpBaseUrl - The configured public URL of this server.
  * @param {string} [listenHost] - The address the server listens on.
+ * @param {string} [mcpPath] - The path of the MCP endpoint, used for the default audience.
  * @returns {{issuer: string, jwksUri: string, audience: string, userClaim: string,
  *   users: Set<string>, readOnlyUsers: Set<string>, tokenHeader: (string|null)}}
  * @throws {Error} naming the field, when the object is not usable or is not safe.
  */
-export function parseAuthConfig(raw, mcpBaseUrl, listenHost = '127.0.0.1') {
+export function parseAuthConfig(raw, mcpBaseUrl, listenHost = '127.0.0.1', mcpPath = '/mcp') {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('"auth" must be an object');
   for (const key of Object.keys(raw)) {
     if (!AUTH_FIELDS.has(key)) throw new Error(`"auth.${key}" is not a known setting`);
@@ -123,7 +124,7 @@ export function parseAuthConfig(raw, mcpBaseUrl, listenHost = '127.0.0.1') {
   const issuer = checkUrl(raw.issuer, 'issuer');
   const jwksUri = checkUrl(raw.jwksUri, 'jwksUri');
 
-  const audience = raw.audience === undefined ? `${String(mcpBaseUrl).replace(/\/+$/, '')}/mcp` : raw.audience;
+  const audience = raw.audience === undefined ? `${String(mcpBaseUrl).replace(/\/+$/, '')}${mcpPath}` : raw.audience;
   if (typeof audience !== 'string' || !audience.trim()) throw new Error('"auth.audience" must be a non-empty string');
 
   const userClaim = raw.userClaim === undefined ? 'sub' : raw.userClaim;

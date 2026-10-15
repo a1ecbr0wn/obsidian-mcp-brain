@@ -267,6 +267,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | Field                    | Required | Default    | Description                                                                             |
 | ------------------------ | -------- | ---------- | ----------------------------------------------------------------------------------------- |
 | `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the server (scheme, host and port, no path or trailing slash); used in OAuth responses, SSE endpoint events and upload URLs |
+| `mcpPath`                | No       | `/mcp`     | Path of the MCP endpoint, added to `mcpBaseUrl`; starts with `/`, no trailing slash, no empty or dot segments |
 | `vaults`                 | Yes      | —          | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a container, where `0.0.0.0` is needed for the published port to reach it |

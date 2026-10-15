@@ -51,7 +51,7 @@ Published application**:
 
 | Field | Value |
 |---|---|
-| Subdomain and Domain | `mcp` on `example.com`, which makes `mcp.example.com` |
+| Subdomain and Domain | `brain` on `example.com`, which makes `brain.example.com` |
 | Service URL | `http://localhost:3002` |
 
 The tunnel connects out from the machine, so nothing listens on a public port. Keep
@@ -59,13 +59,17 @@ The tunnel connects out from the machine, so nothing listens on a public port. K
 
 ### 2. Put Access in front of the hostname
 
-1. In **Zero Trust > Access controls > AI controls > MCP servers**, select **Add an MCP
-   server**.
-2. Enter a name and the URL with its path: `https://mcp.example.com/mcp`.
-3. Add a policy that allows only the people who may use the vault, for example an
+1. In **Zero Trust > Access controls > Applications**, select **Add an application**,
+   then **Self-hosted**.
+2. Under **Self-hosted and Private**, open the **Public DNS** tab, select **Continue
+   with Self-hosted and private**.
+3. Enter a name. Enter `brain` as the subdomain, select `example.com` as the domain,
+   and enter `/mcp` as the path. If you set [`mcpPath`](../configuration) to another
+   path, enter that path instead, and use it wherever `/mcp` appears below.
+4. Add a policy that allows only the people who may use the vault, for example an
    **Emails** rule listing your address.
-4. Choose the identity providers, then **Save**.
-5. Edit the application, open **Advanced settings** and turn on **Managed OAuth**.
+5. Select **Save**.
+6. Edit the application, open **Additional settings** and turn on **Managed OAuth**.
 
 Managed OAuth settings you may want to change on that tab:
 
@@ -74,6 +78,14 @@ Managed OAuth settings you may want to change on that tab:
 | Access token lifetime | How long a token authenticates requests before the client refreshes it. Policies are checked again at each refresh |
 | Grant session duration | How long the refresh token lasts. When it ends the user logs in again |
 | Allowed redirect URIs | Where dynamically registered clients may be sent after login. Add the redirect address of any client that is refused |
+
+Access refuses to register a client whose redirect address is not on that list. For
+Claude, add both of these:
+
+```text
+https://claude.ai/api/mcp/auth_callback
+https://claude.com/api/mcp/auth_callback
+```
 
 Managed OAuth needs an OAuth client that sends the `resource` parameter
 ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)), which MCP clients do.
@@ -85,7 +97,7 @@ Tag**. Your team name is the first part of your `…cloudflareaccess.com` addres
 
 ```json
 {
-  "mcpBaseUrl": "https://mcp.example.com",
+  "mcpBaseUrl": "https://brain.example.com",
   "auth": {
     "issuer": "https://<team-name>.cloudflareaccess.com",
     "jwksUri": "https://<team-name>.cloudflareaccess.com/cdn-cgi/access/certs",
@@ -109,10 +121,10 @@ Restart the server so that it reads the `auth` settings.
 ### 4. Add the connector
 
 In claude.ai or the Claude mobile app, add a custom connector with
-`https://mcp.example.com/mcp`. Claude sends the user to the Access login, and on return
+`https://brain.example.com/mcp`. Claude sends the user to the Access login, and on return
 holds a token it refreshes by itself.
 
-For Claude Code: `claude mcp add --transport http obsidian https://mcp.example.com/mcp`,
+For Claude Code: `claude mcp add --transport http obsidian https://brain.example.com/mcp`,
 then `/mcp` to sign in. For Claude Desktop, use `mcp-remote` with the same address.
 
 ### Notes
