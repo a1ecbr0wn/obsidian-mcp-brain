@@ -54,6 +54,10 @@ Published application**:
 | Subdomain and Domain | `brain` on `example.com`, which makes `brain.example.com` |
 | Service URL | `http://localhost:3002` |
 
+The service URL uses `http://`, not `https://`: the server speaks plain HTTP on the
+loopback address, and `cloudflared` returns a 502 if it is told to use TLS. The port is
+the server's [`listenPort`](../configuration).
+
 The tunnel connects out from the machine, so nothing listens on a public port. Keep
 `listenHost` at its default so the server cannot be reached except through `cloudflared`.
 
@@ -114,15 +118,20 @@ Tag**. Your team name is the first part of your `…cloudflareaccess.com` addres
   `readOnlyUsers` then take email addresses, compared without regard to case.
 - `tokenHeader` makes the server read the assertion. When that header is present it is
   used before any `Authorization` header.
-- `mcpBaseUrl` is the tunnel's public address, which is also where upload URLs point.
+- `mcpBaseUrl` is the tunnel's public address without a path, which is also where upload
+  URLs point.
+- If you changed [`mcpPath`](../configuration), add it next to `mcpBaseUrl`, for example
+  `"mcpPath": "/brain"`. It must be the path the Access application protects.
 
 Restart the server so that it reads the `auth` settings.
 
 ### 4. Add the connector
 
 In claude.ai or the Claude mobile app, add a custom connector with
-`https://brain.example.com/mcp`. Claude sends the user to the Access login, and on return
-holds a token it refreshes by itself.
+`https://brain.example.com/mcp`. Use the full address, including the path: the
+client sends it as the OAuth `resource`, and Access only starts a login for a resource
+that falls inside an application it knows. Claude sends the user to the Access login, and
+on return holds a token it refreshes by itself.
 
 For Claude Code: `claude mcp add --transport http obsidian https://brain.example.com/mcp`,
 then `/mcp` to sign in. For Claude Desktop, use `mcp-remote` with the same address.
@@ -134,9 +143,9 @@ then `/mcp` to sign in. For Claude Desktop, use `mcp-remote` with the same addre
 - **Key rotation.** Access rotates its signing key every 6 weeks and keeps the previous
   key valid for 7 days. The server refetches the key document when it sees an unknown
   key, so no change is needed.
-- **Upload URLs.** `PUT /up/<token>` is a different path from `/mcp`, and an agent's
-  `curl` carries no Access login. An Access application scoped to `/mcp` leaves `/up/`
-  outside it, which is what an upload needs; if you scope the application to the whole
+- **Upload URLs.** `PUT /up/<token>` is a different path from the MCP endpoint, and an
+  agent's `curl` carries no Access login. An Access application scoped to the MCP path
+  leaves `/up/` outside it, which is what an upload needs; if you scope the application to the whole
   hostname instead, add a Bypass policy for `/up/*`. The one-time token in the URL is the
   upload's credential.
 - **Directly reachable servers.** The assertion is checked on every request, so the header
@@ -144,3 +153,14 @@ then `/mcp` to sign in. For Claude Desktop, use `mcp-remote` with the same addre
   way in.
 - **Removing a user.** Remove them from the Access policy, which stops the next refresh,
   and from `users`, then restart the server.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| The client reports a 502 when it connects | `cloudflared` cannot reach the server. Check that the server is running, that the route's service URL is `http://localhost:<listenPort>` and not `https://`, and that the tunnel shows as healthy |
+| The client cannot find the sign-in service, or `/.well-known/…` returns a Cloudflare block page | A WAF custom rule, rate limit or managed rule on the zone is blocking `/.well-known/` paths. Access serves the discovery documents there, so allow them |
+| `401` on the MCP path before any login | Expected. Access answers unauthenticated requests, and the client then starts the sign-in |
+| The client says registration or the redirect is refused | The client's redirect address is not in the application's **Allowed redirect URIs** |
+| Sign-in completes but the client keeps asking again | The client may hold discovery data cached from an earlier failure. Clear its saved sign-in for this server (in Claude Code, `/mcp` and select the server) and sign in again |
+| Signed in, but every call is refused | The email is missing from `users` or `readOnlyUsers`, or `audience` is not the application's AUD tag. The server's log names the reason |
