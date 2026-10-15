@@ -18,6 +18,8 @@ as a service and put HTTPS in front of it.
 - [Expose it over HTTPS with Tailscale Serve](install/install-tailscale)
 - [Expose it over HTTPS with nginx](install/install-nginx)
 - [Expose it over HTTPS with Caddy](install/install-caddy)
+- [Protect it with Cloudflare Tunnel and Access](install/install-cloudflare-access)
+- [Sign in with Cloudflare's workers-oauth-provider](install/install-cloudflare-oauth)
 
 ### Putting HTTPS in front of the server
 
@@ -36,9 +38,16 @@ from whichever you use:
 | Idle notification stream | Not checked | `proxy_read_timeout` closes it at 60 s by default | Left open |
 | Upload token in the access log | Not checked | Logged by default; redact it | Not logged unless `log` is on; redact it |
 
-Whichever you use, `mcpBaseUrl` has to be the address clients use, and the server has
-no authentication of its own, so where the proxy is reachable from is what decides
-who can use your vault. See [Security](../security).
+Whichever you use, `mcpBaseUrl` has to be the address clients use. Unless you set
+[`auth`](../configuration#authentication-auth), the server has no authentication of its
+own, so where the proxy is reachable from is what decides who can use your vault. See
+[Security](../security).
+
+With `auth` set the proxy needs nothing extra: it passes `Authorization` through (nginx
+and Caddy both do by default), `/mcp` then needs a token, and `PUT /up/<token>` and the
+discovery documents stay open. If you publish the server on a public address, set `auth`
+first. The server refuses to start with `auth` on and a plain `http` `mcpBaseUrl` that
+is not loopback, so TLS is the proxy's job.
 
 #### When something is wrong
 

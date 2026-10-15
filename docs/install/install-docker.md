@@ -57,8 +57,8 @@ docker run -d --name obsidian-mcp-brain --restart unless-stopped \
   runs as can read it, or the server exits at startup.
 - `-p 127.0.0.1:3002:3002` publishes the port on the host's loopback only, so other
   machines cannot reach the container directly. Other containers on the same Docker
-  network still can, and the server has no authentication of its own, so keep
-  untrusted containers off that network. Drop the `127.0.0.1:` only if you
+  network still can, and unless you set [`auth`](../configuration#authentication-auth) the server has no
+  authentication, so keep untrusted containers off that network. Drop the `127.0.0.1:` only if you
   deliberately want other machines to reach it directly; see [Security](../security).
 - If you change `listenPort` in the config, publish that port instead of `3002`.
 

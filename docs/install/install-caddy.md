@@ -6,8 +6,9 @@ title: "Expose it over HTTPS with Caddy | obsidian-mcp-brain"
 ## Expose it over HTTPS with Caddy
 
 [Caddy](https://caddyserver.com) gets and renews a certificate by itself and forwards
-to the server on the same machine. The server has no authentication of its own, so
-decide who can reach the proxy first; see [Security](../security). The proxy
+to the server on the same machine. Unless you set
+[`auth`](../configuration#authentication-auth), the server has no authentication, so decide who can
+reach the proxy first; see [Security](../security). The proxy
 behaviour below was tried against a running server (Caddy 2, plain HTTP on a local
 port). The automatic certificate and `tls` lines were not exercised. With the
 defaults, none of the behaviours that needed a setting in nginx came up.
@@ -89,8 +90,9 @@ curl https://your-hostname/.well-known/oauth-authorization-server
 ```
 
 If step 3 fails, see
-[Putting HTTPS in front of the server](index#putting-https-in-front-of-the-server).
+[Putting HTTPS in front of the server](../install#putting-https-in-front-of-the-server).
 
-The server has no authentication of its own, so where Caddy is reachable from is what
-decides who can use your vault. Do not expose it to the internet unless you have put
-authentication in front of it. See [Security](../security).
+Unless you set [`auth`](../configuration#authentication-auth), the server has no authentication, so where
+Caddy is reachable from is what decides who can use your vault. Do not expose it to the
+internet without it, or without other authentication in front. See
+[Security](../security).

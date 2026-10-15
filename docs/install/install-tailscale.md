@@ -5,11 +5,12 @@ title: "Expose it over HTTPS with Tailscale Serve | obsidian-mcp-brain"
 
 ## Expose it over HTTPS with Tailscale Serve
 
-Remote MCP clients need an HTTPS URL, and the server has no authentication of its
-own, so it should only be reachable over a private network, or an overlay network
-such as Tailscale. [Tailscale Serve](https://tailscale.com/kb/1312/serve) does both
-jobs: it provides the HTTPS endpoint and limits who can reach it to the devices on
-your tailnet. A private network plus an HTTPS reverse proxy works too: see
+Remote MCP clients need an HTTPS URL, and a server without
+[`auth`](../configuration#authentication-auth) set has no authentication, so it should
+only be reachable over a private network, or an overlay network such as Tailscale.
+[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) does both jobs:
+it provides the HTTPS endpoint and limits who can reach it to the devices on your
+tailnet. A private network plus an HTTPS reverse proxy works too: see
 [nginx](install-nginx) and [Caddy](install-caddy).
 
 ### Before you start
@@ -86,7 +87,7 @@ the URL when you [connect a client](../connect).
 `mcpBaseUrl` has to be the address clients actually use. The `upload-binary-file`
 tool builds its URL from it, so a wrong name there gives an upload URL that does not
 resolve, or is refused with a 403. See
-[Putting HTTPS in front of the server](index#putting-https-in-front-of-the-server)
+[Putting HTTPS in front of the server](../install#putting-https-in-front-of-the-server)
 for the symptoms.
 
 ### Docker
@@ -102,10 +103,18 @@ may come from the container network's gateway (on the default Docker bridge, usu
 
 ### Tailnet only: Serve and Funnel
 
-`tailscale serve` is reachable only from devices on your tailnet. `tailscale funnel`
-exposes the same thing to the whole internet. Do not use Funnel for this server: it
-has no authentication of its own, so anyone who found the address could read and
-write your vault. See [Security](../security).
+`tailscale serve` is reachable only from devices on your tailnet.
+[`tailscale funnel`](https://tailscale.com/docs/features/tailscale-funnel) exposes the
+same thing to the whole internet. Do not use Funnel with the server in its default,
+unauthenticated mode: anyone who found the address could read and write your vault. See
+[Security](../security).
+
+With [`auth`](../configuration#authentication-auth) set, every request to `/mcp` needs a
+signed token for a listed user, so Funnel can be the public address that a client, or a
+Worker such as the one on the [Cloudflare page](install-cloudflare-oauth), reaches the
+server by. Funnel serves only ports 443, 8443 and 10000, so use one of them in the
+`tailscale funnel` command and in `mcpBaseUrl`. The upload URLs and the discovery
+documents are public by design; see [Security](../security#authentication).
 
 To let a person or device that is not yours use the server, share the machine with
 them from the admin console, or add their device to your tailnet, rather than
@@ -119,5 +128,5 @@ another tailnet, the old URL stops working. Change `mcpBaseUrl`, restart the ser
 re-run `tailscale serve` if `tailscale serve status` no longer shows it, and change
 the saved connection in every client.
 
-The server's OAuth flow is deliberately public, so this network layer is what
-controls access. See [Security](../security).
+Without `auth`, the server's OAuth flow is deliberately public, so this network layer is
+what controls access. See [Security](../security).

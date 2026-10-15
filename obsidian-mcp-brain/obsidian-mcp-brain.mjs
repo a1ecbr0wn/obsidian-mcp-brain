@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError, matchesExtension } from './lib/access.mjs';
 import { mimeTypeFor } from './lib/mime.mjs';
+import { parseAuthConfig, KeyStore, verifyAccessToken, extractToken, toolAllowed, AuthError } from './lib/auth.mjs';
 import {
   UploadSlots,
   normalizeAddress,
@@ -112,7 +113,9 @@ const withTrash = (patterns) => (patterns.length ? [...patterns, '.trash'] : pat
  * uploadStallSeconds (default 30, how long an upload may send nothing before it is cut off),
  * uploadTempDir (default: obsidian-mcp-uploads-<uid> under the OS temp dir for per-user isolation;
  * where uploads are staged, never inside a vault), trustedProxies (default [], addresses or CIDR
- * ranges of reverse proxies whose X-Forwarded-For is believed), and vaults (required). Each vault
+ * ranges of reverse proxies whose X-Forwarded-For is believed), auth (optional; when present the
+ * server accepts only signed tokens from the configured issuer, for the configured users: see
+ * lib/auth.mjs), and vaults (required). Each vault
  * may add its own denyPaths and denyBinaryPaths on top of the global lists. When any denyBinaryPaths
  * are configured, '.trash' is automatically added to protect against reads/moves of deleted files.
  * listenHost must be a non-empty string (e.g. "127.0.0.1", "0.0.0.0", or "::1").
@@ -223,6 +226,47 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  // A misspelling must not leave the server open without a word: a setting for
+  // authentication under any other name is an error, and any other unknown key is reported.
+  const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'mcpPath', 'denyPaths', 'denyBinaryPaths',
+    'graphifyQueryTimeoutMs', 'fetchMaxBytes', 'fetchTimeoutMs', 'readMaxBytes', 'readNoteMaxChars',
+    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
+  for (const key of Object.keys(config)) {
+    if (knownKeys.has(key)) continue;
+    if (/^(auth|oauth2?|authn|authentication|authorization|authorisation|tokens?|jwks|jwksuri|issuer|audience|users|readonlyusers|userclaim|tokenheader)$/i.test(key)) {
+      logErr(`Config file at ${configPath}: "${key}" looks like an authentication setting, but only "auth" is read. Rename it, or the server would start with no authentication`);
+      process.exit(1);
+    }
+    log(`WARNING: Config file at ${configPath}: "${key}" is not a known setting and is ignored`);
+  }
+
+  // The path of the MCP endpoint. Upload and OAuth paths keep their own fixed names, so a
+  // value that starts with one of them would make two routes answer the same address.
+  const mcpPath = config.mcpPath === undefined ? '/mcp' : config.mcpPath;
+  // The value is compared with the raw request path, so a form that a client or proxy would
+  // rewrite (an escape, a backslash, a "." or ".." segment) could never match.
+  if (typeof mcpPath !== 'string' || !/^\/[^\s?#%\\]+$/.test(mcpPath) || mcpPath.endsWith('/')
+      || mcpPath.includes('//') || mcpPath.split('/').some(seg => seg === '.' || seg === '..')) {
+    logErr(`Config file at ${configPath}: "mcpPath" must start with "/", must not end with "/", and must have no spaces, empty segments, "." or ".." segments, or any of ? # % \\ (for example "/mcp")`);
+    process.exit(1);
+  }
+  if (/^\/(up|\.well-known|authorize|token|register)(\/|$)/.test(mcpPath)) {
+    logErr(`Config file at ${configPath}: "mcpPath" cannot be "${mcpPath}", because the server uses that path for something else`);
+    process.exit(1);
+  }
+
+  // Resource server mode is on when "auth" is present. It is checked here, with mcpBaseUrl,
+  // so an unsafe combination stops the server from starting.
+  let auth = null;
+  if (config.auth !== undefined) {
+    try {
+      auth = parseAuthConfig(config.auth, config.mcpBaseUrl, listenHost, mcpPath);
+    } catch (err) {
+      logErr(`Config file at ${configPath}: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
   const globalDenyPaths = normDenyPaths(config.denyPaths, configPath, 'denyPaths');
   const globalDenyBinaryPaths = normDenyPaths(config.denyBinaryPaths, configPath, 'denyBinaryPaths');
 
@@ -258,6 +302,7 @@ function loadConfig(configPath) {
     listenPort,
     listenHost: listenHost.trim(),
     baseUrl: config.mcpBaseUrl,
+    mcpPath,
     graphifyQueryTimeoutMs,
     fetchMaxBytes,
     fetchTimeoutMs,
@@ -269,6 +314,7 @@ function loadConfig(configPath) {
     uploadTempDir: path.resolve(uploadTempDir),
     uploadTempDirIsDefault,
     trustedProxies,
+    auth,
     vaults,
   };
 }
@@ -277,6 +323,7 @@ const {
   listenPort: LISTEN_PORT,
   listenHost: LISTEN_HOST,
   baseUrl: BASE_URL,
+  mcpPath: MCP_PATH,
   graphifyQueryTimeoutMs: GRAPHIFY_QUERY_TIMEOUT_MS,
   fetchMaxBytes: FETCH_MAX_BYTES,
   fetchTimeoutMs: FETCH_TIMEOUT_MS,
@@ -288,6 +335,7 @@ const {
   uploadTempDir: CONFIGURED_UPLOAD_TEMP_DIR,
   uploadTempDirIsDefault: UPLOAD_TEMP_DIR_IS_DEFAULT,
   trustedProxies: TRUSTED_PROXIES,
+  auth: AUTH,
   vaults: VAULTS,
 } = loadConfig(CONFIG_PATH);
 
@@ -711,23 +759,85 @@ const TOOLS = [
   },
 ];
 
-// ── SSE streams (GET /mcp per session) ────────────────────────────────────
+// ── SSE streams (GET on the MCP endpoint per session) ────────────────────────────────────
 
 const sseStreams = new Map(); // sessionId → ServerResponse
 
 // ── active HTTP sessions ───────────────────────────────────────────────────
 
 const sessions    = new Set();
-const SESSION_TTL = 60_000; // remove sessions that never open a GET /mcp stream
+const sessionUsers = new Map(); // sessionId → user, only when authentication is on
+const SESSION_TTL = 60_000; // remove sessions that never open a GET stream on the MCP endpoint
 
 function addSession(sid) {
   if (sessions.size >= 1000) return false;
   sessions.add(sid);
   // If no SSE stream opens within TTL, drop the session
   setTimeout(() => {
-    if (!sseStreams.has(sid)) sessions.delete(sid);
+    if (!sseStreams.has(sid)) { sessions.delete(sid); sessionUsers.delete(sid); }
   }, SESSION_TTL);
   return true;
+}
+
+// ── resource server mode ───────────────────────────────────────────────────
+
+const AUTH_KEYS = AUTH ? new KeyStore({ jwksUri: AUTH.jwksUri }) : null;
+const PROTECTED_RESOURCE_URL = `${BASE_URL.replace(/\/+$/, '')}/.well-known/oauth-protected-resource`;
+// `resource` is the address clients connect to, not the token audience: they compare it with
+// the URL they were given, and an `audience` that is an opaque tag (Cloudflare Access) is not one.
+const AUTH_RESOURCE = AUTH ? JSON.stringify({
+  resource: `${BASE_URL.replace(/\/+$/, '')}${MCP_PATH}`,
+  authorization_servers: [AUTH.issuer],
+  bearer_methods_supported: ['header'],
+}) : null;
+
+/** Makes a value from a token safe to put in a log line. */
+const logSafe = (v) => String(v).replace(/[^\x20-\x7e]/g, '?').slice(0, 100);
+
+/**
+ * Answers a request that has not been authenticated and closes the connection. Whatever
+ * the client is still sending is read, up to a small limit, so that it can read the answer
+ * and not see a reset; a client that sends more than that is cut off.
+ */
+function refuseBody(req, res, status, headers, body) {
+  res.writeHead(status, { ...headers, Connection: 'close' });
+  res.end(JSON.stringify(body));
+  if (req.destroyed) return;
+  let drained = 0;
+  req.on('data', (chunk) => {
+    drained += chunk.length;
+    if (drained > 65_536) req.destroy();
+  });
+  req.resume();
+}
+
+/**
+ * Checks the token on a request to the MCP endpoint. Answers the request itself when it is refused.
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @returns {Promise<{user: string, role: 'full'|'readonly'}|null>} null when a response was sent.
+ */
+async function authenticate(req, res) {
+  const refuse = (status, reason, user, invalid = true) => {
+    log(`auth refused: ${reason}${user ? ` user=${logSafe(user)}` : ''}`);
+    const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+    if (status === 401) {
+      headers['WWW-Authenticate'] = `Bearer resource_metadata="${PROTECTED_RESOURCE_URL}"`
+        + (invalid ? `, error="invalid_token", error_description="${reason}"` : '');
+    }
+    refuseBody(req, res, status, headers, { error: status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'authorization unavailable' });
+    return null;
+  };
+  const token = extractToken(req.headers, AUTH);
+  if (!token) return refuse(401, 'no token', undefined, false);
+  try {
+    const { user, role } = await verifyAccessToken(token, AUTH, AUTH_KEYS);
+    return { user, role };
+  } catch (err) {
+    if (err instanceof AuthError) return refuse(err.status, err.reason, err.user);
+    logErr('auth failed unexpectedly:', logSafe(err.message));
+    return refuse(503, 'keys unavailable');
+  }
 }
 
 // ── OAuth static responses ─────────────────────────────────────────────────
@@ -813,7 +923,8 @@ async function handleRequest(req, res) {
   const url = req.url?.split('?')[0];
   // Only requests that say 'Expect: 100-continue' arrive through the 'checkContinue' listener,
   // and Node then leaves answering it to us. Upload requests are answered after their checks.
-  if (EXPECTS_CONTINUE.test(req.headers.expect ?? '') && !url?.startsWith(UPLOAD_PREFIX)) res.writeContinue();
+  if (EXPECTS_CONTINUE.test(req.headers.expect ?? '') && !url?.startsWith(UPLOAD_PREFIX)
+      && !(AUTH && url === MCP_PATH)) res.writeContinue();
   // Validate session ID as a UUID — all legitimate IDs are created by randomUUID().
   // Non-matching values become '' so sessions.has('') is always false.
   const rawSid = req.headers['mcp-session-id']?.trim() || '';
@@ -1061,6 +1172,16 @@ async function route(req, res, url, sid) {
   }
 
   // ── OAuth ──────────────────────────────────────────────────────────────
+  if (AUTH) {
+    // This server issues no tokens in this mode. The stub endpoints would tell a client it does.
+    if (url === '/.well-known/oauth-protected-resource' || url === `/.well-known/oauth-protected-resource${MCP_PATH}`) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(AUTH_RESOURCE);
+    }
+    if (url === '/.well-known/oauth-authorization-server' || url === '/authorize' || url === '/token' || url === '/register') {
+      res.writeHead(404); return res.end('not found');
+    }
+  }
   if (url === '/.well-known/oauth-protected-resource') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(OAUTH_RESOURCE);
@@ -1104,9 +1225,22 @@ async function route(req, res, url, sid) {
     }));
   }
 
-  if (url !== '/mcp') { res.writeHead(404); return res.end('not found'); }
+  if (url !== MCP_PATH) { res.writeHead(404); return res.end('not found'); }
 
-  // ── GET /mcp — notification SSE stream ────────────────────────────────
+  // ── resource server mode: every request to the MCP endpoint needs a valid token ───
+  let principal = null;
+  if (AUTH) {
+    principal = await authenticate(req, res);
+    if (!principal) return;
+    if (sid && sessionUsers.has(sid) && sessionUsers.get(sid) !== principal.user) {
+      log(`auth refused: session user mismatch user=${logSafe(principal.user)}`);
+      return refuseBody(req, res, 403, { 'Content-Type': 'application/json' }, { error: 'forbidden' });
+    }
+    // Only an authenticated client is invited to send a body.
+    if (EXPECTS_CONTINUE.test(req.headers.expect ?? '')) res.writeContinue();
+  }
+
+  // ── GET on the MCP endpoint — notification SSE stream ────────────────────────────────
   if (req.method === 'GET') {
     if (!sid || !sessions.has(sid)) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1133,7 +1267,7 @@ async function route(req, res, url, sid) {
     return;
   }
 
-  // ── POST /mcp ──────────────────────────────────────────────────────────
+  // ── POST on the MCP endpoint ──────────────────────────────────────────────────────────
   if (req.method !== 'POST') {
     res.writeHead(405);
     return res.end('method not allowed');
@@ -1165,8 +1299,8 @@ async function route(req, res, url, sid) {
     ? msg.id : null;
 
   // Log the JSON-RPC method (and tool name for tools/call) so requests are traceable.
-  const toolName = msg.method === 'tools/call' ? ` (${msg.params?.name ?? '?'})` : '';
-  log(`  → ${msg.method ?? '?'}${toolName} sid=${sid.slice(0, 8) || 'none'}`);
+  const toolName = msg.method === 'tools/call' ? ` (${logSafe(msg.params?.name ?? '?')})` : '';
+  log(`  → ${logSafe(msg.method ?? '?')}${toolName} sid=${sid.slice(0, 8) || 'none'}`);
 
   // initialize → new session, no forwarding needed
   if (msg.method === 'initialize') {
@@ -1175,6 +1309,7 @@ async function route(req, res, url, sid) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ jsonrpc: '2.0', id: msgId, error: { code: -32603, message: 'session table full' } }));
     }
+    if (principal) sessionUsers.set(newSid, principal.user);
     return sendSse(res, 200, newSid, [{
       jsonrpc: '2.0',
       id: msgId,
@@ -1210,7 +1345,16 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { prompts: [] } }]);
   }
   if (msg.method === 'tools/list') {
-    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: TOOLS } }]);
+    const visible = principal ? TOOLS.filter(t => toolAllowed(principal.role, t.name)) : TOOLS;
+    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: visible } }]);
+  }
+
+  // a read-only user may call the tools that read the vault, and no others
+  if (principal && msg.method === 'tools/call' && !toolAllowed(principal.role, msg.params?.name)) {
+    log(`DENY ${String(msg.params?.name ?? '').replace(/[\r\n]/g, '?')}: read-only user`);
+    return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
+      content: [{ type: 'text', text: 'This account is read-only' }], isError: true,
+    } }]);
   }
 
   // list-vaults is answered directly from the configured vaults map
@@ -2144,4 +2288,14 @@ await prepareStagingDir();
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
   log(`obsidian-mcp server listening on ${LISTEN_HOST}:${LISTEN_PORT}`);
+  if (AUTH) {
+    log(`authentication on: issuer ${AUTH.issuer}, audience ${AUTH.audience}, ${AUTH.users.size} user(s), ${AUTH.readOnlyUsers.size} read-only`);
+    // Not waited for: the issuer may come up after this server. Requests that arrive while
+    // its keys cannot be read are answered 503.
+    AUTH_KEYS.prefetch().then((ok) => {
+      if (!ok) logErr(`WARNING: the key endpoint ${AUTH.jwksUri} could not be read: ${AUTH_KEYS.lastError?.message}. Requests are refused until it can.`);
+    });
+  } else {
+    log('authentication off: any client that can reach this server can use it');
+  }
 });

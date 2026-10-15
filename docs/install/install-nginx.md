@@ -5,9 +5,9 @@ title: "Expose it over HTTPS with nginx | obsidian-mcp-brain"
 
 ## Expose it over HTTPS with nginx
 
-nginx terminates TLS and forwards to the server on the same machine. The server has
-no authentication of its own, so decide who can reach the proxy first; see
-[Security](../security). The proxy settings below were tried against a running server
+nginx terminates TLS and forwards to the server on the same machine. Unless you set
+[`auth`](../configuration#authentication-auth), the server has no authentication, so decide who can
+reach the proxy first; see [Security](../security). The proxy settings below were tried against a running server
 (nginx 1.31, without TLS), and the reason for each is given, because the defaults work
 for small calls and fail for uploads. The TLS lines are the standard nginx pattern and
 were not exercised.
@@ -97,11 +97,12 @@ curl https://your-hostname/.well-known/oauth-authorization-server
 ```
 
 If step 3 fails, see
-[Putting HTTPS in front of the server](index#putting-https-in-front-of-the-server)
+[Putting HTTPS in front of the server](../install#putting-https-in-front-of-the-server)
 for what each symptom means. Setting `trustedProxies` right can also be checked in
 the server's log: it says when a request carried `X-Forwarded-For` from an address
 that is not trusted.
 
-The server has no authentication of its own, so where nginx is reachable from is what
-decides who can use your vault. Do not expose it to the internet unless you have put
-authentication in front of it. See [Security](../security).
+Unless you set [`auth`](../configuration#authentication-auth), the server has no authentication, so where
+nginx is reachable from is what decides who can use your vault. Do not expose it to the
+internet without it, or without other authentication in front. See
+[Security](../security).

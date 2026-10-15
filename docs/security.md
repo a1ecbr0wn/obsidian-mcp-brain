@@ -8,17 +8,62 @@ nav_order: 6
 
 ### Who can reach the server
 
-The OAuth flow is deliberately public: it exists so that Claude Code's discovery
-handshake completes, and there are no real credentials behind it. Anyone who can
+By default the OAuth flow is deliberately public: it exists so that Claude Code's
+discovery handshake completes, and there are no real credentials behind it. Anyone who can
 reach the server's address can use every tool it exposes, so access control has to
-come from the network layer. Do not expose the server to the public internet.
-Run it on a private network, or an overlay network such as
+come from the network layer. Do not expose an unauthenticated server to the public
+internet. Run it on a private network, or an overlay network such as
 [Tailscale](install/install-tailscale), so that only devices you trust can reach
 it.
+
+When the server has to be reachable from outside such a network, turn on
+[authentication](#authentication) instead.
 
 Treat the server as having the same reach as its most permissive vault: whatever
 the process user can read and write in a configured vault, a connected client can
 too.
+
+### Authentication
+
+Setting [`auth`](configuration#authentication-auth) in the config file makes the server
+check a signed token from an OAuth service you choose, for users you list, on every call
+to `/mcp`. It is the only thing that makes it reasonable to put the server on a public
+address. What it does, and does not, give you:
+
+- **Who can call the tools.** Only a user in `users` or `readOnlyUsers`, holding an
+  unexpired token from the configured issuer, made for this server's `audience`. A
+  token for another service, another user or another audience is refused. The
+  algorithm is limited to RS256 and ES256, so an unsigned token or one signed with a
+  symmetric algorithm is refused.
+- **What a user can do.** A user in `users` can do everything the server can: read,
+  write and delete in every configured vault, subject to `denyPaths` and
+  `denyBinaryPaths`. A user in `readOnlyUsers` cannot change anything and cannot use
+  `query-graph`. Keep the `users` list to the people you would hand the vault to.
+- **What it does not do.** The server cannot revoke a token that has been issued: it
+  works until it expires, so set a short lifetime at the issuer. The user list is read
+  at start-up, so a change needs a restart. The security of the login is the issuer's:
+  a weak password or an account without a second factor there is a way in.
+- **`PUT /up/<token>` is not behind a token.** The one-time upload URL is its own
+  credential: 256 random bits, valid for one request, tied to a fixed size, hash and
+  destination (see [`upload-binary-file`](#upload-binary-file)). A proxy that exposes
+  the server can publish `/up/` and `/mcp` separately.
+- **`query-graph`** answers without applying `denyPaths` (below). That matters more once
+  the server is public: leave the tool to users you trust fully, or do not build a
+  graph over folders you have denied.
+- **Transport.** Tokens are bearer credentials, so the server refuses to start with
+  authentication on unless `mcpBaseUrl` is `https`, or is a loopback address and the
+  server listens on loopback too. Terminate TLS in front of it: see
+  [the install pages](install/#putting-https-in-front-of-the-server).
+- **Email as the user.** The default `userClaim` is `sub`. If you identify users by
+  `email`, a token whose `email_verified` is false is refused, but a service that lets
+  anyone register an address without verifying it would let them be you. Use an issuer
+  that verifies addresses, or `sub`.
+- **An open notification stream outlives its token.** The long-lived `GET /mcp` stream
+  was authenticated when it was opened and carries only notifications, which the server
+  does not currently send. Its token expiring does not close it.
+- **Logs.** A refusal is logged with a reason (`expired`, `wrong audience`,
+  `user not allowed`...) and, once the signature has verified, the user. A token is
+  never logged.
 
 ### Limiting what a client can touch
 

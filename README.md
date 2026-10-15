@@ -54,7 +54,7 @@ Obsidian vault (filesystem)
 
 - Node.js 18+
 - A way to expose the server over HTTPS to your remote client —
-  [Tailscale Serve](https://tailscale.com/kb/1312/serve) is recommended, because it
+  [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is recommended, because it
   also keeps the server on an overlay network, but any HTTPS reverse proxy on a
   private network works
 - **Optional:** The `query-graph` tool (which queries a vault using a natural-language
@@ -267,6 +267,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | Field                    | Required | Default    | Description                                                                             |
 | ------------------------ | -------- | ---------- | ----------------------------------------------------------------------------------------- |
 | `mcpBaseUrl`             | Yes      | —          | Public HTTPS base URL of the server (scheme, host and port, no path or trailing slash); used in OAuth responses, SSE endpoint events and upload URLs |
+| `mcpPath`                | No       | `/mcp`     | Path of the MCP endpoint, added to `mcpBaseUrl`; starts with `/`, no trailing slash, no empty or dot segments |
 | `vaults`                 | Yes      | —          | Non-empty object of `{ "name": { "path": "..." } }`. Each vault needs at least a `path` |
 | `listenPort`             | No       | `3002`     | Local port the server listens on                                                        |
 | `listenHost`             | No       | `127.0.0.1` | Address the server binds to. Leave it as loopback unless the server runs in a container, where `0.0.0.0` is needed for the published port to reach it |
@@ -282,6 +283,7 @@ All configuration lives in one JSON file — no environment variables are read e
 | `uploadStallSeconds`     | No       | `30`       | How long an upload may send nothing before it is cut off (seconds)                      |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user |
 | `trustedProxies`         | No       | `[]`       | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below |
+| `auth`                   | No       | none       | Accept only signed tokens from an external OAuth service, for the users you list. Off by default. See [Authentication](https://brain.a1ecbr0wn.com/configuration#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which are added on top of the
 global list for that vault only (see below).
