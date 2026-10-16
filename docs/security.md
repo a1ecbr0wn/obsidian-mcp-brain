@@ -207,6 +207,17 @@ only to proxies you run, because the `X-Forwarded-For` header from anywhere else
 is ignored; if the server can be reached directly as well as through the proxy,
 a forged header would otherwise defeat the check.
 
+### The audit log
+
+The server can keep a record of who did what. Every tool call, every login and
+refused login, and every upload is logged with the user, the caller's address
+and the host the request named; see [Logging and the audit
+log](configuration#logging-and-the-audit-log). Set `logFile` to keep it in a
+file of its own. It never holds a token, an upload URL, the text of a note or a
+search query. It does hold user names, addresses and the paths a call touched,
+so the file is created readable by its owner only and should be kept that way.
+The log is a record for you; it doesn't stop anything.
+
 ### Reporting a problem
 
 If you think you have found a security problem, please raise it through [GitHub

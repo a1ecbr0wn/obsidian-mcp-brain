@@ -253,6 +253,8 @@ except `CONFIG_PATH`, which says where to find it.
   "uploadMaxBytes": 52428800,
   "uploadTtlSeconds": 300,
   "uploadStallSeconds": 30,
+  "uploadNetworkPrefix": 32,
+  "logFile": "/var/log/obsidian-mcp.log",
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
   "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
@@ -286,7 +288,9 @@ except `CONFIG_PATH`, which says where to find it.
 | `uploadTtlSeconds`       | No       | `300`                                                         | How long an upload URL lasts (seconds)                                                                                                                                                |
 | `uploadStallSeconds`     | No       | `30`                                                          | How long an upload may send nothing before it is cut off (seconds)                                                                                                                    |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user                                                                  |
+| `uploadNetworkPrefix`    | No       | `32`                                                          | Leading bits of an IPv4 address that an upload must share with the call that reserved it, 16 to 32. 32 is the same address. See below                                                 |
 | `trustedProxies`         | No       | `[]`                                                          | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below                                                                                            |
+| `logFile`                | No       | `none`                                                        | Absolute path of a file to append the log to, as well as the console. Includes the audit log                                                                                          |
 | `auth`                   | No       | none                                                          | Accept only signed tokens from an external OAuth service, for the users you list. Off by default. See [Authentication](https://brain.a1ecbr0wn.com/configuration#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which
@@ -514,8 +518,9 @@ both match; otherwise it discards it.
 
 - The URL works for **one request only**: the first request that names it uses
   it up, whatever that request is. If anything goes wrong, request a new URL.
-- It works only from the **same address** as the call that reserved it, and
-  lasts `uploadTtlSeconds` (300 by default).
+- It works only from the **same address** as the call that reserved it (or the
+  same network, with `uploadNetworkPrefix`), and lasts `uploadTtlSeconds` (300
+  by default). The server logs the reason for every refusal.
 - The destination must not exist, and `denyPaths` is checked when the URL is
   reserved and again when the file is placed.
 - A note (`.md`) can be uploaded too, for a large or generated file that is

@@ -19,6 +19,7 @@ import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
+import util from 'node:util';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError, matchesExtension } from './lib/access.mjs';
 import { mimeTypeFor } from './lib/mime.mjs';
 import { SETUP_INSTRUCTIONS, setupStatusText } from './lib/companions.mjs';
@@ -28,6 +29,7 @@ import {
   normalizeAddress,
   compileTrustedProxies,
   callerAddress,
+  addressesMatch,
   checkStagingDir,
   checkStagingDirOwner,
   defaultUploadTempDir,
@@ -41,6 +43,8 @@ import { escRe } from './lib/utils.mjs';
 import { replaceSection, deleteSection, toggleCheckbox, readSection, outlineSections } from './lib/sections.mjs';
 import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
 import { fetchToBuffer } from './lib/fetch.mjs';
+import { formatAudit, toolTarget, requestHost } from './lib/audit.mjs';
+import { openLogFile } from './lib/logfile.mjs';
 import {
   isNoteFile,
   walkAllFiles as libWalkAllFiles,
@@ -60,8 +64,18 @@ import {
 } from './lib/vault.mjs';
 
 const ts = () => new Date().toISOString();
-const log = (...a) => console.log(ts(), ...a);
-const logErr = (...a) => console.error(ts(), ...a);
+// The log file (see the logFile setting), opened once the config is read. Every line goes to
+// the console as well, so a service manager that collects it keeps working.
+let logFile = null;
+const emit = (write, args) => {
+  const line = util.format(ts(), ...args);
+  write(line);
+  logFile?.write(line);
+};
+const log = (...a) => emit(console.log, a);
+const logErr = (...a) => emit(console.error, a);
+/** Writes an audit line: `AUDIT event=<event> key=value ...`. See lib/audit.mjs. */
+const audit = (event, fields) => log(formatAudit(event, fields));
 
 // ── Configuration (JSON file, not environment variables) ────────────────────
 //
@@ -201,6 +215,23 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  if (config.logFile !== undefined) {
+    if (typeof config.logFile !== 'string' || !config.logFile.trim()) {
+      logErr(`Config file at ${configPath}: "logFile" must be a non-empty string`);
+      process.exit(1);
+    }
+    if (!path.isAbsolute(config.logFile)) {
+      logErr(`Config file at ${configPath}: "logFile" must be an absolute path`);
+      process.exit(1);
+    }
+  }
+
+  const uploadNetworkPrefix = config.uploadNetworkPrefix ?? 32;
+  if (!Number.isInteger(uploadNetworkPrefix) || uploadNetworkPrefix < 16 || uploadNetworkPrefix > 32) {
+    logErr(`Config file at ${configPath}: "uploadNetworkPrefix" must be a whole number from 16 to 32`);
+    process.exit(1);
+  }
+
   const uploadStallSeconds = parseInt(config.uploadStallSeconds ?? 30, 10);
   if (Number.isNaN(uploadStallSeconds) || uploadStallSeconds < 1) {
     logErr(`Config file at ${configPath}: "uploadStallSeconds" must be a positive number`);
@@ -232,7 +263,7 @@ function loadConfig(configPath) {
   // authentication under any other name is an error, and any other unknown key is reported.
   const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'mcpPath', 'denyPaths', 'denyBinaryPaths',
     'graphifyQueryTimeoutMs', 'fetchMaxBytes', 'fetchTimeoutMs', 'readMaxBytes', 'readNoteMaxChars',
-    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
+    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
   for (const key of Object.keys(config)) {
     if (knownKeys.has(key)) continue;
     if (/^(auth|oauth2?|authn|authentication|authorization|authorisation|tokens?|jwks|jwksuri|issuer|audience|users|readonlyusers|userclaim|tokenheader)$/i.test(key)) {
@@ -313,6 +344,8 @@ function loadConfig(configPath) {
     uploadMaxBytes,
     uploadTtlSeconds,
     uploadStallSeconds,
+    uploadNetworkPrefix,
+    logFile: config.logFile,
     uploadTempDir: path.resolve(uploadTempDir),
     uploadTempDirIsDefault,
     trustedProxies,
@@ -334,12 +367,40 @@ const {
   uploadMaxBytes: UPLOAD_MAX_BYTES,
   uploadTtlSeconds: UPLOAD_TTL_SECONDS,
   uploadStallSeconds: UPLOAD_STALL_SECONDS,
+  uploadNetworkPrefix: UPLOAD_NETWORK_PREFIX,
+  logFile: LOG_FILE,
   uploadTempDir: CONFIGURED_UPLOAD_TEMP_DIR,
   uploadTempDirIsDefault: UPLOAD_TEMP_DIR_IS_DEFAULT,
   trustedProxies: TRUSTED_PROXIES,
   auth: AUTH,
   vaults: VAULTS,
 } = loadConfig(CONFIG_PATH);
+
+if (LOG_FILE) {
+  try {
+    logFile = openLogFile(LOG_FILE);
+  } catch (err) {
+    logErr(`Cannot open "logFile" ${LOG_FILE}: ${err.message}`);
+    process.exit(1);
+  }
+  if (logFile.tightened) log(`restricted the permissions of ${LOG_FILE} to its owner`);
+  // logrotate moves the file and sends SIGHUP; the server then starts a new one.
+  process.on('SIGHUP', () => {
+    try {
+      logFile.reopen();
+      log(`log file reopened: ${LOG_FILE}`);
+    } catch (err) {
+      logErr(`Cannot reopen "logFile" ${LOG_FILE}, so it keeps writing to the old file: ${err.message}`);
+    }
+  });
+}
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    audit('stop', { signal });
+    logFile?.close();
+    process.exit(0);
+  });
+}
 
 // Where uploads are staged. Starts as the configured path; prepareStagingDir() replaces it with
 // the folder's real path once that has been checked, so a symbolic link re-pointed afterwards
@@ -832,7 +893,7 @@ function refuseBody(req, res, status, headers, body) {
  */
 async function authenticate(req, res) {
   const refuse = (status, reason, user, invalid = true) => {
-    log(`auth refused: ${reason}${user ? ` user=${logSafe(user)}` : ''}`);
+    audit('login-refused', { ...auditContext(req, undefined, user ? { user } : null), reason });
     const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
     if (status === 401) {
       headers['WWW-Authenticate'] = `Bearer resource_metadata="${PROTECTED_RESOURCE_URL}"`
@@ -880,7 +941,62 @@ const TOKEN_RESPONSE = JSON.stringify({
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────
 
+/**
+ * The tool calls being audited, by response: set when a call starts, read when its answer is
+ * sent. `denied` is set when a role or deny rule refused it.
+ * @type {WeakMap<http.ServerResponse, {fields: object, started: number, denied?: string}>}
+ */
+const toolAudits = new WeakMap();
+
+/**
+ * Starts the audit of a tool call: logs it, and arranges for its outcome to be logged when the
+ * answer is sent.
+ * @param {http.ServerResponse} res
+ * @param {object} context - From auditContext.
+ * @param {unknown} params - The `params` of the `tools/call` request.
+ */
+function auditToolCall(res, context, params) {
+  const fields = { ...context, tool: params?.name ?? '?', ...toolTarget(params?.arguments) };
+  audit('tool', fields);
+  toolAudits.set(res, { fields, started: Date.now() });
+  // A client that goes away before the answer, or a call that throws, still gets an outcome line.
+  res.once('close', () => auditToolEnd(res, null));
+}
+
+/** Records why a tool call was refused; the answer then logs as denied and not as a result. */
+function auditDenied(res, reason) {
+  const entry = toolAudits.get(res);
+  if (entry) entry.denied = reason;
+}
+
+/** What a tool's own refusal begins with when it checks the deny rules itself. */
+const DENIAL_TEXT = /^(Access denied|Reading is restricted for )/;
+
+/**
+ * Logs how a tool call ended: `denied` when a role or a deny rule refused it, otherwise
+ * `tool-result`. Does nothing for a response that is not being audited, or one already logged.
+ * @param {http.ServerResponse} res
+ * @param {{result?: {isError?: boolean, content?: Array<{text?: string}>}, error?: unknown}|null} answer
+ *   The JSON-RPC answer, or null when there was none (`outcome=aborted`).
+ * @param {string} [failure] - Set to log the call as an error without an answer (`error`).
+ */
+function auditToolEnd(res, answer, failure) {
+  const entry = toolAudits.get(res);
+  if (!entry) return;
+  toolAudits.delete(res);
+  const text = answer?.result?.isError ? answer.result.content?.[0]?.text : undefined;
+  const denied = entry.denied ?? (typeof text === 'string' && DENIAL_TEXT.test(text) ? text : undefined);
+  if (denied !== undefined) {
+    audit('denied', { ...entry.fields, reason: denied });
+    return;
+  }
+  const outcome = failure ? 'error' : !answer ? 'aborted' : answer.error || answer.result?.isError ? 'error' : 'ok';
+  audit('tool-result', { ...entry.fields, outcome, duration: Date.now() - entry.started });
+}
+
 function sendSse(res, statusCode, sessionId, msgs) {
+  // Logged before the answer is sent, so a client that has its answer can rely on the line.
+  auditToolEnd(res, msgs.find(m => m.result !== undefined || m.error !== undefined) ?? null);
   const headers = {
     'Content-Type':  'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
@@ -927,6 +1043,24 @@ function clientAddress(req) {
 }
 
 /**
+ * The fields every audit line about a request carries: who (the authenticated user, or none),
+ * from where (the caller address, as trustedProxies resolves it), the host the request named
+ * and the first part of the session id.
+ * @param {http.IncomingMessage} req
+ * @param {string} [sid]
+ * @param {{user: string}|null} [principal] - The authenticated user, if authentication is on.
+ * @returns {{user: string|null, addr: string|null, host: string|null, sid: string|null}}
+ */
+function auditContext(req, sid, principal) {
+  return {
+    user: principal?.user ?? null,
+    addr: clientAddress(req) || null,
+    host: requestHost(req, TRUSTED_PROXIES) || null,
+    sid: sid ? sid.slice(0, 8) : null,
+  };
+}
+
+/**
  * Handles all incoming HTTP requests, including those with Expect: 100-continue.
  * Routes to upload handling, OAuth endpoints, or the MCP request handler.
  * @param {http.IncomingMessage} req - The incoming HTTP request.
@@ -947,12 +1081,16 @@ async function handleRequest(req, res) {
   // An upload URL's last part is a secret, so it is never logged.
   const safeUrl    = url?.startsWith(UPLOAD_PREFIX) ? '/up/<redacted>' : (url ?? '').replace(/[^\w/.-]/g, '?');
   const safeSid    = sid.slice(0, 8) || 'none';
-  log(`${safeMethod} ${safeUrl} sid=${safeSid}`);
+  // An upload request also names the address and host it came from, which the URL alone cannot.
+  const uploadFrom = url?.startsWith(UPLOAD_PREFIX)
+    ? ` addr=${logSafe(clientAddress(req) || '-')} host=${logSafe(requestHost(req, TRUSTED_PROXIES) || '-')}` : '';
+  log(`${safeMethod} ${safeUrl} sid=${safeSid}${uploadFrom}`);
 
   try {
     await route(req, res, url, sid);
   } catch (err) {
     logErr('unhandled:', err);
+    auditToolEnd(res, null, 'unhandled');
     if (!res.headersSent) { res.writeHead(500); res.end(); }
   }
 }
@@ -970,17 +1108,22 @@ server.requestTimeout = Math.min(3_600_000, Math.max(300_000, Math.ceil(UPLOAD_M
 const EXPECTS_CONTINUE = /(?:^|\W)100-continue(?:$|\W)/i;
 
 /**
- * Answers an upload request, closing the connection afterwards. Whatever the client is still
- * sending (up to a limit) is read and discarded first, which gives it a chance to read the
- * answer instead of seeing the connection reset.
+ * Logs a refused upload request and answers it, closing the connection afterwards. Does nothing
+ * (and logs nothing) if a response has already started or the socket is destroyed. Whatever the
+ * client is still sending (up to a limit) is read and discarded first, which gives it a chance to
+ * read the answer instead of seeing the connection reset.
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  * @param {number} status
  * @param {string|object} body - Plain text, or an object sent as JSON.
  * @param {object} [headers] - Extra response headers.
+ * @param {string} [reason] - The cause, for the server log only. Defaults to the body's text or
+ *   `error`; give one where the body is deliberately vaguer than the cause (a 403, a 404). It
+ *   must not contain the upload URL.
  */
-function rejectUpload(req, res, status, body, headers = {}) {
+function rejectUpload(req, res, status, body, headers = {}, reason) {
   if (res.headersSent || res.destroyed) return;
+  log(`upload refused (${status}) from ${clientAddress(req) || 'unknown address'} host=${logSafe(requestHost(req, TRUSTED_PROXIES) || '-')}: ${reason ?? (typeof body === 'string' ? body : body.error)}`);
   const isText = typeof body === 'string';
   res.writeHead(status, { 'Content-Type': isText ? 'text/plain' : 'application/json', Connection: 'close', ...headers });
   res.end(isText ? body : JSON.stringify(body));
@@ -1101,7 +1244,8 @@ async function placeUpload(vault, relPath, stagePath, sha256) {
  * Handles every request to /up/...: the one-time upload URL. The order matters: the slot is
  * used up first, so whatever the request turns out to be, the URL is dead afterwards. The
  * received file must match the declared size and hash, and a note (.md) must also be valid
- * UTF-8; any failure is answered (400 or 422) before the file is placed in the vault. The
+ * UTF-8; a failed check is answered with an error status (for example 400 or 422) and the file
+ * is not placed in the vault. The
  * staging file is always removed before any answer (success or error) is sent to the client.
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
@@ -1109,10 +1253,13 @@ async function placeUpload(vault, relPath, stagePath, sha256) {
  */
 async function handleUpload(req, res, url) {
   const slot = uploads.consume(url.slice(UPLOAD_PREFIX.length));
-  if (!slot) return rejectUpload(req, res, 404, 'not found');
-  if (req.method !== 'PUT') return rejectUpload(req, res, 405, 'method not allowed', { Allow: 'PUT' });
-  if (req.headers.origin !== undefined) return rejectUpload(req, res, 403, 'forbidden origin');
-  if (clientAddress(req) !== slot.address) return rejectUpload(req, res, 403, 'forbidden');
+  if (!slot) return rejectUpload(req, res, 404, 'not found', {}, 'the URL is unknown, already used or expired');
+  if (req.method !== 'PUT') return rejectUpload(req, res, 405, 'method not allowed', { Allow: 'PUT' }, `${logSafe(req.method)} is not allowed, only PUT`);
+  if (req.headers.origin !== undefined) return rejectUpload(req, res, 403, 'forbidden origin', {}, 'the request carried an Origin header');
+  const caller = clientAddress(req);
+  if (!addressesMatch(caller, slot.address, UPLOAD_NETWORK_PREFIX)) {
+    return rejectUpload(req, res, 403, 'forbidden', {}, `the caller address ${caller || 'unknown'} is not ${UPLOAD_NETWORK_PREFIX < 32 ? `in the same /${UPLOAD_NETWORK_PREFIX} network as` : 'the same as'} the address that reserved the URL, ${slot.address}`);
+  }
 
   const contentLength = req.headers['content-length'];
   if (req.headers['transfer-encoding'] !== undefined || contentLength === undefined) {
@@ -1130,7 +1277,15 @@ async function handleUpload(req, res, url) {
   const stagePath = path.join(UPLOAD_TEMP_DIR, stagingFileName());
   // The staging file is removed before any answer is sent, so a client that gets one can rely on it being gone.
   const discard = () => fs.unlink(stagePath).catch(() => {});
-  const answer = async (status, body) => { await discard(); rejectUpload(req, res, status, body); };
+  /**
+   * Removes the staging file, then answers the request through rejectUpload. Used once the
+   * upload has started, so the staging file is gone before the client reads the answer.
+   * @param {number} status - HTTP status to send.
+   * @param {string|object} body - Plain text, or an object sent as JSON.
+   * @param {string} [reason] - Cause for the server log; see rejectUpload.
+   * @returns {Promise<void>}
+   */
+  const answer = async (status, body, reason) => { await discard(); rejectUpload(req, res, status, body, {}, reason); };
   activeUploads++;
   try {
     if (EXPECTS_CONTINUE.test(req.headers.expect ?? '')) res.writeContinue();
@@ -1145,10 +1300,14 @@ async function handleUpload(req, res, url) {
       return await answer(400, { error: 'a note must be valid UTF-8 text' });
     }
     const outcome = await placeUpload(vault, slot.relPath, stagePath, slot.sha256);
-    if (outcome === 'denied' || outcome === 'outside') return await answer(403, { error: 'Access denied' });
+    if (outcome === 'denied' || outcome === 'outside') return await answer(403, { error: 'Access denied' }, `the destination ${logSafe(slot.relPath)} is denied or outside the vault`);
     if (outcome === 'exists') return await answer(409, { error: 'destination already exists', path: slot.relPath });
     if (outcome === 'corrupt') return await answer(500, { error: 'the file changed while it was being placed; request a new URL and try again' });
     await discard();
+    audit('upload-placed', {
+      user: slot.user ?? null, addr: caller || null, host: requestHost(req, TRUSTED_PROXIES) || null,
+      vault: slot.vault, path: slot.relPath, bytes: received, sha256: digest,
+    });
     res.writeHead(201, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ path: slot.relPath, bytes: received, sha256: digest }));
   } catch (err) {
@@ -1156,10 +1315,8 @@ async function handleUpload(req, res, url) {
     if (message === 'upload aborted by the client') {
       log('upload aborted by the client');
     } else if (message === 'more data than declared') {
-      log('upload refused: more data than declared');
       await answer(413, { error: 'more data than declared' });
     } else if (message === 'upload stalled') {
-      log('upload cut off: stalled');
       await answer(408, { error: 'upload stalled' });
     } else {
       logErr('upload failed:', message);
@@ -1252,7 +1409,7 @@ async function route(req, res, url, sid) {
     principal = await authenticate(req, res);
     if (!principal) return;
     if (sid && sessionUsers.has(sid) && sessionUsers.get(sid) !== principal.user) {
-      log(`auth refused: session user mismatch user=${logSafe(principal.user)}`);
+      audit('session-refused', { ...auditContext(req, sid, principal), reason: 'session belongs to another user' });
       return refuseBody(req, res, 403, { 'Content-Type': 'application/json' }, { error: 'forbidden' });
     }
     // Only an authenticated client is invited to send a body.
@@ -1329,6 +1486,7 @@ async function route(req, res, url, sid) {
       return res.end(JSON.stringify({ jsonrpc: '2.0', id: msgId, error: { code: -32603, message: 'session table full' } }));
     }
     if (principal) sessionUsers.set(newSid, principal.user);
+    audit('login', { ...auditContext(req, newSid, principal), role: principal?.role });
     return sendSse(res, 200, newSid, [{
       jsonrpc: '2.0',
       id: msgId,
@@ -1368,9 +1526,11 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: visible } }]);
   }
 
+  if (msg.method === 'tools/call') auditToolCall(res, auditContext(req, sid, principal), msg.params);
+
   // a read-only user may call the tools that read the vault, and no others
   if (principal && msg.method === 'tools/call' && !toolAllowed(principal.role, msg.params?.name)) {
-    log(`DENY ${String(msg.params?.name ?? '').replace(/[\r\n]/g, '?')}: read-only user`);
+    auditDenied(res, 'read-only user');
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
       content: [{ type: 'text', text: 'This account is read-only' }], isError: true,
     } }]);
@@ -1393,8 +1553,7 @@ async function route(req, res, url, sid) {
   if (msg.method === 'tools/call') {
     const denied = checkAccess(msg.params?.name, msg.params?.arguments ?? {});
     if (denied) {
-      const safeName = String(msg.params?.name ?? '').replace(/[\r\n]/g, '?');
-      log(`DENY ${safeName}: ${denied}`);
+      auditDenied(res, denied);
       return sendSse(res, 200, sid, [{
         jsonrpc: '2.0',
         id: msgId,
@@ -1844,7 +2003,7 @@ async function route(req, res, url, sid) {
     }
     let slot;
     try {
-      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req) });
+      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req), user: principal?.user });
     } catch (err) {
       if (err.code === 'TOO_MANY_SLOTS') {
         return toolErr(res, sid, msgId, 'Too many pending uploads. Wait for one to finish or expire, then try again');
@@ -1854,6 +2013,7 @@ async function route(req, res, url, sid) {
       }
       throw err;
     }
+    audit('upload-reserved', { ...auditContext(req, sid, principal), vault: args.vault, path: relPath, size });
     const url = `${BASE_URL.replace(/\/+$/, '')}${UPLOAD_PREFIX}${slot.token}`;
     return toolOk(res, sid, msgId, [
       `Upload reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()}).`,
@@ -2311,6 +2471,10 @@ async function prepareStagingDir() {
 await prepareStagingDir();
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+  audit('start', {
+    version: SERVER_VERSION, listen: `${LISTEN_HOST}:${LISTEN_PORT}`,
+    auth: AUTH ? 'on' : 'off', logfile: LOG_FILE ? 'yes' : 'no',
+  });
   log(`obsidian-mcp server listening on ${LISTEN_HOST}:${LISTEN_PORT}`);
   if (AUTH) {
     log(`authentication on: issuer ${AUTH.issuer}, audience ${AUTH.audience}, ${AUTH.users.size} user(s), ${AUTH.readOnlyUsers.size} read-only`);

@@ -24,6 +24,16 @@ let nextPort = 19750;
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+/** Waits until `check()` is true, or fails. */
+async function until(check, what, ms = 2000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await sleep(25);
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
 // ── harness ─────────────────────────────────────────────────────────────────
 
 /**
@@ -436,11 +446,18 @@ describe('upload-binary-file and PUT /up/<token>', () => {
 
     it('a request from a different address answers 403, and the URL is then dead', async t => {
       const { url } = await reserve(srv, { filename: 'kill-addr.bin', content });
-      const r = await request(url, { body: content, localAddress: '127.0.0.2' });
-      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip('127.0.0.2 is not available on this machine');
+      const r = await request(url, { body: content, localAddress: '127.1.0.1' });
+      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip('127.1.0.1 is not available on this machine');
       assert.equal(r.status, 403, r.text);
       assert.equal((await request(url, { body: content })).status, 404);
       assert.equal(await exists(path.join(srv.vaultDir, 'kill-addr.bin')), false);
+    });
+
+    it('a request from a neighbouring address answers 403 by default', async t => {
+      const { url } = await reserve(srv, { filename: 'same-net-default.bin', content });
+      const r = await request(url, { body: content, localAddress: '127.0.0.2' });
+      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip('127.0.0.2 is not available on this machine');
+      assert.equal(r.status, 403, r.text);
     });
 
     it('a request with a bad Content-Length kills the URL too', async () => {
@@ -537,6 +554,65 @@ describe('upload-binary-file and PUT /up/<token>', () => {
       assert.ok(!log.includes(url), 'the URL must not be logged');
       assert.ok(log.includes('/up/<redacted>'), 'the redacted path should be logged');
     });
+
+    /** Waits for, and returns, the log line for a refusal with this status that mentions `text`. */
+    const refusalLine = async (status, text) => {
+      await until(() => srv.log().split('\n').some(l => l.includes(`upload refused (${status})`) && l.includes(text)),
+        `a refusal line (${status}) with "${text}"`);
+      return srv.log().split('\n').find(l => l.includes(`upload refused (${status})`) && l.includes(text));
+    };
+
+    it('says why a request from a different address was refused, naming both addresses', async t => {
+      const content = crypto.randomBytes(100);
+      const { token, url } = await reserve(srv, { filename: 'why-addr.bin', content });
+      const r = await request(url, { body: content, localAddress: '127.1.0.1' });
+      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip('127.1.0.1 is not available on this machine');
+      assert.equal(r.status, 403, r.text);
+      const line = await refusalLine(403, 'address');
+      assert.ok(line.includes('127.1.0.1'), line);
+      assert.ok(/127\.0\.0\.1|::1/.test(line), line);
+      assert.ok(!line.includes(token), 'the token must not be logged');
+    });
+
+    it('says why a request with an Origin header was refused', async () => {
+      const content = crypto.randomBytes(100);
+      const { url } = await reserve(srv, { filename: 'why-origin.bin', content });
+      assert.equal((await request(url, { body: content, headers: { Origin: 'http://example.com' } })).status, 403);
+      await refusalLine(403, 'Origin');
+    });
+
+    it('says why a request with the wrong method was refused', async () => {
+      const content = crypto.randomBytes(100);
+      const { url } = await reserve(srv, { filename: 'why-method.bin', content });
+      assert.equal((await request(url, { method: 'POST' })).status, 405);
+      await refusalLine(405, 'POST');
+    });
+
+    it('says why an unknown, used or expired URL was refused', async () => {
+      const content = crypto.randomBytes(100);
+      const { url } = await reserve(srv, { filename: 'why-404.bin', content });
+      assert.equal((await request(url, { body: content })).status, 201);
+      assert.equal((await request(url, { body: content })).status, 404);
+      await refusalLine(404, 'expired');
+    });
+
+    it('says why a size or hash mismatch was refused', async () => {
+      const content = crypto.randomBytes(100);
+      const a = await reserve(srv, { filename: 'why-size.bin', content });
+      assert.equal((await request(a.url, { body: content.subarray(0, 50) })).status, 400);
+      await refusalLine(400, 'smaller than the declared size');
+      const b = await reserve(srv, { filename: 'why-hash.bin', content });
+      assert.equal((await request(b.url, { body: crypto.randomBytes(100) })).status, 422);
+      await refusalLine(422, 'sha256');
+    });
+
+    it('never puts the URL in a refusal line', async () => {
+      const content = crypto.randomBytes(100);
+      const { token, url } = await reserve(srv, { filename: 'why-secret.bin', content });
+      await request(url, { method: 'GET' });
+      await refusalLine(405, 'GET');
+      assert.ok(!srv.log().includes(token), 'the token must not be logged');
+    });
   });
 
   describe('callers behind a proxy that is not trusted (trustedProxies empty)', () => {
@@ -556,6 +632,32 @@ describe('upload-binary-file and PUT /up/<token>', () => {
     });
   });
 });
+
+// ── uploadNetworkPrefix ─────────────────────────────────────────────────────
+
+for (const [prefix, inside, outside] of [[16, '127.0.1.1', '127.1.0.1'], [24, '127.0.0.2', '127.0.1.1']]) {
+  describe(`upload addresses with uploadNetworkPrefix ${prefix}`, () => {
+    let srv;
+    before(async () => { srv = await startServer({ uploadNetworkPrefix: prefix }); });
+    after(async () => { await srv.stop(); });
+    const content = crypto.randomBytes(100);
+
+    it(`accepts an upload from ${inside}, which shares the first ${prefix} bits`, async t => {
+      const { url } = await reserve(srv, { filename: 'inside.bin', content });
+      const r = await request(url, { body: content, localAddress: inside });
+      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip(`${inside} is not available on this machine`);
+      assert.equal(r.status, 201, r.text);
+    });
+
+    it(`refuses an upload from ${outside}, and the log names the prefix`, async t => {
+      const { url } = await reserve(srv, { filename: 'outside.bin', content });
+      const r = await request(url, { body: content, localAddress: outside });
+      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip(`${outside} is not available on this machine`);
+      assert.equal(r.status, 403, r.text);
+      await until(() => srv.log().includes(`in the same /${prefix} network as`), 'the refusal line');
+    });
+  });
+}
 
 // ── trusted proxies ─────────────────────────────────────────────────────────
 
@@ -661,16 +763,6 @@ describe('upload stall limit', () => {
     p, sleep(ms).then(() => { throw new Error(`no result within ${ms} ms`); }),
   ]);
 
-  /** Waits until `check()` is true, or fails. */
-  async function until(check, what, ms = 2000) {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
-      if (await check()) return;
-      await sleep(25);
-    }
-    assert.fail(`timed out waiting for ${what}`);
-  }
-
   /** Opens a connection and sends the request head and the first `first` bytes of the body. */
   async function openUpload(name, content, { first = 10, expect = false } = {}) {
     const { token } = await reserve(srv, { filename: name, content });
@@ -696,7 +788,7 @@ describe('upload stall limit', () => {
     assert.ok(up.received().includes('upload stalled'), up.received());
     assert.ok(await waitForEmptyStaging(srv), 'the staging file should be removed');
     assert.equal(await exists(path.join(srv.vaultDir, 'quiet.bin')), false);
-    await until(() => srv.log().includes('upload cut off: stalled'), 'the log line');
+    await until(() => srv.log().includes('upload refused (408)'), 'the log line');
   });
 
   it('frees the upload slots: a fifth upload is refused while four are open, and succeeds once they are cut off', async () => {
@@ -821,6 +913,10 @@ describe('upload settings', () => {
     rejects(`uploadMaxBytes ${JSON.stringify(bad)}`, { uploadMaxBytes: bad }, '"uploadMaxBytes" must be a positive number');
     rejects(`uploadTtlSeconds ${JSON.stringify(bad)}`, { uploadTtlSeconds: bad }, '"uploadTtlSeconds" must be a positive number');
     rejects(`uploadStallSeconds ${JSON.stringify(bad)}`, { uploadStallSeconds: bad }, '"uploadStallSeconds" must be a positive number');
+  }
+
+  for (const bad of [true, '24', 15, 33, 24.5, 0, -1, {}]) {
+    rejects(`uploadNetworkPrefix ${JSON.stringify(bad)}`, { uploadNetworkPrefix: bad }, '"uploadNetworkPrefix" must be a whole number from 16 to 32');
   }
 
   for (const bad of [123, '', '   ', ['/tmp/x'], {}]) {

@@ -9,6 +9,7 @@ import {
   normalizeAddress,
   compileTrustedProxies,
   callerAddress,
+  addressesMatch,
   checkStagingDir,
   checkStagingDirOwner,
   defaultUploadTempDir,
@@ -492,5 +493,55 @@ describe('isValidUtf8File', () => {
 
   it('rejects, rather than resolving, when the file cannot be read', async () => {
     await assert.rejects(isValidUtf8File(path.join(os.tmpdir(), 'utf8-test-does-not-exist', 'f')));
+  });
+});
+
+// ── addressesMatch ──────────────────────────────────────────────────────────
+
+describe('addressesMatch', () => {
+  it('by default needs the same address, in any spelling', () => {
+    assert.equal(addressesMatch('160.79.106.186', '160.79.106.186'), true);
+    assert.equal(addressesMatch('::ffff:160.79.106.186', '160.79.106.186'), true);
+    assert.equal(addressesMatch('2001:db8::1', '2001:db8:0:0::1'), true);
+  });
+
+  it('by default refuses a neighbouring address', () => {
+    assert.equal(addressesMatch('160.79.106.186', '160.79.106.20'), false);
+    assert.equal(addressesMatch('160.79.106.186', '160.79.7.1'), false);
+    assert.equal(addressesMatch('2001:db8::1', '2001:db8::2'), false);
+  });
+
+  it('with a prefix accepts IPv4 addresses that share that many leading bits', () => {
+    assert.equal(addressesMatch('160.79.106.186', '160.79.106.20', 24), true);
+    assert.equal(addressesMatch('160.79.106.186', '160.79.7.1', 16), true);
+    assert.equal(addressesMatch('160.79.106.186', '160.79.109.20', 21), true);
+    assert.equal(addressesMatch('::ffff:160.79.106.186', '160.79.7.1', 16), true);
+  });
+
+  it('with a prefix refuses IPv4 addresses that differ within it', () => {
+    assert.equal(addressesMatch('160.79.106.186', '160.79.112.20', 21), false);
+    assert.equal(addressesMatch('160.79.106.186', '160.79.107.20', 24), false);
+    assert.equal(addressesMatch('160.79.106.186', '160.80.106.186', 16), false);
+    assert.equal(addressesMatch('127.0.0.1', '127.1.0.1', 16), false);
+  });
+
+  it('with a prefix still needs IPv6 to match exactly, and never matches across families', () => {
+    assert.equal(addressesMatch('2001:db8::1', '2001:db8::2', 16), false);
+    assert.equal(addressesMatch('2001:db8::1', '160.79.106.186', 16), false);
+  });
+
+  it('treats a prefix outside 1 to 31 as an exact match', () => {
+    for (const prefix of [0, -1, 24.5, NaN, 32, 33]) {
+      assert.equal(addressesMatch('160.79.106.186', '160.79.106.20', prefix), false);
+      assert.equal(addressesMatch('160.79.106.186', '160.79.106.186', prefix), true);
+    }
+  });
+
+  it('never matches an empty or unrecognised address', () => {
+    for (const prefix of [32, 16]) {
+      assert.equal(addressesMatch('', '', prefix), false);
+      assert.equal(addressesMatch('', '160.79.106.186', prefix), false);
+      assert.equal(addressesMatch('not-an-address', 'not-an-address', prefix), false);
+    }
   });
 });
