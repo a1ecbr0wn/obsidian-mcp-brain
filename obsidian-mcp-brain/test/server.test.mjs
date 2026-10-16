@@ -1106,6 +1106,30 @@ describe('edit-note', () => {
     assert.equal(content, '# A\nkeep\n# C\nkeep');
   });
 
+  it('delete-section keeps the final newline of the note when it removes the last section', async () => {
+    await writeVaultNote('editable/delsection-eof.md', 'intro\n\n# A\nbody\n');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-eof.md', operation: 'delete-section', heading: 'A' });
+    assert.ok(!result.isError);
+    assert.equal(await fs.readFile(path.join(vaultDir, 'editable/delsection-eof.md'), 'utf8'), 'intro\n');
+  });
+
+  it('replace-section with a body of only white space clears the section', async () => {
+    await writeVaultNote('editable/replace-blank.md', '# A\nold\n# B\nkeep\n');
+    const result = await callTool('edit-note', { folder: 'editable', filename: 'replace-blank.md', operation: 'replace-section', heading: 'A', content: '  \n\t\n' });
+    assert.ok(!result.isError);
+    assert.equal(await fs.readFile(path.join(vaultDir, 'editable/replace-blank.md'), 'utf8'), '# A\n# B\nkeep\n');
+  });
+
+  it('an empty heading is not listed in the outline and is not addressable', async () => {
+    await writeVaultNote('editable/empty-heading.md', '# A\none\n# \ntwo\n# B\nx\n');
+    const outline = await callTool('read-note', { folder: 'editable', filename: 'empty-heading.md', outline: true });
+    assert.ok(/2 headings/.test(outline.content[0].text), outline.content[0].text);
+    const empty = await callTool('read-note', { folder: 'editable', filename: 'empty-heading.md', heading: '' });
+    assert.equal(empty.isError, true);
+    const section = await callTool('read-note', { folder: 'editable', filename: 'empty-heading.md', heading: 'A' });
+    assert.ok(section.content[0].text.includes('two'), 'the section above runs on through the empty heading');
+  });
+
   it('delete-section returns isError with heading required for a missing heading param', async () => {
     await writeVaultNote('editable/delsection-missing-heading.md', '# A\nx');
     const result = await callTool('edit-note', { folder: 'editable', filename: 'delsection-missing-heading.md', operation: 'delete-section' });

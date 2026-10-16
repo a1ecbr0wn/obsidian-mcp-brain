@@ -51,9 +51,12 @@ small change:
   exact text (without the `#` characters), and leaves the heading line itself in
   place. Everything under the heading goes, sub-sections included, up to the
   next heading of the same or a higher level. `content` is the new body only, so
-  don't repeat the heading. To rename a heading, use `replace`.
+  don't repeat the heading. To rename a heading, use `replace`. A `content` of
+  only spaces, tabs or blank lines clears the section, the same as an empty one.
 - **`delete-section`** removes a heading and everything under it, heading line
-  and sub-sections included.
+  and sub-sections included. When the section is the last thing in the note, the
+  blank lines before it go too, and the note keeps its final newline if it had
+  one.
 - **`toggle-checkbox`** flips, or explicitly sets, a `- [ ]` or `- [x]` line,
   matched by its exact text.
 
@@ -122,7 +125,10 @@ and both need a `.md` note. The outline is not subject to the size limit. Both
 results carry the `Last-Modified:` timestamp, as a whole-note read does.
 
 Headings inside fenced code blocks are ignored, and notes with Windows (CRLF)
-line endings work the same as any other.
+line endings work the same as any other. A line that is only `#` characters and
+white space has no text to name it by, so it is not listed and is not a heading:
+the section above it runs on through it, and replacing or deleting that section
+removes it too.
 
 ### Avoiding overwrites with `expectedMtime`
 

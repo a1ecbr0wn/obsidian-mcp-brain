@@ -134,6 +134,74 @@ describe('replaceSection', () => {
   });
 });
 
+describe('replaceSection with a body that is only white space', () => {
+  test('clears the section, like an empty body', () => {
+    const clear = replaceSection('# A\nold\n', 'A', '');
+    assert.equal(clear, '# A\n');
+    for (const body of ['  \n', '   ', '\t', ' \t \n', '\n\n', '  \n\t\n  ', '\r\n  \r\n']) {
+      assert.equal(replaceSection('# A\nold\n', 'A', body), clear, JSON.stringify(body));
+    }
+  });
+
+  test('keeps the blank lines after the section and the next heading', () => {
+    assert.equal(replaceSection('# A\nold\n\n# B\nkeep\n', 'A', '   '), '# A\n\n# B\nkeep\n');
+  });
+
+  test('clears a section in a CRLF note', () => {
+    assert.equal(replaceSection('# A\r\nold\r\n# B\r\nx', 'A', '  \n'), '# A\r\n# B\r\nx');
+  });
+
+  test('does not count other Unicode white space as empty', () => {
+    assert.equal(replaceSection('# A\nold\n', 'A', '\u00a0'), '# A\n\u00a0\n');
+    assert.equal(replaceSection('# A\nold\n', 'A', '\ufeff'), '# A\n\ufeff\n');
+  });
+
+  test('keeps a body that has any other character, leading blank lines and indentation included', () => {
+    assert.equal(replaceSection('# A\nold\n', 'A', '\n\ntext'), '# A\n\n\ntext\n');
+    assert.equal(replaceSection('# A\nold\n', 'A', '  indented'), '# A\n  indented\n');
+    assert.equal(replaceSection('# A\nold\n', 'A', '-'), '# A\n-\n');
+  });
+});
+
+describe('a heading with no text', () => {
+  test('is not a heading: findHeadings and outlineSections leave it out', () => {
+    for (const line of ['# ', '## ', '###  ', '#\t', '# \r']) {
+      const content = `# A\n${line}\n# B\nx\n`;
+      assert.deepEqual(findHeadings(content).map(h => h.text), ['A', 'B'], JSON.stringify(line));
+      assert.deepEqual(outlineSections(content).headings.map(h => h.text), ['A', 'B'], JSON.stringify(line));
+    }
+  });
+
+  test('does not end the section above it', () => {
+    const content = '# A\none\n# \ntwo\n# B\nx';
+    assert.equal(readSection(content, 'A'), '# A\none\n# \ntwo');
+    assert.equal(replaceSection(content, 'A', 'new'), '# A\nnew\n# B\nx');
+    assert.equal(deleteSection(content, 'A'), '# B\nx');
+  });
+
+  test('cannot be named: an empty heading is not found', () => {
+    assert.throws(() => readSection('# A\n# \nx', ''), /not found/i);
+  });
+
+  test('between a section and its sub-sections, it is part of the section above', () => {
+    const content = '# A\none\n## \ntwo\n## S\nsub\n# B\nx\n';
+    assert.deepEqual(outlineSections(content).headings.map(h => [h.text, h.line]), [['A', 1], ['S', 5], ['B', 7]]);
+    assert.equal(readSection(content, 'A'), '# A\none\n## \ntwo\n## S\nsub');
+    assert.equal(deleteSection(content, 'A'), '# B\nx\n');
+  });
+
+  test('the outline and readSection agree on the size of a section that contains one', () => {
+    const content = '# A\none\n# \ntwo\n# B\nx\n';
+    const a = outlineSections(content).headings[0];
+    assert.equal(a.endLine, 4);
+    assert.equal(a.chars, readSection(content, 'A').length);
+  });
+
+  test('a heading that has text after other white space is still a heading', () => {
+    assert.deepEqual(findHeadings('#  A \n').map(h => h.text), ['A']);
+  });
+});
+
 describe('deleteSection', () => {
   test('removes the heading line and its body up to the next same-or-shallower heading', () => {
     const content = '# A\nkeep\n# B\ngone\n# C\nkeep';
@@ -145,6 +213,41 @@ describe('deleteSection', () => {
     const content = '# A\nkeep\n## B\nnested\ntext';
     const result = deleteSection(content, 'B');
     assert.equal(result, '# A\nkeep');
+  });
+
+  test('keeps the final newline when the removed section was the last thing in the file', () => {
+    assert.equal(deleteSection('# A\nkeep\n## B\nnested\ntext\n', 'B'), '# A\nkeep\n');
+    assert.equal(deleteSection('a\n# A\n', 'A'), 'a\n');
+  });
+
+  test('adds no final newline when the file had none', () => {
+    assert.equal(deleteSection('a\n# A', 'A'), 'a');
+  });
+
+  test('drops the blank lines that separated the last section from what is before it', () => {
+    assert.equal(deleteSection('a\n\n# A\nbody\n', 'A'), 'a\n');
+    assert.equal(deleteSection('a\n\n\n# A\nbody', 'A'), 'a');
+    assert.equal(deleteSection('a\n  \n\t\n# A\n', 'A'), 'a\n');
+  });
+
+  test('leaves the blank lines before a section that is not the last', () => {
+    assert.equal(deleteSection('a\n\n# A\nx\n# B\ny\n', 'A'), 'a\n\n# B\ny\n');
+  });
+
+  test('keeps the final newline of a CRLF note', () => {
+    assert.equal(deleteSection('a\r\n# A\r\n', 'A'), 'a\r\n');
+    assert.equal(deleteSection('a\r\n\r\n# A\r\nbody\r\n', 'A'), 'a\r\n');
+    assert.equal(deleteSection('a\r\n# A', 'A'), 'a');
+  });
+
+  test('keeps the final newline of a note with mixed line endings', () => {
+    assert.equal(deleteSection('a\r\nb\n# A\nx\n', 'A'), 'a\r\nb\n');
+    assert.equal(deleteSection('a\nb\r\n# A\r\nx', 'A'), 'a\nb');
+  });
+
+  test('a note that was only the section, or blank lines and the section, becomes empty', () => {
+    assert.equal(deleteSection('# A\nbody\n', 'A'), '');
+    assert.equal(deleteSection('\n\n# A\nbody\n', 'A'), '');
   });
 
   test('removing the only heading leaves the remainder empty', () => {

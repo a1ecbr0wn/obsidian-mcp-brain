@@ -380,9 +380,13 @@ small change:
   text, without the `#` characters), leaving the heading line itself in place.
   Everything under the heading goes, sub-sections included, up to the next
   heading of the same or a higher level. `content` is the new body only, so
-  don't repeat the heading; to rename a heading, use `replace`.
+  don't repeat the heading; to rename a heading, use `replace`. A `content` of
+  only white space clears the section.
 - **`delete-section`** — removes a heading and everything under it, heading line
-  and sub-sections included.
+  and sub-sections included. When the section is the last thing in the note, the
+  blank lines before it go too and the note keeps its final newline. A line of
+  only `#` characters is not a heading, so a section runs through it and both
+  operations remove it with the rest.
 - **`toggle-checkbox`** — flips (or explicitly sets) a `- [ ]`/`- [x]` line,
   matched by its exact text.
 

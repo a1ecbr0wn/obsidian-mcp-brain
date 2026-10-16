@@ -40,7 +40,8 @@ function computeFenceMask(lines) {
 
 /**
  * Parses all ATX headings (# through ######) in content, ignoring lines inside fenced
- * code blocks. Setext-style (===/---) headings are not recognised.
+ * code blocks. Setext-style (===/---) headings are not recognised, and neither is a heading
+ * with no text (a line of only '#' marks), which CommonMark would call an empty heading.
  * @returns {Array<{text: string, level: number, line: number, bodyEndLine: number}>}
  *   line is 1-based. bodyEndLine is the 1-based last line belonging to this heading's
  *   section — everything up to (but not including) the next heading of the same or
@@ -53,7 +54,9 @@ export function findHeadings(content) {
   lines.forEach((line, i) => {
     if (inFence[i]) return;
     const m = HEADING_RE.exec(stripCr(line));
-    if (m) headings.push({ text: m[2].trim(), level: m[1].length, line: i + 1 });
+    // A line that is only '#' marks and white space has no text to name it by, so it is not a
+    // heading here: the outline, read-note and edit-note all agree on that.
+    if (m && m[2].trim() !== '') headings.push({ text: m[2].trim(), level: m[1].length, line: i + 1 });
   });
   return headings.map((h, idx) => {
     let bodyEndLine = lines.length;
@@ -144,8 +147,8 @@ function sectionText(lines, h, end) {
  * the heading line up to (but not including) the next heading of the same or shallower
  * level, or end of file. The blank lines that separated the section from what follows are
  * kept, and trailing newlines in `newBody` are ignored, so the result does not depend on
- * whether the caller ended its text with one. `newBody` is written with the note's own line
- * ending.
+ * whether the caller ended its text with one. A `newBody` of only white space clears the
+ * section. `newBody` is written with the note's own line ending.
  *
  * Throws if `heading` matches no heading, or matches more than one and no `occurrence`
  * (1-based) is given to disambiguate.
@@ -157,7 +160,8 @@ export function replaceSection(content, heading, newBody, occurrence) {
 
   const end = contentEndLine(lines, match);
   const body = newBody.replace(/(\r?\n)+$/, '');
-  const bodyLines = body === '' ? [] : body.split(/\r?\n/).map(l => (crlf ? l + '\r' : l));
+  // A body of only spaces, tabs and line breaks clears the section, like an empty one.
+  const bodyLines = /^[ \t\r\n]*$/.test(body) ? [] : body.split(/\r?\n/).map(l => (crlf ? l + '\r' : l));
   const before = lines.slice(0, match.line);
   const kept = lines.slice(end, match.bodyEndLine);
   const after = lines.slice(match.bodyEndLine);
@@ -173,8 +177,10 @@ export function replaceSection(content, heading, newBody, occurrence) {
 /**
  * Removes the heading matching `heading` (exact text) along with its entire body — the
  * heading line itself plus everything up to (but not including) the next heading of the
- * same or shallower level, or end of file. When deleting to end of file, removes any
- * trailing \r from the last kept line. Unlike replaceSection, nothing is left behind.
+ * same or shallower level, or end of file. Unlike replaceSection, nothing is left behind.
+ * When the section runs to the end of the file, the blank lines that separated it from what
+ * is before it go too, and the file keeps its final newline if it had one (and gains none if
+ * it had not); a note that is left with nothing becomes ''.
  *
  * Throws if `heading` matches no heading, or matches more than one and no `occurrence`
  * (1-based) is given to disambiguate.
@@ -184,11 +190,14 @@ export function deleteSection(content, heading, occurrence) {
   const lines = content.split('\n');
   const before = lines.slice(0, match.line - 1);
   const after = lines.slice(match.bodyEndLine);
-  // Cutting the end of a CRLF note leaves the last kept line's '\r' with no '\n' after it.
-  if (after.length === 0 && before.length > 0) {
-    before[before.length - 1] = stripCr(before[before.length - 1]);
-  }
-  return [...before, ...after].join('\n');
+  if (after.length > 0) return [...before, ...after].join('\n');
+  const endsWithNewline = lines[lines.length - 1] === '';
+  while (before.length > 0 && isBlank(before[before.length - 1])) before.pop();
+  if (before.length === 0) return '';
+  if (endsWithNewline) return [...before, ''].join('\n');
+  // Without a '\n' after it, the last kept line must not carry a '\r' either.
+  before[before.length - 1] = stripCr(before[before.length - 1]);
+  return before.join('\n');
 }
 
 /**
