@@ -247,6 +247,7 @@ except `CONFIG_PATH`, which says where to find it.
   "uploadStallSeconds": 30,
   "uploadNetworkPrefix": 32,
   "logFile": "/var/log/obsidian-mcp.log",
+  "sessionTimeoutSeconds": 1800,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
   "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
@@ -283,6 +284,7 @@ except `CONFIG_PATH`, which says where to find it.
 | `uploadNetworkPrefix`    | No       | `32`                                                          | Leading bits of an IPv4 address that an upload must share with the call that reserved it, 16 to 32. 32 is the same address. See below                                                 |
 | `trustedProxies`         | No       | `[]`                                                          | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below                                                                                            |
 | `logFile`                | No       | `none`                                                        | Absolute path of a file to append the log to, as well as the console. Includes the audit log                                                                                          |
+| `sessionTimeoutSeconds`  | No       | `1800`                                                        | How long a session may be idle before it is removed, in seconds (at least 60)                                                                                                         |
 | `auth`                   | No       | none                                                          | Accept only signed tokens from an external OAuth service, for the users you list. Off by default. See [Authentication](https://brain.a1ecbr0wn.com/configuration#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which
@@ -700,6 +702,10 @@ The server implements the [MCP Streamable HTTP transport
 
 - **`GET /mcp`** — keeps a long-lived SSE stream open per session for
   server-to-client notifications (e.g. `tools/list_changed`).
+
+- **`DELETE /mcp`** — ends the session named by `Mcp-Session-Id` and its
+  stream, and answers `204`. An unknown or missing session answers `404`. A
+  session that has been idle for `sessionTimeoutSeconds` is removed without it.
 
 All MCP tools are implemented natively in the server and operate directly on
 vault files via `node:fs/promises`. Each tool resolves its `vault` argument
