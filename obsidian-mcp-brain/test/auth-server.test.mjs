@@ -100,8 +100,8 @@ function request(srv, { method = 'POST', path: p = '/mcp', headers = {}, body, t
       res.on('data', c => { text += c; });
       res.on('end', () => {
         const msgs = [];
-        for (const line of text.split('\n')) if (line.startsWith('data: ')) { try { msgs.push(JSON.parse(line.slice(6))); } catch {} }
-        let json; try { json = JSON.parse(text); } catch {}
+        for (const line of text.split('\n')) if (line.startsWith('data: ')) { try { msgs.push(JSON.parse(line.slice(6))); } catch { /* not a JSON event */ } }
+        let json; try { json = JSON.parse(text); } catch { /* the body is not JSON */ }
         resolve({ status: res.statusCode, headers: res.headers, text, json, msgs });
       });
     });

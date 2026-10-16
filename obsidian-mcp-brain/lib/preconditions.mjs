@@ -40,7 +40,7 @@ export async function assertUnmodified(absPath, expectedMtime) {
     stat = await fs.stat(absPath);
   } catch (err) {
     if (err.code === 'ENOENT') {
-      throw new Error(`Precondition failed: file no longer exists (expected mtime ${expectedMtime})`);
+      throw new Error(`Precondition failed: file no longer exists (expected mtime ${expectedMtime})`, { cause: err });
     }
     throw err;
   }

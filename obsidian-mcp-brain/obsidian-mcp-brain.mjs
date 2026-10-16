@@ -1225,7 +1225,7 @@ async function route(req, res, url, sid) {
           try { return LOOPBACK.has(new URL(u).hostname); } catch { return false; }
         });
       }
-    } catch {}
+    } catch { /* a malformed registration body keeps the default redirect_uris */ }
     res.writeHead(201, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({
       client_id:              'public-client',
@@ -1260,7 +1260,7 @@ async function route(req, res, url, sid) {
     // End any previous SSE response for this session (e.g. reconnect after network blip).
     const prev = sseStreams.get(sid);
     if (prev && !prev.writableEnded) {
-      try { prev.end(); } catch {}
+      try { prev.end(); } catch { /* the previous stream is already gone */ }
     }
     res.writeHead(200, {
       'Content-Type':  'text/event-stream',
@@ -2170,7 +2170,7 @@ async function route(req, res, url, sid) {
         try { content = await libReadNote(filePath); } catch { return; }
         const updated = fmRenameTag(content, args.oldTag, args.newTag);
         if (updated !== content) {
-          try { await libWriteNote(filePath, updated); count++; } catch {}
+          try { await libWriteNote(filePath, updated); count++; } catch { /* a note that cannot be written is skipped and not counted */ }
         }
       });
       return toolOk(res, sid, msgId, `Renamed tag '${args.oldTag}' → '${args.newTag}' in ${count} note(s)`);

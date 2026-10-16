@@ -67,7 +67,7 @@ async function post(body, sid, port = PORT) {
           const msgs = [];
           for (const line of data.split('\n')) {
             if (line.startsWith('data: ')) {
-              try { msgs.push(JSON.parse(line.slice(6))); } catch {}
+              try { msgs.push(JSON.parse(line.slice(6))); } catch { /* not a JSON event */ }
             }
           }
           resolve({ status: res.statusCode, headers: res.headers, msgs });

@@ -25,6 +25,10 @@ npm test
 `npm test` runs the server's tests with Node's built-in test runner, so there
 are no test dependencies to install. `mcp-shim` has no tests of its own.
 
+`npm run lint` runs ESLint on the JavaScript and markdownlint on the Markdown
+files. The rules are in `eslint.config.mjs` and `.markdownlint-cli2.jsonc`.
+markdownlint needs Node 22 or later. The same command runs in CI on every push.
+
 ### Commit messages
 
 Use [conventional commit](https://www.conventionalcommits.org) prefixes such as
