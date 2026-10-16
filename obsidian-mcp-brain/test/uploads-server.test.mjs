@@ -200,7 +200,7 @@ describe('upload-binary-file and PUT /up/<token>', () => {
       assert.ok(text.includes('tool-1.bin'), text);
     });
 
-    it('points to get-setup-status and create-binary-file for a client that refuses the command (#56)', async () => {
+    it('points to get-setup-status and create-binary-file for a client that refuses the command', async () => {
       const { text } = await reserve(srv, { filename: 'tool-1b.bin', content });
       assert.ok(text.includes('get-setup-status'), text);
       assert.ok(text.includes('create-binary-file'), text);

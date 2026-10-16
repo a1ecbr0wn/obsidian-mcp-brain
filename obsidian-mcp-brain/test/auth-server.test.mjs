@@ -342,7 +342,7 @@ describe('resource server mode', () => {
       assert.deepEqual((await toolNames(srv, owner, ownerSid)).sort(), Object.keys(TOOL_ROLES).sort());
     });
 
-    it('may call get-setup-status (#56)', async () => {
+    it('may call get-setup-status', async () => {
       const r = await request(srv, { body: rpc(7, 'tools/call', { name: 'get-setup-status', arguments: {} }), token: viewer, sid: viewerSid });
       assert.equal(r.status, 200);
       const result = r.msgs[0].result;

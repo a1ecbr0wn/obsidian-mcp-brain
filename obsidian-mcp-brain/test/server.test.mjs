@@ -174,7 +174,7 @@ describe('list-vaults', () => {
 
 // ── ping ──────────────────────────────────────────────────────────────────
 
-describe('companion skills and agents (#56)', () => {
+describe('companion skills and agents', () => {
   const PKG_VERSION = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
 
   async function initialize(port = PORT) {
