@@ -506,40 +506,39 @@ upload-binary-file → { filename: "report.pdf", folder: "attachments", size: 81
 curl --fail-with-body -sS -T report.pdf "https://server:4001/up/<random token>"
 ```
 
-The size and SHA-256 come from a tool (`wc -c`, `sha256sum`), never from the
-model. The URL is the config's `mcpBaseUrl` (scheme, host and port, no path or
-trailing slash), then `/up/`, then a random token. The server checks the
-received bytes against the declared size and hash and places the file only if
-both match; otherwise it discards it.
+The size and SHA-256 come from a tool (`wc -c`, `sha256sum`), never from the model. The
+URL is the config's `mcpBaseUrl` (scheme, host and port, no path or trailing slash), then
+`/up/`, then a random token. The server checks the received bytes against the declared
+size and hash and places the file only if both match; otherwise it discards it.
 
-- The URL works for **one request only**: the first request that names it uses
-  it up, whatever that request is. If anything goes wrong, request a new URL.
-- It works only from the **same address** as the call that reserved it, and
-  lasts `uploadTtlSeconds` (300 by default).
-- The `filename` must not end in `.md`, the destination must not exist, and
-  `denyPaths` is checked when the URL is reserved and again when the file is
-  placed.
-- At most `uploadMaxBytes` (50 MiB by default), 16 pending URLs and 4 uploads at
-  once.
-- The file is held in `uploadTempDir` until verified, never inside a vault. At
-  startup the server refuses a staging folder owned by another user, and
-  tightens one that others can access to owner-only.
-- Symbolic links in the destination are followed before the deny rules are
-  checked, so an upload can't be used to write outside the vault.
-- Behind a reverse proxy, set `trustedProxies` to the proxy's address (for
-  example `["127.0.0.1", "::1"]`) so the address check can see the real caller
-  from `X-Forwarded-For`. The header is ignored from any other connection.
-  Without it the check always passes, and a hint is logged once.
+- The URL works for **one request only**: the first request that names it uses it up,
+  whatever that request is. If anything goes wrong, request a new URL.
+- It works only from the **same address** as the call that reserved it, and lasts
+  `uploadTtlSeconds` (300 by default).
+- The destination must not exist, and `denyPaths` is checked when the URL is reserved and
+  again when the file is placed.
+- A note (`.md`) can be uploaded too, for a large or generated file that is already on disk.
+  It is placed only if it is valid UTF-8; otherwise the upload is refused with `400` and
+  nothing is written. Use `create-note` for text the agent has written itself.
+- At most `uploadMaxBytes` (50 MiB by default), 16 pending URLs and 4 uploads at once.
+- The file is held in `uploadTempDir` until verified, never inside a vault. At startup the
+  server refuses a staging folder owned by another user, and tightens one that others can
+  access to owner-only.
+- Symbolic links in the destination are followed before the deny rules are checked, so an
+  upload can't be used to write outside the vault.
+- Behind a reverse proxy, set `trustedProxies` to the proxy's address (for example
+  `["127.0.0.1", "::1"]`) so the address check can see the real caller from
+  `X-Forwarded-For`. The header is ignored from any other connection. Without it the
+  check always passes, and a hint is logged once.
 
-It needs an agent with a shell on a machine that can reach the server's address,
-such as Claude Code. The token limits one upload to one destination but is not
-authentication: anyone who can call the server's tools can reserve a URL, and
-the URL is visible in the conversation, which is why it is short-lived and
-single-use. `curl` exits with code 22 and prints the server's explanation on any
-failure: `403` wrong address or an `Origin` header, `404` unknown, used or
-expired URL, `409` destination appeared meanwhile, `411` no `Content-Length`,
-`413` or `400` size mismatch, `422` hash mismatch, `503` too many uploads at
-once.
+It needs an agent with a shell on a machine that can reach the server's address, such as
+Claude Code. The token limits one upload to one destination but is not authentication:
+anyone who can call the server's tools can reserve a URL, and the URL is visible in the
+conversation, which is why it is short-lived and single-use. `curl` exits with code 22
+and prints the server's explanation on any failure: `403` wrong address or an `Origin`
+header, `404` unknown, used or expired URL, `409` destination appeared meanwhile, `411`
+no `Content-Length`, `413` or `400` size mismatch, `422` hash mismatch, `503` too many
+uploads at once.
 
 ### Binary read protection (`denyBinaryPaths`)
 
@@ -670,7 +669,7 @@ how to install them, and a plugin can carry agents as well as skills.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
-| `upload-binary-file` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |

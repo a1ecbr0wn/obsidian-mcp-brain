@@ -12,6 +12,7 @@ import {
   checkStagingDir,
   checkStagingDirOwner,
   defaultUploadTempDir,
+  isValidUtf8File,
   resolveDestination,
   sweepStaging,
 } from '../lib/uploads.mjs';
@@ -417,5 +418,79 @@ describe('sweepStaging', () => {
 
   it('returns 0 for a folder that does not exist', async () => {
     assert.equal(await sweepStaging(path.join(os.tmpdir(), 'no-such-sweep-dir-xyz')), 0);
+  });
+});
+
+// ── isValidUtf8File ─────────────────────────────────────────────────────────
+
+describe('isValidUtf8File', () => {
+  const withFile = async (bytes, fn) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'utf8-test-'));
+    const file = path.join(dir, 'f');
+    try {
+      await fs.writeFile(file, bytes);
+      return await fn(file);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  };
+  const check = (bytes) => withFile(bytes, isValidUtf8File);
+
+  it('accepts ASCII, multi-byte text and emoji', async () => {
+    assert.equal(await check(Buffer.from('plain text\n')), true);
+    assert.equal(await check(Buffer.from('Café 日本語 ☕ 😀', 'utf8')), true);
+  });
+
+  it('accepts an empty file', async () => {
+    assert.equal(await check(Buffer.alloc(0)), true);
+  });
+
+  it('accepts a leading byte-order mark and a NUL byte', async () => {
+    assert.equal(await check(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('a\0b')])), true);
+  });
+
+  it('rejects a byte that is never valid', async () => {
+    assert.equal(await check(Buffer.from([0x61, 0xff, 0x62])), false);
+    assert.equal(await check(Buffer.from([0xfe])), false);
+  });
+
+  it('rejects a continuation byte with no lead byte', async () => {
+    assert.equal(await check(Buffer.from([0x61, 0x80, 0x62])), false);
+  });
+
+  it('rejects a multi-byte sequence cut off at the end of the file', async () => {
+    assert.equal(await check(Buffer.from([0x61, 0xc3])), false);
+    assert.equal(await check(Buffer.from([0x61, 0xe2, 0x82])), false);
+    assert.equal(await check(Buffer.from([0xf0, 0x9f, 0x98])), false);
+  });
+
+  it('rejects an overlong encoding, a surrogate and a code point above U+10FFFF', async () => {
+    assert.equal(await check(Buffer.from([0xc0, 0xaf])), false);
+    assert.equal(await check(Buffer.from([0xed, 0xa0, 0x80])), false);
+    assert.equal(await check(Buffer.from([0xf4, 0x90, 0x80, 0x80])), false);
+  });
+
+  it('rejects UTF-16 text with a byte-order mark or a non-ASCII character', async () => {
+    assert.equal(await check(Buffer.from('\ufeffhello', 'utf16le')), false);
+    assert.equal(await check(Buffer.from('héllo', 'utf16le')), false);
+  });
+
+  it('accepts a character that straddles the boundary between two chunks of the stream', async () => {
+    // The default read size is 64 KiB: put each character across the 65536-byte mark.
+    assert.equal(await check(Buffer.concat([Buffer.alloc(65535, 0x61), Buffer.from('é')])), true);
+    assert.equal(await check(Buffer.concat([Buffer.alloc(65534, 0x61), Buffer.from('😀')])), true);
+    assert.equal(await check(Buffer.concat([Buffer.alloc(65533, 0x61), Buffer.from('😀')])), true);
+  });
+
+  it('rejects an invalid byte after the first chunk', async () => {
+    assert.equal(await check(Buffer.concat([Buffer.alloc(70000, 0x61), Buffer.from([0xff])])), false);
+  });
+
+  it('rejects a sequence cut off at the end of a file longer than one chunk', async () => {
+    assert.equal(await check(Buffer.concat([Buffer.alloc(70000, 0x61), Buffer.from([0xe2, 0x82])])), false);
+  });
+
+  it('rejects, rather than resolving, when the file cannot be read', async () => {
+    await assert.rejects(isValidUtf8File(path.join(os.tmpdir(), 'utf8-test-does-not-exist', 'f')));
   });
 });
