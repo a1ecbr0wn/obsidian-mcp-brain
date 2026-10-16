@@ -286,19 +286,21 @@ The rules:
   call that reserved it. Behind a reverse proxy this needs `trustedProxies`; see
   [Configuration](configuration#uploads-and-reverse-proxies).
 - **Short-lived.** A URL lasts `uploadTtlSeconds` (300 by default).
-- **The destination.** The destination must not already exist, and it must pass the
-  [`denyPaths`](configuration#path-deny-list) check, both when the URL is reserved and
-  again when the file is placed, after following any symbolic links, so a link that
-  leads out of the vault, or into a denied folder, is refused. Missing folders are created.
-- **Notes.** A `.md` destination is accepted. Use this for a large or generated note that
-  is already on disk, such as an Excalidraw drawing, so that its text doesn't pass through
-  the model; use `create-note` for text the agent has written itself. A note is placed only
-  if the received file is valid UTF-8, otherwise it is discarded with a `400` that says why.
-  Everything else about the upload is the same as for any other file.
-- **Limits.** The declared `size` can be at most `uploadMaxBytes` (50 MiB by default).
-  At most 16 URLs can be pending and 4 uploads in progress at once.
-- **Nothing is left behind.** A file that is rejected, interrupted or stalled leaves
-  nothing in the vault and nothing in the staging folder.
+- **The destination.** The destination must not already exist, and it must pass
+  the [`denyPaths`](configuration#path-deny-list) check, both when the URL is
+  reserved and again when the file is placed, after following any symbolic
+  links, so a link that leads out of the vault, or into a denied folder, is
+  refused. Missing folders are created.
+- **Notes.** A `.md` destination is accepted. Use this for a large or generated
+  note that is already on disk, such as an Excalidraw drawing, so that its text
+  doesn't pass through the model; use `create-note` for text the agent has
+  written itself. A note is placed only if the received file is valid UTF-8,
+  otherwise it is discarded with a `400` that says why. Everything else about
+  the upload is the same as for any other file.
+- **Limits.** The declared `size` can be at most `uploadMaxBytes` (50 MiB by
+  default). At most 16 URLs can be pending and 4 uploads in progress at once.
+- **Nothing is left behind.** A file that is rejected, interrupted or stalled
+  leaves nothing in the vault and nothing in the staging folder.
 
 What `curl` receives:
 
