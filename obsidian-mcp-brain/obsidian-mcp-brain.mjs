@@ -429,6 +429,42 @@ let UPLOADS_UNAVAILABLE = null;
 // downstream anyway ("Unknown vault"), so there's nothing extra to protect.
 const checkAccess = (toolName, args) => _checkAccess(VAULTS[args.vault]?.denyPaths ?? [], toolName, args);
 
+/**
+ * Checks a tool call's arguments against the tool's schema before the tool runs, so that a
+ * wrong call gets a message that says what to send. An argument in `required` that is missing
+ * (undefined or null; an empty string is the tool's own business) is named together with the
+ * arguments the tool takes, and any argument the tool does not take is named too, because it
+ * usually explains the miss (`path` sent for `folder` and `filename`). An unrecognised argument
+ * on a call that is otherwise complete is not an error: clients may add fields. A vault the
+ * server does not have is reported with the names it does have.
+ * @param {unknown} name - The tool's name.
+ * @param {unknown} rawArgs - The call's `arguments`.
+ * @returns {string|null} The message, or null when the call is fit to run (or the tool is unknown,
+ *   which the dispatch reports itself).
+ */
+function checkArguments(name, rawArgs) {
+  const schema = TOOLS.find(t => t.name === name)?.inputSchema;
+  if (!schema) return null;
+  const args = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? rawArgs : {};
+  const required = schema.required ?? [];
+  const vaults = Object.keys(VAULTS).sort().join(', ');
+  const missing = required.filter(k => args[k] === undefined || args[k] === null);
+  if (missing.length === 0) {
+    if (required.includes('vault') && !Object.hasOwn(VAULTS, args.vault)) {
+      return `Unknown vault: ${String(args.vault).slice(0, 100)}. Available vaults: ${vaults}.`;
+    }
+    return null;
+  }
+  const properties = Object.keys(schema.properties ?? {});
+  const named = missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} and ${missing.at(-1)}`;
+  let text = `${named} ${missing.length === 1 ? 'is' : 'are'} required. ${name} takes: `
+    + `${properties.map(p => (required.includes(p) ? `${p}*` : p)).join(', ')} (* required).`;
+  const unrecognised = Object.keys(args).filter(k => !properties.includes(k));
+  if (unrecognised.length) text += ` Unrecognised arguments: ${unrecognised.slice(0, 5).map(k => k.slice(0, 50)).join(', ')}.`;
+  if (missing.includes('vault')) text += ` Available vaults: ${vaults}.`;
+  return text;
+}
+
 const toolOk  = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } }]);
 const toolErr = (res, sid, id, text) => sendSse(res, 200, sid, [{ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } }]);
 // A frontmatter field name must be a simple key with no YAML/regex-structural
@@ -544,7 +580,7 @@ const TOOLS = [
   },
   {
     name: 'create-note',
-    description: 'Create a new note. Fails if the note already exists.',
+    description: 'Create a new note. Fails if the note already exists; to change an existing note use edit-note (append, prepend, replace, replace-section or delete-section).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -749,10 +785,10 @@ const TOOLS = [
       properties: {
         vault:      { type: 'string', description: 'Vault name' },
         query:      { type: 'string', description: 'Search query' },
-        searchType: { type: 'string', enum: ['content', 'filename', 'both'], description: 'What to search' },
+        searchType: { type: 'string', enum: ['content', 'filename', 'both'], description: 'What to search (default content)' },
         path:       { type: 'string', description: 'Optional vault-relative path to scope the search' },
       },
-      required: ['vault', 'query', 'searchType'],
+      required: ['vault', 'query'],
     },
   },
   {
@@ -1608,6 +1644,12 @@ async function route(req, res, url, sid) {
     return toolOk(res, sid, msgId, setupStatusText(SERVER_VERSION));
   }
 
+  // a call with missing or wrong arguments is answered with what to send instead
+  if (msg.method === 'tools/call') {
+    const problem = checkArguments(msg.params?.name, msg.params?.arguments);
+    if (problem) return toolErr(res, sid, msgId, problem);
+  }
+
   // path access control for tool calls
   if (msg.method === 'tools/call') {
     const denied = checkAccess(msg.params?.name, msg.params?.arguments ?? {});
@@ -1876,7 +1918,7 @@ async function route(req, res, url, sid) {
     const absPath = path.join(vault.path, relPath);
     try {
       await fs.access(absPath);
-      return toolErr(res, sid, msgId, `Note already exists: ${relPath}`);
+      return toolErr(res, sid, msgId, `Note already exists: ${relPath}. To change it, use edit-note (append, prepend, replace, replace-section or delete-section).`);
     } catch (err) {
       if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }

@@ -64,6 +64,25 @@ If a `heading` or `taskText` matches more than once in the note, the call fails
 with a list of every match (line number, and heading level where relevant). Pass
 the 1-based `occurrence` from that list on a follow-up call to pick one.
 
+### Wrong arguments
+
+A call that leaves out an argument the tool requires is answered before the tool
+runs, with a message that says what to send: the missing arguments, then the
+arguments the tool takes (a `*` marks the required ones), then any argument the
+tool does not take, which usually explains the miss:
+
+```text
+filename is required. read-note takes: vault*, filename*, folder, outline,
+heading, occurrence (* required). Unrecognised arguments: path.
+```
+
+A missing `vault` also lists the configured vaults, and so does a `vault` the
+server does not have: `Unknown vault: x. Available vaults: a, b.` An argument a
+tool does not take is not an error when the call is otherwise complete, so a
+client that adds fields of its own is unaffected. `create-note` on a note that
+already exists points to `edit-note` (append, prepend, replace, replace-section
+or delete-section).
+
 ### Line endings
 
 A note's line ending is the ending of its first line break: CRLF if that is

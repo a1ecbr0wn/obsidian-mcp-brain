@@ -2991,3 +2991,112 @@ describe('notes with CRLF line endings', () => {
     assert.ok(out.includes('renamed'), JSON.stringify(out));
   });
 });
+
+// ── errors for wrong arguments ────────────────────────────────────────────────
+
+describe('a call with the wrong arguments says what to do', () => {
+  /** Calls a tool with exactly these arguments (callTool adds a vault). */
+  async function callRaw(name, args) {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'tools/call', params: { name, arguments: args } }, sid);
+    return r.msgs[0].result;
+  }
+  async function listTools() {
+    const sid = await initSession();
+    return (await post({ jsonrpc: '2.0', id: '9', method: 'tools/list' }, sid)).msgs[0].result.tools;
+  }
+
+  it('names every missing argument and the ones the tool takes, for every tool that needs one', async () => {
+    const tools = (await listTools()).filter(t => t.inputSchema.required?.length);
+    assert.ok(tools.length > 10);
+    for (const tool of tools) {
+      const required = tool.inputSchema.required;
+      const r = await callRaw(tool.name, {});
+      assert.equal(r.isError, true, tool.name);
+      const text = r.content[0].text;
+      const lead = required.length === 1 ? `${required[0]} is required`
+        : `${required.slice(0, -1).join(', ')} and ${required.at(-1)} are required`;
+      assert.ok(text.startsWith(lead), `${tool.name}: ${text}`);
+      for (const name of Object.keys(tool.inputSchema.properties)) {
+        assert.ok(text.includes(required.includes(name) ? `${name}*` : name), `${tool.name} should list ${name}: ${text}`);
+      }
+    }
+  });
+
+  it('lists the vaults when the vault is missing', async () => {
+    const r = await callRaw('read-note', { filename: 'x.md' });
+    assert.equal(r.isError, true);
+    assert.ok(r.content[0].text.startsWith('vault is required'), r.content[0].text);
+    assert.ok(r.content[0].text.includes(`Available vaults: ${vaultName}`), r.content[0].text);
+  });
+
+  it('names an argument the tool does not take when a required one is missing', async () => {
+    const r = await callRaw('read-note', { vault: vaultName, path: 'some/note.md' });
+    assert.equal(r.isError, true);
+    const text = r.content[0].text;
+    assert.ok(text.startsWith('filename is required'), text);
+    assert.ok(text.includes('Unrecognised arguments: path'), text);
+    assert.ok(text.includes('folder'), 'it should list folder among the arguments');
+  });
+
+  it('search-vault does not need searchType, which defaults to content', async () => {
+    await writeVaultNote('args/findme.md', 'needle-without-search-type');
+    const r = await callTool('search-vault', { query: 'needle-without-search-type' });
+    assert.ok(!r.isError, JSON.stringify(r));
+    assert.ok(r.content[0].text.includes('args/findme.md'), r.content[0].text);
+  });
+
+  it('treats null as missing, but an empty string as given', async () => {
+    const nul = await callRaw('read-note', { vault: vaultName, filename: null });
+    assert.ok(nul.content[0].text.startsWith('filename is required'), nul.content[0].text);
+    assert.ok(nul.content[0].text.includes('read-note takes:'), 'the generic message, with the argument list');
+    const empty = await callRaw('read-note', { vault: vaultName, filename: '' });
+    assert.equal(empty.isError, true);
+    assert.ok(!empty.content[0].text.includes('read-note takes:'), 'an empty string is the tool\'s own business');
+  });
+
+  it('does not fail a call just for an argument the tool does not take', async () => {
+    await writeVaultNote('args/ok.md', '# Fine');
+    const r = await callRaw('read-note', { vault: vaultName, folder: 'args', filename: 'ok.md', bogus: 1, _meta: { x: 1 } });
+    assert.ok(!r.isError, JSON.stringify(r));
+    assert.ok(r.content[0].text.includes('# Fine'));
+  });
+
+  it('lists the configured vaults when a vault is not known, for any tool', async () => {
+    for (const [name, extra] of [['read-note', { filename: 'x.md' }], ['list-notes', {}], ['create-note', { filename: 'x.md' }], ['search-vault', { query: 'q' }]]) {
+      const r = await callRaw(name, { vault: 'no-such-vault', ...extra });
+      assert.equal(r.isError, true, name);
+      assert.ok(r.content[0].text.startsWith('Unknown vault: no-such-vault'), `${name}: ${r.content[0].text}`);
+      assert.ok(r.content[0].text.includes(`Available vaults: ${vaultName}`), `${name}: ${r.content[0].text}`);
+    }
+  });
+
+  it('refuses a vault named like a property of every object', async () => {
+    for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const r = await callRaw('read-note', { vault: name, filename: 'x.md' });
+      assert.equal(r.isError, true, name);
+      assert.ok(r.content[0].text.startsWith(`Unknown vault: ${name}`), `${name}: ${r.content[0].text}`);
+    }
+  });
+
+  it('says what to send, and reveals nothing about a denied path, when an argument is missing', async () => {
+    const r = await callRaw('read-note', { vault: vaultName, folder: DENY_DIR });
+    assert.equal(r.isError, true);
+    assert.ok(r.content[0].text.startsWith('filename is required'), r.content[0].text);
+    assert.ok(!r.content[0].text.includes(DENY_DIR), r.content[0].text);
+  });
+
+  it('create-note on an existing note says to use edit-note', async () => {
+    await writeVaultNote('args/exists.md', '# Here');
+    const r = await callTool('create-note', { folder: 'args', filename: 'exists.md', content: 'new' });
+    assert.equal(r.isError, true);
+    const text = r.content[0].text;
+    assert.ok(text.startsWith('Note already exists: args/exists.md'), text);
+    assert.match(text, /edit-note \(append, prepend, replace, replace-section or delete-section\)/);
+  });
+
+  it('says in the create-note description what to use for an existing note', async () => {
+    const tool = (await listTools()).find(t => t.name === 'create-note');
+    assert.match(tool.description, /edit-note/);
+  });
+});

@@ -423,6 +423,12 @@ describe('resource server mode', () => {
       assert.equal(await fs.readFile(path.join(srv.vaultDir, 'hello.md'), 'utf8'), '# Hello\n');
     });
 
+    it('are told the account is read-only, not what a write tool takes, when they call one with no arguments', async () => {
+      const r = await call(srv, viewer, viewerSid, 'create-note', {});
+      assert.equal(r.isError, true);
+      assert.equal(r.content[0].text, 'This account is read-only');
+    });
+
     it('are refused query-graph, and a tool that does not exist', async () => {
       for (const name of ['query-graph', 'a-tool-nobody-classified']) {
         const r = await call(srv, viewer, viewerSid, name, { question: 'x' });
