@@ -394,6 +394,12 @@ If a `heading` or `taskText` match isn't unique in the note, the call fails with
 a list of every match (line number, and heading level where relevant); pass the
 1-based `occurrence` from that list on a follow-up call to disambiguate.
 
+Tools that change a note write the text they make in the note's own line ending
+(CRLF or LF, taken from its first line break) and leave the other lines as they
+were: `append`, `prepend`, `replace-section`, the tag and frontmatter tools, and
+the tag line `add-tags` puts in the body. `create-note`, `replace` and
+`create-binary-file` write what they are sent.
+
 #### Listing files other than notes
 
 `list-notes` lists notes by default. Give it `extension` to list any other kind

@@ -64,6 +64,29 @@ If a `heading` or `taskText` matches more than once in the note, the call fails
 with a list of every match (line number, and heading level where relevant). Pass
 the 1-based `occurrence` from that list on a follow-up call to pick one.
 
+### Line endings
+
+A note's line ending is the ending of its first line break: CRLF if that is
+`\r\n`, otherwise LF (a note with no line break counts as LF). Every tool that
+changes a note writes the text it makes in that ending and leaves the other
+lines as they were:
+
+- `edit-note` `append`, `prepend` and `replace-section` convert the line
+  breaks of `content` to the note's ending. A note with no line break (an empty
+  note, or a single line) has no ending to follow, and `append` and `prepend`
+  write `content` as sent.
+- `add-tags`, `remove-tags`, `rename-tag`, `set-frontmatter-field` and
+  `remove-frontmatter-field` rewrite the frontmatter block in the note's ending,
+  and add a block, or a tag line in the body, in it too. The rest of the note is
+  not touched.
+- In a note that mixes the two, new lines take the first line break's ending and
+  the existing lines keep theirs, except that a frontmatter block that is
+  rewritten is written in the note's ending throughout.
+- `search-vault` returns a matching line without its line ending.
+
+`create-note`, `edit-note` `replace` and `create-binary-file` write exactly what
+they are sent, because the caller supplies the whole file.
+
 ### Listing files other than notes
 
 `list-notes` lists notes by default. Give it `extension` to list any other kind

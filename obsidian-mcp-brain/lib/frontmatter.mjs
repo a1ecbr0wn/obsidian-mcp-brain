@@ -1,7 +1,12 @@
 // Pure functions for Obsidian YAML frontmatter parsing and tag manipulation.
 // All functions take and return content strings; no filesystem I/O.
+//
+// The writers change only the frontmatter block. They edit it with its line breaks turned to LF
+// and write it back in the note's own line ending (see lineending.mjs), so the block is
+// consistent and the body, and the line break after the closing '---', are left as they were.
 
 import { escRe } from './utils.mjs';
+import { detectLineEnding, toLineEnding } from './lineending.mjs';
 
 const FM_RE = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 const TAGS_INLINE_RE = /^tags:\s*\[([^\]]*)\]/m;
@@ -70,6 +75,18 @@ export function parseTags(content) {
   return fm ? parseTagsFromBody(fm[1]) : [];
 }
 
+const lf = (text) => text.replace(/\r\n/g, '\n');
+
+/**
+ * Builds a note's frontmatter block, `---`, the lines, `---`, in the note's line ending.
+ * @param {string} bodyLf - The block's lines, joined with LF.
+ * @param {'\n'|'\r\n'} ending
+ * @returns {string} Without a line break after the closing `---`.
+ */
+function frontmatterBlock(bodyLf, ending) {
+  return `---${ending}${toLineEnding(bodyLf, ending)}${ending}---`;
+}
+
 function buildTagsSection(tags) {
   if (tags.length === 0) return 'tags: []';
   return `tags:\n${tags.map(t => `  - ${t}`).join('\n')}`;
@@ -91,13 +108,14 @@ function replaceTagsInBody(body, tags) {
  * Replaces the tags section in frontmatter, creating frontmatter if missing.
  */
 export function setTags(content, tags) {
+  const ending = detectLineEnding(content);
   const fm = FM_RE.exec(content);
   if (!fm) {
-    return `---\n${buildTagsSection(tags)}\n---\n${content}`;
+    return `${frontmatterBlock(buildTagsSection(tags), ending)}${ending}${content}`;
   }
-  const newBody = replaceTagsInBody(fm[1], tags);
+  const newBody = replaceTagsInBody(lf(fm[1]), tags);
   const after = content.slice(fm.index + fm[0].length);
-  return `---\n${newBody.trimEnd()}\n---${fm[2]}${after}`;
+  return `${frontmatterBlock(newBody.trimEnd(), ending)}${fm[2]}${after}`;
 }
 
 /**
@@ -173,13 +191,14 @@ function replaceFieldInBody(body, field, newLine) {
  */
 export function setFrontmatterField(content, field, value) {
   const newLine = `${field}: ${serializeScalar(value)}`;
+  const ending = detectLineEnding(content);
   const fm = FM_RE.exec(content);
   if (!fm) {
-    return `---\n${newLine}\n---\n${content}`;
+    return `${frontmatterBlock(newLine, ending)}${ending}${content}`;
   }
-  const newBody = replaceFieldInBody(fm[1], field, newLine);
+  const newBody = replaceFieldInBody(lf(fm[1]), field, newLine);
   const after = content.slice(fm.index + fm[0].length);
-  return `---\n${newBody.trimEnd()}\n---${fm[2]}${after}`;
+  return `${frontmatterBlock(newBody.trimEnd(), ending)}${fm[2]}${after}`;
 }
 
 /** Removes a field and its value from the body; returns null if the field is not found. */
@@ -204,9 +223,10 @@ function removeFieldFromBody(body, field) {
 export function removeFrontmatterField(content, field) {
   const fm = FM_RE.exec(content);
   if (!fm) return content;
-  const newBody = removeFieldFromBody(fm[1], field);
+  const newBody = removeFieldFromBody(lf(fm[1]), field);
   if (newBody === null) return content;
+  const ending = detectLineEnding(content);
   const after = content.slice(fm.index + fm[0].length);
   const trimmed = newBody.trimEnd();
-  return trimmed ? `---\n${trimmed}\n---${fm[2]}${after}` : `---\n---${fm[2]}${after}`;
+  return trimmed ? `${frontmatterBlock(trimmed, ending)}${fm[2]}${after}` : `---${ending}---${fm[2]}${after}`;
 }
