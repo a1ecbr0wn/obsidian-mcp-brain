@@ -2,7 +2,7 @@
 name: read-binary-file
 description: Read a PDF, image or other non-note file from an Obsidian vault through the obsidian-mcp-brain server's read-binary-file tool. Use whenever the user asks to read, open, summarise or look at a PDF, image or other non-markdown file that is in the vault. It first checks which Claude surface it is running on, because Claude chat surfaces show only images and silently drop other file types.
 metadata:
-  version: "1.3.0"
+  version: "1.4.0"
 ---
 
 # Read a non-note file from the vault
