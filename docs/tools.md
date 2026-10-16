@@ -6,7 +6,7 @@ nav_order: 5
 
 ## Tools
 
-Every tool except `list-vaults` takes a `vault` argument naming which configured
+Every tool except `list-vaults` and `get-setup-status` takes a `vault` argument naming which configured
 vault the call applies to. Use `list-vaults` to see the names.
 
 | Tool | Description |
@@ -17,6 +17,7 @@ vault the call applies to. Use `list-vaults` to see the names.
 | `new-notes` | List notes created in the last 7 days, or since a provided timestamp |
 | `changed-notes` | List notes modified in the last 7 days, or since a provided timestamp |
 | `list-vaults` | List all configured vaults |
+| `get-setup-status` | List the companion skills and agents, the server version, and how to install them on each Claude surface |
 | `read-note` | Read a note's content and last-modified timestamp |
 | `create-note` | Create a new note. Fails if it already exists |
 | `edit-note` | Edit a note: append, prepend, replace, replace or delete the content under a heading, or toggle a checkbox |
@@ -170,6 +171,20 @@ end in `.md`; use `create-note` for notes. It fails if the destination already
 exists. Because the server makes the request itself, the URL is checked carefully
 first. See [Security](security#fetch-binary-file).
 
+### `get-setup-status`
+
+Returns text for the agent: the companion skills and agents that ship with the server
+(each with what it is for and which tools it helps), the server's version, how to tell which
+Claude surface the agent is on, and the install steps for each surface. It takes no
+parameters, touches no vault, and a read-only user may call it.
+
+The server does not know what a client has installed or which surface it runs on. The agent
+compares the list with its own skills and agents, and a skill's `metadata.version` with the
+server version, and installs or suggests an update. The result also says what to do without the
+skills: `read-binary-file` shows only images on a chat surface, and `upload-binary-file`
+needs a shell and `curl`, which Claude Code can refuse until the user allows the skill's script
+with a permission rule. See [Agent skills and agents](connect#agent-skills-and-agents).
+
 ### `read-binary-file`
 
 The other binary tools can create, move and delete a file but not hand its contents
@@ -295,5 +310,5 @@ that does steps 1 and 4 for the agent. Its script, `scripts/upload-binary-file.s
 compares the server's reply with the local file and never prints the token). It needs `curl` and one
 of `sha256sum`, `shasum` or `openssl`. The npm package contains only the server, so copy the skill
 folder into your agent's skills directory (for Claude Code, `~/.claude/skills/`) to use it, or
-install the plugin; see [Agent skills](connect#agent-skills). The tool works without the skill. See
+install the plugin; see [Agent skills and agents](connect#agent-skills-and-agents). The tool works without the skill. See
 [Security](security#upload-binary-file) for what the URL does and doesn't protect.

@@ -15,7 +15,7 @@ All configuration lives in one JSON file. No environment variables are read exce
   or a failed validation logs a clear error and exits.
 - One server process can serve several named vaults. A client picks which one a
   call applies to with the `vault` argument, which every tool except `list-vaults`
-  takes.
+  and `get-setup-status` takes.
 
 ### Shape
 
@@ -335,7 +335,7 @@ Notes:
   service does all of these by default. A client that cannot sign in is most often failing
   at one of them, and the server's log then shows `wrong audience` or no request at all.
 - **`readOnlyUsers`** see and may call only the read tools: `list-notes`, `list-tags`,
-  `search-tags`, `new-notes`, `changed-notes`, `list-vaults`, `read-note`,
+  `search-tags`, `new-notes`, `changed-notes`, `list-vaults`, `get-setup-status`, `read-note`,
   `read-binary-file`, `find-backlinks`, `resolve-wikilink` and `search-vault`. Every tool that
   changes the vault, including `upload-binary-file` and `fetch-binary-file`, is refused with
   `This account is read-only`, and so is `query-graph`, because it ignores `denyPaths`.

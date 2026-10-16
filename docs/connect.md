@@ -121,7 +121,7 @@ The repository includes an agent skill,
 that works out which Claude surface it is running on, and on a chat surface tells the user
 that a non-image file can't be shown and suggests a code mode chat, instead of the agent
 reporting an empty result. It is only effective where it is installed; see
-[Agent skills](#agent-skills).
+[Agent skills and agents](#agent-skills-and-agents).
 
 The server never extracts text itself, so it behaves the same whichever client
 connects.
@@ -159,23 +159,42 @@ from `upload-binary-file`, which needs no token.
 If a client reports that it cannot sign in, check the server's log: each refusal is
 logged with its reason.
 
-### Agent skills
+### Agent skills and agents
 
 The repository ships two agent skills,
 [`read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file)
-and [`upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file).
-The tools work without them; the skills tell an agent how to use the tools well and, in
-`read-binary-file`'s case, what to say when the client can't show a file. They are packaged
-as a plugin and as individual `.skill` files. How you get them depends on where you run Claude:
+and [`upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file),
+packaged as a plugin and as individual `.skill` files. A plugin can also carry agents (an
+`agents/` folder); each one is listed the same way as a skill. The tools work without them; the
+skills tell an agent how to use the tools well and, in `read-binary-file`'s case, what to say when
+the client can't show a file.
+
+The server tells a connected agent about them. The `initialize` response carries short
+`instructions`, and the `get-setup-status` tool returns the list of skills and agents, the
+server's version, how to tell which Claude surface the agent is on, and the install steps for
+each. The server does not know what a client has installed: the agent checks its own skill list
+for the names and compares a skill's `metadata.version` with the server version, and tells you
+when a plugin update may be available. `upload-binary-file`, `read-binary-file` and
+`create-binary-file` point to `get-setup-status` in their descriptions.
+
+How you get them depends on where you run Claude:
 
 | Where | How |
 |---|---|
 | Claude Code, including the code mode of the Claude Desktop app | `/plugin marketplace add a1ecbr0wn/obsidian-mcp-brain`, then `/plugin install obsidian-mcp-brain@obsidian-mcp-brain` |
-| Cowork | Add the `obsidian-mcp-brain.plugin` file from the [latest release](https://github.com/a1ecbr0wn/obsidian-mcp-brain/releases/latest) |
-| Claude Desktop chat and claude.ai | Upload a `.skill` file from the latest release in **Settings → Capabilities → Skills** |
-| Anywhere else | Copy a folder from `skills/` into your agent's skills directory (for Claude Code, `~/.claude/skills/`) |
+| Cowork, Claude Desktop chat and claude.ai | Download `obsidian-mcp-brain.plugin` from the [latest release](https://github.com/a1ecbr0wn/obsidian-mcp-brain/releases/latest) and upload it at **Customize → Plugins → Add → Upload plugin** |
+| One skill on Claude Desktop chat or claude.ai | Upload its `.skill` file from the latest release in **Settings → Capabilities → Skills** |
+| Anywhere else | Copy a folder from `skills/` into your agent's skills directory (for Claude Code, `~/.claude/skills/`), or an agent's `<name>.md` file from the release into `~/.claude/agents/` |
 
-A plugin marketplace is a Claude Code and Cowork feature, so the chat surfaces need the
-`.skill` upload. `upload-binary-file` needs a shell on a machine that can reach the server, so
-it is of use only where the agent has one. The `.skill` and `.plugin` files are built from the repository by
+A plugin marketplace is a Claude Code feature, so the other surfaces upload the plugin file.
+Agents in a plugin run in Claude Code and Cowork; Claude Desktop chat and claude.ai ignore them.
+`upload-binary-file` needs a shell on a machine that can reach the server, so it is of use only
+where the agent has one. The `.skill`, `.plugin` and agent files are built from the repository by
 `scripts/package-skills.sh`, which needs only `zip`, and are attached to each release.
+
+If Claude Code refuses the `curl` command that `upload-binary-file` runs, allow the skill's
+script with a permission rule in `permissions.allow` of `~/.claude/settings.json`:
+`Bash(sh <path of the skill's upload-binary-file.sh> *)`. A Bash rule matches the command as the
+agent wrote it, from its first word (the skill runs its script with `sh`), so write the path the way it appears in the refusal; `/permissions` lists the
+rules. `Bash(curl *)` would allow every `curl`, which is broader than needed. For a small file,
+`create-binary-file` needs no `curl`.

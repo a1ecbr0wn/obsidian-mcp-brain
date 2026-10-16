@@ -230,7 +230,7 @@ All configuration lives in one JSON file — no environment variables are read e
 
 - **Location**: `CONFIG_PATH` env var if set, otherwise `~/.config/obsidian-mcp.json`.
 - The server serves one or more named vaults from a single process; a client picks
-  which one a call applies to via the `vault` argument every tool except `list-vaults` takes.
+  which one a call applies to via the `vault` argument every tool except `list-vaults` and `get-setup-status` takes.
 
 ### Shape
 
@@ -608,18 +608,19 @@ Restart Claude Desktop after saving.
 
 ---
 
-## Agent skills
+## Agent skills and agents
 
 The repository includes two agent skills, `read-binary-file` and `upload-binary-file`, in
 [`skills/`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills). The tools work
 without them; the skills tell an agent how to use the tools well and what to say when a client
-can't show a file.
+can't show a file. The server tells a connected agent about them: the `get-setup-status` tool lists the
+skills and agents and how to install them, and a plugin can carry agents as well as skills.
 
 | Where you run Claude | How to get the skills |
 |---|---|
 | Claude Code, including the code mode of the Claude Desktop app | `/plugin marketplace add a1ecbr0wn/obsidian-mcp-brain`, then `/plugin install obsidian-mcp-brain@obsidian-mcp-brain` |
-| Cowork | Add the `obsidian-mcp-brain.plugin` file from the [latest release](https://github.com/a1ecbr0wn/obsidian-mcp-brain/releases/latest) |
-| Claude Desktop chat and claude.ai | Upload a `.skill` file from the latest release in **Settings → Capabilities → Skills** |
+| Cowork, Claude Desktop chat and claude.ai | Upload the `obsidian-mcp-brain.plugin` file from the [latest release](https://github.com/a1ecbr0wn/obsidian-mcp-brain/releases/latest) at **Customize → Plugins → Add → Upload plugin** |
+| One skill on Claude Desktop chat or claude.ai | Upload its `.skill` file from the latest release in **Settings → Capabilities → Skills** |
 
 ---
 
@@ -633,6 +634,7 @@ can't show a file.
 | `new-notes` | List notes created in the last 7 days, or since a provided timestamp |
 | `changed-notes` | List notes modified in the last 7 days, or since a provided timestamp |
 | `list-vaults` | List all configured vaults |
+| `get-setup-status` | List the companion skills and agents, the server version, and how to install them on each Claude surface |
 | `read-note` | Read a note's content and last-modified timestamp |
 | `create-note` | Create a new note. Fails if it already exists |
 | `edit-note` | Edit a note: append, prepend, replace, replace/delete the content under a heading, or toggle a checkbox |

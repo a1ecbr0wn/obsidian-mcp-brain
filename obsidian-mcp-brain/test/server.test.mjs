@@ -14,7 +14,9 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { COMPANIONS, SETUP_INSTRUCTIONS, setupStatusText } from '../lib/companions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_ENTRY = path.join(__dirname, '..', 'obsidian-mcp-brain.mjs');
@@ -171,6 +173,96 @@ describe('list-vaults', () => {
 });
 
 // ── ping ──────────────────────────────────────────────────────────────────
+
+describe('companion skills and agents (#56)', () => {
+  const PKG_VERSION = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+
+  async function initialize(port = PORT) {
+    const r = await post({
+      jsonrpc: '2.0', id: '1', method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
+    }, undefined, port);
+    return r.msgs[0].result;
+  }
+
+  async function toolsList() {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'tools/list' }, sid);
+    return r.msgs[0].result.tools;
+  }
+
+  it('initialize carries instructions that name get-setup-status, under 1,000 characters', async () => {
+    const { instructions } = await initialize();
+    assert.equal(typeof instructions, 'string');
+    assert.ok(instructions.length < 1000, `${instructions.length} characters`);
+    assert.ok(instructions.includes('get-setup-status'));
+    assert.equal(instructions, SETUP_INSTRUCTIONS);
+  });
+
+  it('the instructions are the same for every client', async () => {
+    const a = await initialize();
+    const r = await post({
+      jsonrpc: '2.0', id: '1', method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'someone-else', version: '9' } },
+    });
+    assert.equal(r.msgs[0].result.instructions, a.instructions);
+  });
+
+  it('initialize reports the version in package.json', async () => {
+    const { serverInfo } = await initialize();
+    assert.equal(serverInfo.name, 'obsidian-mcp-brain');
+    assert.equal(serverInfo.version, PKG_VERSION);
+  });
+
+  it('get-setup-status is listed and takes no parameters', async () => {
+    const tool = (await toolsList()).find(t => t.name === 'get-setup-status');
+    assert.ok(tool, 'get-setup-status is listed');
+    assert.deepEqual(tool.inputSchema.properties ?? {}, {});
+    assert.ok(!tool.inputSchema.required?.length);
+  });
+
+  it('get-setup-status returns the server version, every companion and every surface\'s steps', async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '2', method: 'tools/call', params: { name: 'get-setup-status', arguments: {} } }, sid);
+    const result = r.msgs[0].result;
+    assert.ok(!result.isError);
+    const text = result.content[0].text;
+    assert.equal(text, setupStatusText(PKG_VERSION));
+    assert.ok(text.includes(PKG_VERSION));
+    for (const c of COMPANIONS) assert.ok(text.includes(c.name), c.name);
+    assert.ok(text.includes('/plugin marketplace add'));
+    assert.ok(text.includes('Upload plugin'));
+    assert.ok(text.includes('Cowork'));
+    assert.ok(text.includes('/home/claude'));
+  });
+
+  it('upload-binary-file points to the setup tool and the permission rule, and offers create-binary-file', async () => {
+    const d = (await toolsList()).find(t => t.name === 'upload-binary-file').description;
+    assert.ok(d.includes('get-setup-status'));
+    assert.ok(d.includes('permissions.allow'));
+    assert.ok(d.includes('create-binary-file'));
+  });
+
+  it('read-binary-file points to the setup tool and names its skill', async () => {
+    const d = (await toolsList()).find(t => t.name === 'read-binary-file').description;
+    assert.ok(d.includes('get-setup-status'));
+    assert.ok(d.includes('read-binary-file skill'));
+  });
+
+  it('create-binary-file points to upload-binary-file for a large file', async () => {
+    const d = (await toolsList()).find(t => t.name === 'create-binary-file').description;
+    assert.ok(d.includes('upload-binary-file'));
+    assert.ok(d.includes('get-setup-status'));
+  });
+
+  it('the tool texts point to the setup tool and do not repeat the install steps', async () => {
+    for (const name of ['upload-binary-file', 'read-binary-file', 'create-binary-file']) {
+      const d = (await toolsList()).find(t => t.name === name).description;
+      assert.ok(!d.includes('/plugin marketplace add'), name);
+      assert.ok(!d.includes('Upload plugin'), name);
+    }
+  });
+});
 
 describe('ping', () => {
   it('answers with an empty result', async () => {

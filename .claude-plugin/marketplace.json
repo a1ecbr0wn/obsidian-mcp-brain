@@ -4,13 +4,13 @@
     "name": "a1ecbr0wn"
   },
   "metadata": {
-    "description": "Agent skills for the obsidian-mcp-brain MCP server"
+    "description": "Agent skills and agents for the obsidian-mcp-brain MCP server"
   },
   "plugins": [
     {
       "name": "obsidian-mcp-brain",
       "source": "./",
-      "description": "Agent skills for the obsidian-mcp-brain MCP server: read PDFs and other binary files from a vault, and upload local files to it."
+      "description": "Agent skills and agents for the obsidian-mcp-brain MCP server: read PDFs and other binary files from a vault, and upload local files to it."
     }
   ]
 }

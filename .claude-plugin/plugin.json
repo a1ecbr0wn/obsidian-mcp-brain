@@ -1,7 +1,7 @@
 {
   "name": "obsidian-mcp-brain",
   "version": "1.3.0",
-  "description": "Agent skills for working with an Obsidian vault through the obsidian-mcp-brain MCP server: reading PDFs and other binary files, and uploading local files.",
+  "description": "Agent skills and agents for working with an Obsidian vault through the obsidian-mcp-brain MCP server: reading PDFs and other binary files, and uploading local files.",
   "author": {
     "name": "a1ecbr0wn"
   },

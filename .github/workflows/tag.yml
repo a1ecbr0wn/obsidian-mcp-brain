@@ -69,11 +69,20 @@ jobs:
             grep -qF "\"version\": \"${PKG_VERSION}\"" "$f" || { echo "::error::failed to bump version in $f"; exit 1; }
           done
 
+      - name: Bump the skills' metadata.version
+        env:
+          PKG_VERSION: ${{ env.pkg_version }}
+        run: |
+          for f in skills/*/SKILL.md; do
+            sed -i "0,/^  version: .*/s//  version: \"${PKG_VERSION}\"/" "$f"
+            grep -qF "  version: \"${PKG_VERSION}\"" "$f" || { echo "::error::failed to bump version in $f"; exit 1; }
+          done
+
       - name: Add, commit, tag, push
         env:
           TAG: ${{ env.tag }}
         run: |
-          git add obsidian-mcp-brain/package.json package.json .claude-plugin/plugin.json
+          git add obsidian-mcp-brain/package.json package.json .claude-plugin/plugin.json skills/*/SKILL.md
           git commit -S -m "Release ${TAG}"
           git push
           git tag "${TAG}" -s -m "Release ${TAG}"
