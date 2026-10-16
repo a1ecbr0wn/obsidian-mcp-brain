@@ -50,12 +50,13 @@ export class UploadSlots {
 
   /**
    * Reserves a slot and returns its token.
-   * @param {{vault: string, relPath: string, size: number, sha256: string, address: string}} info
+   * @param {{vault: string, relPath: string, size: number, sha256: string, address: string, user?: string}} info
+   *   `user` is who reserved the slot, kept so the upload that fills it can be audited.
    * @returns {{token: string, expiresAt: number}}
    * @throws {Error} with code TOO_MANY_SLOTS when the outstanding-slot cap is reached, or
    *   NO_ADDRESS when address is empty (an empty address would match any other empty one).
    */
-  create({ vault, relPath, size, sha256, address }) {
+  create({ vault, relPath, size, sha256, address, user }) {
     if (!address) {
       const err = new Error('The caller address could not be determined');
       err.code = 'NO_ADDRESS';
@@ -69,7 +70,7 @@ export class UploadSlots {
     }
     const token = crypto.randomBytes(32).toString('base64url');
     const expiresAt = this.#now() + this.#ttlMs;
-    this.#slots.set(hashToken(token), { vault, relPath, size, sha256: sha256.toLowerCase(), address, expiresAt });
+    this.#slots.set(hashToken(token), { vault, relPath, size, sha256: sha256.toLowerCase(), address, user, expiresAt });
     return { token, expiresAt };
   }
 
@@ -197,6 +198,27 @@ export function callerAddress(req, trusted) {
     if (!trusted.check(entries[i])) return entries[i];
   }
   return entries[0];
+}
+
+/**
+ * Whether the caller of an upload is the caller that reserved it. By default the addresses must
+ * be the same. With a `prefix` below 32, two IPv4 addresses also match when they share that many
+ * leading bits (a client's tool call and its upload can leave from neighbouring hosts of one
+ * network); IPv6 must still match exactly. An empty or unrecognised address matches nothing.
+ * @param {string} a - An address, in any spelling.
+ * @param {string} b - An address, in any spelling.
+ * @param {number} [prefix=32] - Leading bits of an IPv4 address that must agree, 1 to 32.
+ * @returns {boolean}
+ */
+export function addressesMatch(a, b, prefix = 32) {
+  a = normalizeAddress(a);
+  b = normalizeAddress(b);
+  if (!net.isIP(a) || !net.isIP(b)) return false;
+  if (a === b) return true;
+  if (!Number.isInteger(prefix) || prefix < 1 || prefix >= 32 || !net.isIPv4(a) || !net.isIPv4(b)) return false;
+  const toNumber = ip => ip.split('.').reduce((n, octet) => n * 256 + Number(octet), 0);
+  const blockSize = 2 ** (32 - prefix);
+  return Math.floor(toNumber(a) / blockSize) === Math.floor(toNumber(b) / blockSize);
 }
 
 // ── Staging folder ──────────────────────────────────────────────────────────

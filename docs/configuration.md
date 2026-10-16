@@ -34,6 +34,8 @@ except `CONFIG_PATH`, which says where to find it.
     "uploadMaxBytes": 52428800,
     "uploadTtlSeconds": 300,
     "uploadStallSeconds": 30,
+    "uploadNetworkPrefix": 32,
+    "logFile": "/var/log/obsidian-mcp.log",
     "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
     "trustedProxies": ["127.0.0.1", "::1"],
     "vaults": {
@@ -67,7 +69,9 @@ except `CONFIG_PATH`, which says where to find it.
 | `uploadTtlSeconds`       | No       | `300`                                                              | How long an upload URL lasts, in seconds                                                                                                                                                                      |
 | `uploadStallSeconds`     | No       | `30`                                                               | How long an upload may send nothing before it is cut off, in seconds. Raise it if clients on very slow links are cut off                                                                                      |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing                                                               |
+| `uploadNetworkPrefix`    | No       | `32`                                                               | Leading bits of an IPv4 address that an upload must share with the call that reserved it, 16 to 32. 32 is the same address. See below                                                                         |
 | `trustedProxies`         | No       | `[]`                                                               | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies)                                                                             |
+| `logFile`                | No       | `none`                                                             | Absolute path of a file to append the log to, as well as the console. Includes the audit log. See [Logging](#logging-and-the-audit-log)                                                                       |
 | `auth`                   | No       | none                                                               | Turns on authentication: the server accepts only signed tokens from an external OAuth service, for the users you list. Without it the server is unauthenticated, as before. See [below](#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which
@@ -188,7 +192,7 @@ symbolic links. See [Security](security).
 ### Uploads and reverse proxies
 
 [`upload-binary-file`](tools#upload-binary-file) hands out one-time upload URLs.
-Three settings shape how they behave.
+Several settings shape how they behave.
 
 **`mcpBaseUrl`** is the address clients use to reach the server: scheme, host
 and port, with no path and no trailing slash, such as `https://server:4001`.
@@ -212,6 +216,25 @@ answers `404` when another path is set. The protected resource metadata names
 [`audience`](#authentication-auth) is, because clients compare it with the
 address they connected to. A proxy or tunnel that adds a path in front of the
 server still has to remove it before the request reaches the server.
+
+**`uploadNetworkPrefix`** is how much of an IPv4 address must agree between
+the call that reserved an upload URL and the upload that uses it: a whole number
+of leading bits from 16 to 32. The default, 32, means the whole address, so the
+upload must come from the same address as the call. A smaller number accepts any
+address that shares that many leading bits. For example, with `21`,
+`160.79.106.186` and `160.79.109.20` match, because they are both in
+`160.79.104.0/21`, and `160.79.112.20` does not. IPv6 addresses always have to
+match exactly. Numbers below 16 are refused so that the setting can't be made
+wide enough to defeat the check.
+
+Set it for a client whose tool call and upload leave from different hosts of one
+network, such as Claude Desktop chat or claude.ai, where the call comes from the
+vendor's cloud and `curl` runs in a sandbox. Use the smallest network that
+covers the client: any host in it can use a leaked URL during its lifetime. The
+URL is still one-time, short-lived and checked against the declared size and
+hash. The server's log says which two addresses a refused upload compared. Behind
+a reverse proxy, set `trustedProxies` too, so the address that is compared is
+the caller's and not the proxy's.
 
 **`uploadTempDir`** is where a file is held while it is being received, before
 it has been checked. It defaults to an `obsidian-mcp-uploads-<user id>` folder
@@ -279,6 +302,92 @@ is refused.
 The address check is a second line of defence. Callers behind the same NAT share
 an address, so the real protection is the random token, which works once,
 briefly, for one destination. See [Security](security#upload-binary-file).
+
+### Logging and the audit log
+
+The server writes its log to the console: standard output, and standard error
+for errors. A service manager such as systemd keeps it, and `journalctl` shows
+it.
+
+**`logFile`** also appends every log line to a file. Set it to an absolute path
+in a folder that exists. The file is created readable by its owner only, and an
+existing file that others can read is made owner-only, with a note in the log.
+The server stops at startup if it can't open the file, so an audit log is never
+silently missing. Nothing is logged to the file that is not also on the
+console. The server doesn't rotate the file; use `logrotate`, which can either
+copy and truncate the file or move it and signal the server:
+
+```text
+/var/log/obsidian-mcp.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    postrotate
+        systemctl kill --signal=HUP obsidian-mcp.service
+    endscript
+}
+```
+
+On `SIGHUP` the server closes the file and opens the path again, so a moved file
+is replaced by a new one. With `copytruncate` instead of `postrotate` no signal
+is needed, because the file is opened for appending.
+
+On `SIGTERM` and `SIGINT` the server logs a `stop` event and exits with
+status 0. With `logFile` set the server also takes `SIGHUP` as the signal to
+reopen the file, so a hangup from a terminal no longer ends it.
+
+The file is written synchronously, a line at a time, so a disk that stalls
+(a network mount, for example) stalls the server too. A write that fails is
+reported once on standard error and the line is lost; the console still has it.
+
+**The audit log** is the lines that start `AUDIT` after the timestamp, in the
+same stream, so `grep AUDIT` separates them:
+
+```text
+2026-10-16T18:20:11.456Z AUDIT event=login user=alec@example.com addr=203.0.113.7 host=brain.example.com sid=1f3c9a2e role=full
+2026-10-16T18:20:12.002Z AUDIT event=tool user=alec@example.com addr=203.0.113.7 host=brain.example.com sid=1f3c9a2e tool=read-note vault=knowledge filename=todo.md
+2026-10-16T18:20:12.010Z AUDIT event=tool-result user=alec@example.com addr=203.0.113.7 host=brain.example.com sid=1f3c9a2e tool=read-note vault=knowledge filename=todo.md outcome=ok duration=8
+```
+
+Every line has `event=<name>` first and then `key=value` pairs. A value
+contains no spaces, only printable ASCII, and at most 100 characters, so it
+can't add a field or a line. The events are:
+
+| Event | When | Fields besides `user`, `addr`, `host` and `sid` |
+| --- | --- | --- |
+| `start` | The server starts listening | `version`, `listen`, `auth` (`on` or `off`), `logfile` (`yes` or `no`) |
+| `stop` | The server is stopped with `SIGTERM` or `SIGINT` | `signal` |
+| `login` | A client opens a session | `role` (`full` or `readonly`), with authentication on |
+| `login-refused` | A token is missing or refused | `reason`; `user` when the token names one |
+| `session-refused` | A session is used by another user | `reason` |
+| `tool` | Every tool call, including reads | `tool`, and the arguments listed below |
+| `tool-result` | The call has ended | `tool`, the same arguments, `outcome` (`ok`, `error`, or `aborted` when the client went away before the answer), `duration` in milliseconds |
+| `denied` | The call is refused by the read-only role, `denyPaths` or `denyBinaryPaths`, in place of `tool-result` | `tool`, the same arguments, `reason` |
+| `upload-reserved` | `upload-binary-file` reserves a URL | `vault`, `path`, `size` |
+| `upload-placed` | An upload has been checked and placed | `vault`, `path`, `bytes`, `sha256`; `user` is who reserved it |
+
+`user` is the signed-in user, or `-` when authentication is off. `addr` is the
+caller's address, worked out the way
+[`trustedProxies`](#uploads-and-reverse-proxies) says. `host` is the `Host`
+header, or, for a connection from a trusted proxy, the last entry of
+`X-Forwarded-Host`. `sid` is the first part of the session id.
+
+A tool call logs only these arguments: `vault`, `folder`, `filename`,
+`newFolder`, `newFilename`, `path`, `tags`, `oldTag`, `newTag`, `field`,
+`heading`, `target`, `url` (scheme, host and path only: no credentials, query
+string or fragment) and `permanent`, plus the
+`size` of an upload. The audit log never holds a token, an upload URL, the text
+of a note, a search query or any other argument, and none of them is logged
+anywhere else. An upload refused for any reason is logged as `upload refused
+(<status>) from <address> host=<host>: <reason>`, and a request for an upload
+URL is logged with its address and host, with the token replaced by
+`<redacted>`.
+
+An unexpected error is logged with its stack, which takes several lines.
+
+The log names users and paths, so keep the file and its backups where only the
+people who should see them can.
 
 ### Authentication (`auth`)
 

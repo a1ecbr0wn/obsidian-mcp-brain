@@ -57,7 +57,7 @@ proxy's job.
 | Symptom | Likely cause |
 | --- | --- |
 | Calls and small files work, larger uploads fail with a `413` (an HTML page from nginx, an empty body from Caddy) | The proxy's body-size limit. For nginx, `client_max_body_size`; for Caddy, a `request_body` limit |
-| The upload is refused with `403` | The upload came from a different address from the one that made the `upload-binary-file` call, for example an agent whose shell runs on another machine or in a vendor's cloud, or one that reaches the server by a different route from its MCP connection. The URL is good only from the caller's own address |
+| The upload is refused with `403` | The upload came from a different address from the one that made the `upload-binary-file` call, for example an agent whose shell runs on another machine or in a vendor's cloud, or one that reaches the server by a different route from its MCP connection. `uploadNetworkPrefix` accepts the same network. The server's log says which two addresses it compared |
 | Nothing is refused, but the address check does not stop anything | `trustedProxies` does not list the address the proxy connects from, so every caller looks like the proxy and the check always passes. The server's log says when a request carried `X-Forwarded-For` from an address it does not trust |
 | The URL in the `upload-binary-file` result has the wrong host or scheme | `mcpBaseUrl` is not the address clients use. Change it and restart the server |
 | A refused upload takes as long as the whole file to report | The proxy buffers the request body. Turn it off (nginx: `proxy_request_buffering off`) |

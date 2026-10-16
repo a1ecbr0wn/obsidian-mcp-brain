@@ -283,7 +283,10 @@ The rules:
   `Content-Length` or a hash mismatch all kill it just as a good upload does. If
   anything goes wrong, call the tool again for a new URL.
 - **Same address.** The upload must come from the same network address as the
-  call that reserved it. Behind a reverse proxy this needs `trustedProxies`; see
+  call that reserved it, or, with
+  [`uploadNetworkPrefix`](configuration#uploads-and-reverse-proxies) set below
+  32, from an IPv4 address in the same network. Behind a reverse proxy this
+  needs `trustedProxies`; see
   [Configuration](configuration#uploads-and-reverse-proxies).
 - **Short-lived.** A URL lasts `uploadTtlSeconds` (300 by default).
 - **The destination.** The destination must not already exist, and it must pass
@@ -308,7 +311,7 @@ What `curl` receives:
 | --- | --- |
 | `201` | The file was received, matched, and placed. The body is `{"path", "bytes", "sha256"}` |
 | `400` | The `Content-Length` was smaller than the declared size, or the destination is a note (`.md`) and the file is not valid UTF-8 |
-| `403` | The request came from a different address, carried an `Origin` header, or the destination is denied |
+| `403` | The request came from a different address (or network), carried an `Origin` header, or the destination is denied |
 | `404` | The URL is unknown, already used or expired (the same answer in every case) |
 | `405` | The request was not a `PUT` |
 | `409` | The destination appeared after the URL was reserved |
@@ -324,7 +327,16 @@ readable.
 This needs an agent with a shell on a machine that can reach the server's
 address, such as Claude Code. A client without a shell, or whose network can't
 reach the server, can't use it, and falls back to `create-binary-file` for small
-files.
+files. A client whose tool call and upload leave from different addresses, such
+as Claude Desktop chat or claude.ai, is refused with `403` unless
+`uploadNetworkPrefix` is set.
+
+The server writes one line to its log for every refused upload, with the
+status, the caller's address and the reason, for example `upload refused (403)
+from 203.0.113.7: the caller address 203.0.113.7 is not the same as the address
+that reserved the URL, 198.51.100.2`. With `uploadNetworkPrefix` set, it says
+"is not in the same /21 network as" (with the number set) instead. The answer
+to the client is deliberately shorter. The URL is never logged.
 
 The repository includes an agent skill,
 [`skills/upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file),

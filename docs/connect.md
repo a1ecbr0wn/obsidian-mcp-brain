@@ -136,9 +136,15 @@ needs an agent that can run commands on a machine that can reach the server's
 address (`mcpBaseUrl`).
 
 - **Claude Code** has a shell, so it can use it directly.
-- **Clients without a shell**, such as Claude Desktop chat, can't run `curl`
-  themselves, and clients that call the server from the vendor's cloud need the
-  server to be reachable from there. Neither was tested. They can still use
+- **Claude Desktop chat and claude.ai** run `curl` in a sandbox, but make the
+  tool call from the vendor's cloud. The two requests leave from different
+  hosts, so the server refuses the upload with `403` and logs the reason, unless
+  [`uploadNetworkPrefix`](configuration#uploads-and-reverse-proxies) is set
+  low enough to cover both hosts. A sandbox that restricts outbound network
+  access also needs the server's host in its allowed domains (in Claude
+  Desktop: Settings > Capabilities > Domain Allowlist), or its proxy answers
+  `403` before the request reaches the server.
+- **Clients with no shell** can't run `curl` at all and use
   `create-binary-file` for small files.
 
 ### When the server has authentication on

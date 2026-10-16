@@ -429,17 +429,42 @@ describe('resource server mode', () => {
       for (const t of tokens) await request(srv, { body: INIT, token: t });
       await request(srv, { body: INIT });
       await request(srv, { body: INIT, token: 'not.a.token' });
-      await until(() => srv.log().includes('auth refused: malformed'));
+      await until(() => srv.log().includes('reason=malformed'));
       const log = srv.log();
-      assert.ok(log.includes('auth refused: no token'), log);
-      assert.ok(log.includes('auth refused: user not allowed user=stranger@example.test'), log);
-      assert.ok(log.includes('auth refused: expired user=owner@example.test'), log);
-      assert.ok(log.includes('auth refused: wrong audience'), log);
-      assert.ok(log.includes('auth refused: malformed'), log);
+      const refused = log.split('\n').filter(l => l.includes('AUDIT event=login-refused'));
+      const has = (...parts) => refused.some(l => parts.every(p => l.includes(p)));
+      assert.ok(has('reason=no_token', 'user=-'), log);
+      assert.ok(has('reason=user_not_allowed', 'user=stranger@example.test'), log);
+      assert.ok(has('reason=expired', 'user=owner@example.test'), log);
+      assert.ok(has('reason=wrong_audience'), log);
+      assert.ok(has('reason=malformed'), log);
+      const unplaced = refused.filter(l => !(l.includes('addr=127.0.0.1') && /host=[^ -]/.test(l)));
+      assert.deepEqual(unplaced, [], 'each refusal names the address and host');
       for (const t of tokens) {
         assert.ok(!log.includes(t), 'a token appeared in the log');
         assert.ok(!log.includes(t.split('.')[2]), 'a signature appeared in the log');
       }
+    });
+
+    it('logs a login with the user and role where the token was accepted, then the user on each tool call', async () => {
+      const sid = await session(srv, tok(OWNER));
+      await until(() => srv.log().includes(`event=login user=${OWNER}`) && srv.log().includes(`sid=${sid.slice(0, 8)}`));
+      const login = srv.log().split('\n').find(l => l.includes('event=login ') && l.includes(`sid=${sid.slice(0, 8)}`));
+      assert.ok(login.includes(`user=${OWNER}`) && login.includes('role=full'), login);
+      await call(srv, tok(OWNER), sid, 'list-vaults', {});
+      await until(() => srv.log().split('\n').some(l => l.includes('event=tool-result') && l.includes(`user=${OWNER}`) && l.includes('tool=list-vaults')));
+    });
+
+    it('logs a read-only user\'s refused call as denied, with their name', async () => {
+      const sid = await session(srv, tok(VIEWER));
+      await call(srv, tok(VIEWER), sid, 'create-note', { filename: 'no.md', content: 'x' });
+      await until(() => srv.log().split('\n').some(l => l.includes('event=denied') && l.includes(`user=${VIEWER}`) && l.includes('reason=read-only_user')));
+    });
+
+    it('logs a session used by another user as refused', async () => {
+      const sid = await session(srv, tok(OWNER));
+      await request(srv, { method: 'GET', sid, token: tok(VIEWER) });
+      await until(() => srv.log().split('\n').some(l => l.includes('event=session-refused') && l.includes(`user=${VIEWER}`)));
     });
 
     it('says at start-up that authentication is on', () => {
@@ -465,7 +490,7 @@ describe('resource server mode: the issuer cannot be reached', () => {
     const r = await request(srv, { body: INIT, token: iss.sign(iss.claims({ email: OWNER })) });
     assert.equal(r.status, 503);
     assert.equal(r.headers['www-authenticate'], undefined);
-    assert.ok(srv.log().includes('auth refused: keys unavailable'));
+    await until(() => srv.log().includes('reason=keys_unavailable'));
   });
 });
 
