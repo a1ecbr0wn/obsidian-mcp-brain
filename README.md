@@ -500,8 +500,11 @@ size and hash and places the file only if both match; otherwise it discards it.
   whatever that request is. If anything goes wrong, request a new URL.
 - It works only from the **same address** as the call that reserved it, and lasts
   `uploadTtlSeconds` (300 by default).
-- The `filename` must not end in `.md`, the destination must not exist, and `denyPaths`
-  is checked when the URL is reserved and again when the file is placed.
+- The destination must not exist, and `denyPaths` is checked when the URL is reserved and
+  again when the file is placed.
+- A note (`.md`) can be uploaded too, for a large or generated file that is already on disk.
+  It is placed only if it is valid UTF-8; otherwise the upload is refused with `400` and
+  nothing is written. Use `create-note` for text the agent has written itself.
 - At most `uploadMaxBytes` (50 MiB by default), 16 pending URLs and 4 uploads at once.
 - The file is held in `uploadTempDir` until verified, never inside a vault. At startup the
   server refuses a staging folder owned by another user, and tightens one that others can
@@ -640,7 +643,7 @@ can't show a file.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
-| `upload-binary-file` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |

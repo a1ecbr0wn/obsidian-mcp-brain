@@ -24,7 +24,7 @@ vault the call applies to. Use `list-vaults` to see the names.
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (for example an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client sends only a URL |
-| `upload-binary-file` | Reserve a one-time upload URL for a binary file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
 | `read-binary-file` | Return an existing binary file, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
@@ -257,11 +257,15 @@ The rules:
   that reserved it. Behind a reverse proxy this needs `trustedProxies`; see
   [Configuration](configuration#uploads-and-reverse-proxies).
 - **Short-lived.** A URL lasts `uploadTtlSeconds` (300 by default).
-- **The destination.** The `filename` must not end in `.md` (use `create-note`), the
-  destination must not already exist, and it must pass the
+- **The destination.** The destination must not already exist, and it must pass the
   [`denyPaths`](configuration#path-deny-list) check, both when the URL is reserved and
   again when the file is placed, after following any symbolic links, so a link that
   leads out of the vault, or into a denied folder, is refused. Missing folders are created.
+- **Notes.** A `.md` destination is accepted. Use this for a large or generated note that
+  is already on disk, such as an Excalidraw drawing, so that its text doesn't pass through
+  the model; use `create-note` for text the agent has written itself. A note is placed only
+  if the received file is valid UTF-8, otherwise it is discarded with a `400` that says why.
+  Everything else about the upload is the same as for any other file.
 - **Limits.** The declared `size` can be at most `uploadMaxBytes` (50 MiB by default).
   At most 16 URLs can be pending and 4 uploads in progress at once.
 - **Nothing is left behind.** A file that is rejected, interrupted or stalled leaves
@@ -272,7 +276,7 @@ What `curl` receives:
 | Code | Meaning |
 | --- | --- |
 | `201` | The file was received, matched, and placed. The body is `{"path", "bytes", "sha256"}` |
-| `400` | The `Content-Length` was smaller than the declared size |
+| `400` | The `Content-Length` was smaller than the declared size, or the destination is a note (`.md`) and the file is not valid UTF-8 |
 | `403` | The request came from a different address, carried an `Origin` header, or the destination is denied |
 | `404` | The URL is unknown, already used or expired (the same answer in every case) |
 | `405` | The request was not a `PUT` |
