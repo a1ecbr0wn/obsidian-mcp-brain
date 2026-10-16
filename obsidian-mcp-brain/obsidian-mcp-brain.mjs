@@ -30,6 +30,7 @@ import {
   checkStagingDir,
   checkStagingDirOwner,
   defaultUploadTempDir,
+  isValidUtf8File,
   resolveDestination,
   sweepStaging,
   stagingFileName,
@@ -557,11 +558,12 @@ const TOOLS = [
   },
   {
     name: 'upload-binary-file',
-    description: 'Reserve a one-time URL for uploading a binary file (a PDF, an image) to the vault without sending its contents through the model. '
+    description: 'Reserve a one-time URL for uploading a file (a PDF, an image) to the vault without sending its contents through the model. '
       + 'Give the destination, the file\'s size in bytes and its SHA-256, both computed with a tool such as `wc -c` and `sha256sum`, never by hand. '
       + 'The result is a URL and a ready-to-run command: `curl --fail-with-body -sS -T <file> <url>`. '
       + 'The URL works for ONE request only, for a few minutes, and only from the machine that called this tool; if the upload fails for any reason, call this tool again for a new URL. '
       + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
+      + 'A note (.md) can be uploaded too, if it is valid UTF-8: use this for a large or generated note that is already on disk, and create-note for text you have written yourself. '
       + 'Fails if the destination already exists; list-notes with extension shows what is there. '
       + 'If the upload-binary-file skill is installed, use its upload-binary-file.sh script, which does the hashing and the curl call for you.',
     inputSchema: {
@@ -1087,6 +1089,8 @@ async function placeUpload(vault, relPath, stagePath, sha256) {
 /**
  * Handles every request to /up/...: the one-time upload URL. The order matters: the slot is
  * used up first, so whatever the request turns out to be, the URL is dead afterwards. The
+ * received file must match the declared size and hash, and a note (.md) must also be valid
+ * UTF-8; any failure is answered (400 or 422) before the file is placed in the vault. The
  * staging file is always removed before any answer (success or error) is sent to the client.
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
@@ -1124,6 +1128,10 @@ async function handleUpload(req, res, url) {
     if (received !== slot.size) return await answer(400, { error: `received ${received} bytes, expected ${slot.size}` });
     if (digest !== slot.sha256) {
       return await answer(422, { error: 'sha256 does not match the declared hash', expected: slot.sha256, actual: digest });
+    }
+    // A note is text that the note tools parse, so only valid UTF-8 is accepted for one.
+    if (isNoteFile(slot.relPath) && !(await isValidUtf8File(stagePath))) {
+      return await answer(400, { error: 'a note must be valid UTF-8 text' });
     }
     const outcome = await placeUpload(vault, slot.relPath, stagePath, slot.sha256);
     if (outcome === 'denied' || outcome === 'outside') return await answer(403, { error: 'Access denied' });
@@ -1803,7 +1811,6 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     const { size, sha256 } = args;
     if (!Number.isInteger(size) || size < 1) return toolErr(res, sid, msgId, 'size must be a positive whole number of bytes');

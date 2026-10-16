@@ -212,10 +212,10 @@ describe('upload-binary-file and PUT /up/<token>', () => {
       assert.deepEqual(await stagingFiles(srv), []);
     });
 
-    it('rejects a .md filename', async () => {
-      const { result, text } = await reserve(srv, { filename: 'note.md', content });
-      assert.ok(result.isError);
-      assert.ok(text.includes('.md'), text);
+    it('accepts a .md filename', async () => {
+      const { result, text, url } = await reserve(srv, { filename: 'note.md', content });
+      assert.ok(!result.isError, text);
+      assert.ok(url, text);
     });
 
     it('rejects a destination under denyPaths', async () => {
@@ -1140,5 +1140,162 @@ describe('upload addresses when the proxy header is malformed', () => {
     const { url } = await reserve(srv, { filename: 'v6.bin', content, headers: { 'X-Forwarded-For': '2001:db8:0:0::1' } });
     const r = await request(url, { body: content, headers: { 'X-Forwarded-For': '2001:0db8::0001' } });
     assert.equal(r.status, 201, r.text);
+  });
+});
+
+// ── a note (.md) destination: issue #55 ─────────────────────────────────────
+
+describe('upload-binary-file with a note (.md) destination', () => {
+  let srv;
+  before(async () => { srv = await startServer(); });
+  after(async () => { await srv.stop(); });
+
+  const noteText = '---\ntitle: Drawing\ntags: [type/diagram]\n---\n\n# Café ☕ 日本語 😀\n\nText with a [[link]].\n';
+  const noteBytes = Buffer.from(noteText, 'utf8');
+
+  /** Reserves and uploads in one step; returns the reservation and the PUT answer. */
+  async function uploadNote(filename, bytes, { folder, putBody } = {}) {
+    const res = await reserve(srv, { filename, folder, content: bytes });
+    assert.ok(!res.result.isError, res.text);
+    const put = await request(res.url, { body: putBody ?? bytes });
+    return { ...res, put };
+  }
+
+  it('creates the note with the exact bytes, and read-note returns its text unchanged', async () => {
+    const { url, put } = await uploadNote('good.md', noteBytes);
+    assert.equal(put.status, 201, put.text);
+    assert.deepEqual(put.json, { path: 'good.md', bytes: noteBytes.length, sha256: sha256(noteBytes) });
+    assert.deepEqual(await fs.readFile(path.join(srv.vaultDir, 'good.md')), noteBytes);
+    const read = await callTool(srv, 'read-note', { filename: 'good.md' });
+    assert.ok(!read.isError, JSON.stringify(read));
+    assert.equal(read.content[0].text, noteText);
+    assert.ok(await waitForEmptyStaging(srv), 'the staging file should be removed after a good upload');
+    const again = await request(url, { body: noteBytes });
+    assert.equal(again.status, 404, 'the URL is used up after a good upload too');
+  });
+
+  it('creates missing folders for a note, as it does for a binary file', async () => {
+    const { put } = await uploadNote('deep.md', noteBytes, { folder: 'drawings/2026' });
+    assert.equal(put.status, 201, put.text);
+    assert.deepEqual(await fs.readFile(path.join(srv.vaultDir, 'drawings', '2026', 'deep.md')), noteBytes);
+  });
+
+  it('treats an upper-case .MD extension as a note', async () => {
+    const bad = Buffer.from([0x66, 0xff, 0xfe]);
+    const { put } = await uploadNote('UPPER.MD', bad);
+    assert.equal(put.status, 400, put.text);
+    assert.equal(await exists(path.join(srv.vaultDir, 'UPPER.MD')), false);
+  });
+
+  it('keeps a leading byte-order mark and a NUL byte unchanged (both are valid UTF-8)', async () => {
+    const odd = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('text\0more', 'utf8')]);
+    const { put } = await uploadNote('bom.md', odd);
+    assert.equal(put.status, 201, put.text);
+    assert.deepEqual(await fs.readFile(path.join(srv.vaultDir, 'bom.md')), odd);
+    const read = await callTool(srv, 'read-note', { filename: 'bom.md' });
+    assert.ok(!read.isError, JSON.stringify(read));
+    assert.equal(read.content[0].text, odd.toString('utf8'));
+  });
+
+  it('accepts a note of several chunks with multi-byte characters throughout', async () => {
+    const big = Buffer.from('a' + 'é'.repeat(30000), 'utf8');
+    const { put } = await uploadNote('big.md', big);
+    assert.equal(put.status, 201, put.text);
+    assert.deepEqual(await fs.readFile(path.join(srv.vaultDir, 'big.md')), big);
+  });
+
+  for (const [label, bytes] of [
+    ['a byte that is never valid', Buffer.from([0x66, 0xff, 0xfe, 0x6f])],
+    ['a multi-byte sequence cut off at the end', Buffer.concat([Buffer.from('ok '), Buffer.from([0xe2, 0x82])])],
+    ['an overlong encoding', Buffer.from([0xc0, 0xaf])],
+    ['a UTF-16 surrogate encoded as UTF-8', Buffer.from([0xed, 0xa0, 0x80])],
+    ['UTF-16 text with a byte-order mark', Buffer.from('\ufeffhello', 'utf16le')],
+  ]) {
+    it(`refuses a note that has ${label}: 400, nothing in the vault, nothing in staging`, async () => {
+      const name = `invalid-${crypto.randomBytes(4).toString('hex')}.md`;
+      const { url, put } = await uploadNote(name, bytes);
+      assert.equal(put.status, 400, put.text);
+      assert.match(put.json.error, /valid UTF-8/);
+      assert.match(put.json.error, /note/);
+      assert.equal(await exists(path.join(srv.vaultDir, name)), false);
+      assert.ok(await waitForEmptyStaging(srv), 'the staging file should be removed');
+      const again = await request(url, { body: bytes });
+      assert.equal(again.status, 404, 'the URL is used up whatever the outcome');
+    });
+  }
+
+  it('checks the hash before the encoding: a file that is both invalid UTF-8 and the wrong hash answers 422', async () => {
+    const declared = Buffer.from('good text, declared');
+    const sent = Buffer.concat([Buffer.from('bad '), Buffer.from([0xff, 0xfe]), Buffer.from('send')]);
+    assert.equal(declared.length > 0 && sent.length > 0, true);
+    const res = await reserve(srv, { filename: 'mismatch.md', content: declared, size: sent.length });
+    const put = await request(res.url, { body: sent });
+    assert.equal(put.status, 422, put.text);
+    assert.equal(await exists(path.join(srv.vaultDir, 'mismatch.md')), false);
+    assert.ok(await waitForEmptyStaging(srv));
+  });
+
+  it('does not check the encoding of a file that is not a note', async () => {
+    const bad = Buffer.from([0x66, 0xff, 0xfe, 0x6f]);
+    const res = await reserve(srv, { filename: 'binary.bin', content: bad });
+    const put = await request(res.url, { body: bad });
+    assert.equal(put.status, 201, put.text);
+  });
+
+  it('refuses to reserve a note that already exists', async () => {
+    await fs.writeFile(path.join(srv.vaultDir, 'taken.md'), 'x');
+    const { result, text } = await reserve(srv, { filename: 'taken.md', content: noteBytes });
+    assert.ok(result.isError);
+    assert.ok(text.includes('already exists'), text);
+  });
+
+  it('refuses a note that appeared between the reservation and the upload, and keeps the existing one', async () => {
+    const res = await reserve(srv, { filename: 'race.md', content: noteBytes });
+    await fs.writeFile(path.join(srv.vaultDir, 'race.md'), 'mine');
+    const put = await request(res.url, { body: noteBytes });
+    assert.equal(put.status, 409, put.text);
+    assert.equal(await fs.readFile(path.join(srv.vaultDir, 'race.md'), 'utf8'), 'mine');
+  });
+
+  it('applies denyPaths to a note destination', async () => {
+    const { result, text } = await reserve(srv, { filename: 'secret.md', folder: 'private', content: noteBytes });
+    assert.ok(result.isError);
+    assert.ok(text.includes('Access denied'), text);
+    assert.equal(await exists(path.join(srv.vaultDir, 'private')), false);
+  });
+
+  it('applies the size limit to a note', async () => {
+    const { result } = await reserve(srv, { filename: 'toolarge.md', content: noteBytes, size: 65537 });
+    assert.ok(result.isError);
+  });
+
+  it('refuses a note whose Content-Length differs from the declared size', async () => {
+    const res = await reserve(srv, { filename: 'short.md', content: noteBytes });
+    const put = await request(res.url, { body: noteBytes.subarray(0, 10), headers: { 'Content-Length': 10 } });
+    assert.equal(put.status, 400, put.text);
+    assert.equal(await exists(path.join(srv.vaultDir, 'short.md')), false);
+  });
+
+  it('leaves create-binary-file and fetch-binary-file refusing .md', async () => {
+    const created = await callTool(srv, 'create-binary-file', { filename: 'cbf.md', content: Buffer.from('hi').toString('base64') });
+    assert.ok(created.isError);
+    assert.ok(created.content[0].text.includes('Use create-note'), created.content[0].text);
+    const fetched = await callTool(srv, 'fetch-binary-file', { filename: 'fbf.md', url: 'http://127.0.0.1:9/x' });
+    assert.ok(fetched.isError);
+    assert.ok(fetched.content[0].text.includes('Use create-note'), fetched.content[0].text);
+    assert.equal(await exists(path.join(srv.vaultDir, 'cbf.md')), false);
+    assert.equal(await exists(path.join(srv.vaultDir, 'fbf.md')), false);
+  });
+
+  it('describes in the tool list that a note can be uploaded', async () => {
+    const init = await mcpPost(srv.port, {
+      jsonrpc: '2.0', id: '1', method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
+    });
+    const sid = init.headers['mcp-session-id'];
+    const list = await mcpPost(srv.port, { jsonrpc: '2.0', id: '2', method: 'tools/list' }, sid);
+    const tool = list.msgs[0].result.tools.find(t => t.name === 'upload-binary-file');
+    assert.match(tool.description, /note/i);
+    assert.match(tool.description, /create-note/);
   });
 });

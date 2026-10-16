@@ -1,7 +1,9 @@
 // Pure helpers for upload-binary-file: the one-time upload slots, working out who a caller is,
-// and the staging folder. Nothing here touches the HTTP server, so it is unit-testable.
+// the staging folder, checking a received file (its UTF-8 validity), and resolving a destination
+// inside the vault. Nothing here touches the HTTP server, so it is unit-testable.
 
 import crypto from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -306,4 +308,25 @@ export async function sweepStaging(dir) {
  */
 export function stagingFileName() {
   return `upload-${crypto.randomBytes(8).toString('hex')}.part`;
+}
+
+/**
+ * Whether a file is valid UTF-8. The file is read as a stream and decoded strictly, so a
+ * large file is never held in memory, and a character split across two reads is decoded
+ * correctly. A sequence cut off at the end of the file is invalid. A byte-order mark and a
+ * NUL byte are valid UTF-8, and an empty file is valid.
+ * @param {string} filePath - Absolute path of the file.
+ * @returns {Promise<boolean>} True if every byte belongs to a valid UTF-8 sequence.
+ * @throws {Error} If the file cannot be read.
+ */
+export async function isValidUtf8File(filePath) {
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  try {
+    for await (const chunk of createReadStream(filePath)) decoder.decode(chunk, { stream: true });
+    decoder.decode();
+    return true;
+  } catch (err) {
+    if (err.code === 'ERR_ENCODING_INVALID_ENCODED_DATA') return false;
+    throw err;
+  }
 }
