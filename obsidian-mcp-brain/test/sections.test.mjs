@@ -387,6 +387,13 @@ describe('line endings', () => {
     assert.equal(replaceSection('# A\r\nold\r\n# B', 'A', 'new'), '# A\r\nnew\r\n# B');
   });
 
+  test('replaceSection follows the first line break of a mixed note, not the presence of any CRLF', () => {
+    const mostlyLf = '# A\nold\nmore\r\n# B\nx\n';
+    assert.equal(replaceSection(mostlyLf, 'A', 'new1\nnew2'), '# A\nnew1\nnew2\n# B\nx\n');
+    const crlfFirst = '# A\r\nold\n# B\nx\n';
+    assert.equal(replaceSection(crlfFirst, 'A', 'new1\nnew2'), '# A\r\nnew1\r\nnew2\r\n# B\nx\n');
+  });
+
   test('deleteSection works on a CRLF note', () => {
     assert.equal(deleteSection('# A\r\nkeep\r\n# B\r\ngone\r\n# C\r\nkeep', 'B'), '# A\r\nkeep\r\n# C\r\nkeep');
   });

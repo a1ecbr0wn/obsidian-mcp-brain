@@ -1,7 +1,10 @@
 // Pure functions for reading, replacing and deleting heading sections, and for toggling
 // checkboxes, within note content. All functions take and return strings; no filesystem I/O.
 // Notes may use LF or CRLF line endings: lines are split on '\n', matched without a trailing
-// '\r', and written back with the note's own ending.
+// '\r', and written back with the note's own ending: the ending of its first line break (see
+// lineending.mjs).
+
+import { detectLineEnding } from './lineending.mjs';
 
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 const CHECKBOX_RE = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/;
@@ -156,7 +159,7 @@ function sectionText(lines, h, end) {
 export function replaceSection(content, heading, newBody, occurrence) {
   const match = locateHeading(content, heading, occurrence);
   const lines = content.split('\n');
-  const crlf = content.includes('\r\n');
+  const crlf = detectLineEnding(content) === '\r\n';
 
   const end = contentEndLine(lines, match);
   const body = newBody.replace(/(\r?\n)+$/, '');

@@ -2864,3 +2864,130 @@ describe('listenHost configuration', () => {
     });
   });
 });
+
+// ── line endings ──────────────────────────────────────────────────────────────
+
+describe('notes with CRLF line endings', () => {
+  const CRLF = '---\r\ntitle: T\r\ntags:\r\n  - a\r\n---\r\n# H\r\nbody #inline\r\n- [ ] task\r\n';
+  const noBareLf = text => !/(?<!\r)\n/.test(text);
+  const read = rel => fs.readFile(path.join(vaultDir, rel), 'utf8');
+  const edit = (rel, operation, content) => {
+    const i = rel.lastIndexOf('/');
+    return callTool('edit-note', { folder: rel.slice(0, i), filename: rel.slice(i + 1), operation, content });
+  };
+
+  it('edit-note append writes the new text in the note\'s ending', async () => {
+    await writeVaultNote('crlf/append.md', '# H\r\nold\r\n');
+    assert.ok(!(await edit('crlf/append.md', 'append', 'new1\nnew2\n')).isError);
+    assert.equal(await read('crlf/append.md'), '# H\r\nold\r\nnew1\r\nnew2\r\n');
+  });
+
+  it('edit-note prepend writes the new text in the note\'s ending', async () => {
+    await writeVaultNote('crlf/prepend.md', '# H\r\nold\r\n');
+    assert.ok(!(await edit('crlf/prepend.md', 'prepend', 'new\n\n')).isError);
+    assert.equal(await read('crlf/prepend.md'), 'new\r\n\r\n# H\r\nold\r\n');
+  });
+
+  it('edit-note append to an LF note turns CRLF text into LF', async () => {
+    await writeVaultNote('crlf/lf-append.md', '# H\nold\n');
+    await edit('crlf/lf-append.md', 'append', 'a\r\nb\r\n');
+    assert.equal(await read('crlf/lf-append.md'), '# H\nold\na\nb\n');
+  });
+
+  it('edit-note append to a mixed note uses its first line break', async () => {
+    await writeVaultNote('crlf/mixed-append.md', '# H\nold\r\n');
+    await edit('crlf/mixed-append.md', 'append', 'a\nb');
+    assert.equal(await read('crlf/mixed-append.md'), '# H\nold\r\na\nb');
+  });
+
+  it('edit-note append to an empty note writes the text as it was sent', async () => {
+    await writeVaultNote('crlf/empty-append.md', '');
+    await edit('crlf/empty-append.md', 'append', 'a\r\nb\n');
+    assert.equal(await read('crlf/empty-append.md'), 'a\r\nb\n');
+  });
+
+  it('edit-note append to a note with no line break writes the text as it was sent', async () => {
+    await writeVaultNote('crlf/one-line.md', 'x');
+    await edit('crlf/one-line.md', 'append', '\r\na\r\nb');
+    assert.equal(await read('crlf/one-line.md'), 'x\r\na\r\nb');
+    await writeVaultNote('crlf/one-line-lf.md', 'x');
+    await edit('crlf/one-line-lf.md', 'prepend', 'a\nb');
+    assert.equal(await read('crlf/one-line-lf.md'), 'a\nbx');
+  });
+
+  it('edit-note replace writes the text as it was sent', async () => {
+    await writeVaultNote('crlf/replace.md', '# H\r\nold\r\n');
+    await edit('crlf/replace.md', 'replace', 'a\nb\n');
+    assert.equal(await read('crlf/replace.md'), 'a\nb\n');
+  });
+
+  it('add-tags to the frontmatter keeps the note CRLF throughout', async () => {
+    await writeVaultNote('crlf/add-fm.md', CRLF);
+    assert.ok(!(await callTool('add-tags', { files: ['crlf/add-fm.md'], tags: ['b'], location: 'frontmatter' })).isError);
+    const out = await read('crlf/add-fm.md');
+    assert.ok(noBareLf(out), JSON.stringify(out));
+    assert.ok(out.includes('  - b\r\n---\r\n# H\r\n'), JSON.stringify(out));
+  });
+
+  it('add-tags to the content writes the tag line in the note\'s ending', async () => {
+    await writeVaultNote('crlf/add-content.md', CRLF);
+    assert.ok(!(await callTool('add-tags', { files: ['crlf/add-content.md'], tags: ['fresh'], location: 'content' })).isError);
+    const out = await read('crlf/add-content.md');
+    assert.ok(noBareLf(out), JSON.stringify(out));
+    assert.ok(out.endsWith('- [ ] task\r\n#fresh\r\n'), JSON.stringify(out));
+  });
+
+  it('add-tags to the content of an LF note adds no carriage return', async () => {
+    await writeVaultNote('crlf/add-content-lf.md', 'text\n');
+    await callTool('add-tags', { files: ['crlf/add-content-lf.md'], tags: ['fresh'], location: 'content' });
+    assert.equal(await read('crlf/add-content-lf.md'), 'text\n#fresh\n');
+  });
+
+  it('remove-tags and rename-tag keep the note CRLF throughout', async () => {
+    await writeVaultNote('crlf/remove.md', CRLF);
+    await callTool('remove-tags', { files: ['crlf/remove.md'], tags: ['a'], location: 'both' });
+    assert.ok(noBareLf(await read('crlf/remove.md')));
+    await writeVaultNote('crlf/rename.md', CRLF);
+    const r = await callTool('rename-tag', { oldTag: 'a', newTag: 'z' });
+    assert.ok(!r.isError, JSON.stringify(r));
+    const out = await read('crlf/rename.md');
+    assert.ok(noBareLf(out) && out.includes('  - z\r\n'), JSON.stringify(out));
+  });
+
+  it('set-frontmatter-field and remove-frontmatter-field keep the note CRLF throughout and round-trip', async () => {
+    await writeVaultNote('crlf/field.md', CRLF);
+    assert.ok(!(await callTool('set-frontmatter-field', { folder: 'crlf', filename: 'field.md', field: 'status', value: 'draft' })).isError);
+    const set = await read('crlf/field.md');
+    assert.ok(noBareLf(set) && set.includes('status: draft\r\n---\r\n'), JSON.stringify(set));
+    assert.ok(!(await callTool('remove-frontmatter-field', { folder: 'crlf', filename: 'field.md', field: 'status' })).isError);
+    assert.equal(await read('crlf/field.md'), CRLF);
+  });
+
+  it('edit-note replace-section and toggle-checkbox keep the note CRLF', async () => {
+    await writeVaultNote('crlf/section.md', CRLF);
+    await callTool('edit-note', { folder: 'crlf', filename: 'section.md', operation: 'replace-section', heading: 'H', content: 'one\ntwo' });
+    assert.ok(noBareLf(await read('crlf/section.md')));
+    await callTool('edit-note', { folder: 'crlf', filename: 'section.md', operation: 'toggle-checkbox', taskText: 'task' });
+    assert.ok(noBareLf(await read('crlf/section.md')));
+  });
+
+  it('search-vault returns a matching line without its carriage return', async () => {
+    await writeVaultNote('crlf/search.md', '# H\r\nneedle-crlf-search here\r\n');
+    const r = await callTool('search-vault', { query: 'needle-crlf-search', searchType: 'content' });
+    const text = r.content[0].text;
+    assert.ok(text.includes('crlf/search.md:2:'), text);
+    assert.ok(!text.includes('\r'), JSON.stringify(text));
+  });
+
+  it('move-note rewrites links in CRLF notes and find-backlinks finds them, leaving every line break as it was', async () => {
+    await writeVaultNote('crlf-move/target.md', '# Target\r\n');
+    await writeVaultNote('crlf-move/linker.md', 'See [[target]] and\r\n[[crlf-move/target|alias]]\r\nend\r\n');
+    const backlinks = await callTool('find-backlinks', { folder: 'crlf-move', filename: 'target.md' });
+    assert.ok(backlinks.content[0].text.includes('crlf-move/linker.md'), backlinks.content[0].text);
+    const moved = await callTool('move-note', { folder: 'crlf-move', filename: 'target.md', newFolder: 'crlf-moved', newFilename: 'renamed.md' });
+    assert.ok(!moved.isError, JSON.stringify(moved));
+    const out = await read('crlf-move/linker.md');
+    assert.ok(noBareLf(out), JSON.stringify(out));
+    assert.ok(out.includes('renamed'), JSON.stringify(out));
+  });
+});

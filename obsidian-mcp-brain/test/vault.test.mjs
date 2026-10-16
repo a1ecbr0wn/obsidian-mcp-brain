@@ -502,6 +502,13 @@ describe('searchContent', () => {
     assert.ok(paths.some(p => p.includes('sauce')), 'sauce.md found');
   });
 
+  it('returns the text of a line in a CRLF note without its carriage return, with the right line number', async () => {
+    await fs.writeFile(path.join(vault, 'crlf.md'), '# Win\r\nfirst\r\nneedle-crlf here\r\nlast\r\n');
+    const results = await searchContent(vault, 'needle-crlf', vault, []);
+    assert.deepEqual(results, [{ path: 'crlf.md', matches: [{ line: 3, text: 'needle-crlf here' }] }]);
+    await fs.rm(path.join(vault, 'crlf.md'));
+  });
+
   it('is case-insensitive', async () => {
     const results = await searchContent(vault, 'TOMATO', vault, []);
     assert.ok(results.length > 0);

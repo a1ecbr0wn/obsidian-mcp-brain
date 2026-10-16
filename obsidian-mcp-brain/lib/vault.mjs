@@ -342,7 +342,7 @@ export async function searchContent(vaultPath, query, scopeDir, denyPaths) {
       return;
     }
     const matches = content
-      .split('\n')
+      .split(/\r?\n/)
       .reduce((acc, text, i) => {
         if (text.toLowerCase().includes(lower)) acc.push({ line: i + 1, text });
         return acc;

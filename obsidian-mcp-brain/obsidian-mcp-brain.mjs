@@ -46,6 +46,7 @@ import { fetchToBuffer } from './lib/fetch.mjs';
 import { formatAudit, toolTarget, requestHost } from './lib/audit.mjs';
 import { openLogFile } from './lib/logfile.mjs';
 import { SessionTable } from './lib/sessions.mjs';
+import { detectLineEnding, toLineEnding } from './lib/lineending.mjs';
 import {
   isNoteFile,
   walkAllFiles as libWalkAllFiles,
@@ -557,7 +558,7 @@ const TOOLS = [
   },
   {
     name: 'edit-note',
-    description: 'Edit an existing note: append or prepend content, replace the whole note, replace or delete one section, or toggle a checkbox. A section is a heading line and everything under it up to the next heading of the same or higher level, so its sub-sections are part of it. replace-section keeps the heading line and replaces everything beneath it, sub-sections included, with content; it cannot change the heading itself, so to rename a heading use replace. delete-section removes the heading line and everything beneath it, sub-sections included. A line of only # characters is not a heading, so a section runs through it and both operations remove it with the rest. Use read-note with outline: true to see a note\'s headings.',
+    description: 'Edit an existing note: append or prepend content, replace the whole note, replace or delete one section, or toggle a checkbox. A section is a heading line and everything under it up to the next heading of the same or higher level, so its sub-sections are part of it. replace-section keeps the heading line and replaces everything beneath it, sub-sections included, with content; it cannot change the heading itself, so to rename a heading use replace. delete-section removes the heading line and everything beneath it, sub-sections included. A line of only # characters is not a heading, so a section runs through it and both operations remove it with the rest. append, prepend and replace-section write content in the note\'s own line ending (CRLF or LF). Use read-note with outline: true to see a note\'s headings.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1920,7 +1921,10 @@ async function route(req, res, url, sid) {
         await libWriteNote(absPath, updated);
       } else {
         const existing = await libReadNote(absPath);
-        const newContent = args.content ?? '';
+        // The new text takes the note's own line ending. A note with no line break has none to
+        // follow (an empty note, or a single line), so the text is written as it was sent.
+        const given = args.content ?? '';
+        const newContent = existing.includes('\n') ? toLineEnding(given, detectLineEnding(existing)) : given;
         const updated = op === 'append' ? existing + newContent : newContent + existing;
         await libWriteNote(absPath, updated);
       }
@@ -2307,7 +2311,8 @@ async function route(req, res, url, sid) {
             const body = content.trimEnd();
             const boundary = `(?![a-zA-Z0-9_/\\-])`;
             const toAdd = tags.filter(t => !new RegExp(`(?:^|[ \\t])#${escRe(t)}${boundary}`, 'm').test(body));
-            if (toAdd.length) content = body + '\n' + toAdd.map(t => `#${t}`).join(' ') + '\n';
+            const ending = detectLineEnding(original);
+            if (toAdd.length) content = body + ending + toAdd.map(t => `#${t}`).join(' ') + ending;
           } else {
             for (const tag of tags) {
               const esc = escRe(tag);

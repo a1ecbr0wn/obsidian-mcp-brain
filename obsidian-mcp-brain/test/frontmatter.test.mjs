@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseTags, setTags, addTags, removeTags, renameTag, serializeScalar, setFrontmatterField, removeFrontmatterField } from '../lib/frontmatter.mjs';
+import { detectLineEnding } from '../lib/lineending.mjs';
 
 const FM_INLINE = `---\ntags: [type/recipe, cooking]\ntitle: Pasta\n---\n# Pasta\n`;
 const FM_BLOCK = `---\ntags:\n  - type/recipe\n  - cooking\ntitle: Pasta\n---\n# Pasta\n`;
@@ -354,5 +355,102 @@ describe('removeFrontmatterField', () => {
   it('returns unchanged content when there is no frontmatter block', () => {
     const result = removeFrontmatterField(NO_FM, 'title');
     assert.equal(result, NO_FM);
+  });
+});
+
+// ── line endings ─────────────────────────────────────────────────────────────
+
+describe('the frontmatter writers keep a note\'s line endings', () => {
+  const BLOCK = ['---', 'title: T', 'tags:', '  - a', '---'];
+  const note = (fmEnd, bodyEnd) => `${BLOCK.join(fmEnd)}${fmEnd}${['# H', 'body #inline', '- [ ] task'].join(bodyEnd)}${bodyEnd}`;
+  const NOTES = {
+    'an LF note': note('\n', '\n'),
+    'a CRLF note': note('\r\n', '\r\n'),
+    'a mixed note, CRLF first': note('\r\n', '\n'),
+    'a mixed note, LF first': note('\n', '\r\n'),
+  };
+  const NO_FM_NOTES = {
+    'an LF note without frontmatter': '# H\nbody\n',
+    'a CRLF note without frontmatter': '# H\r\nbody\r\n',
+  };
+  const WRITES = {
+    'addTags': c => addTags(c, ['b']),
+    'removeTags': c => removeTags(c, ['a']),
+    'setTags': c => setTags(c, ['x', 'y']),
+    'renameTag': c => renameTag(c, 'a', 'z'),
+    'setFrontmatterField (new)': c => setFrontmatterField(c, 'status', 'draft'),
+    'setFrontmatterField (existing)': c => setFrontmatterField(c, 'title', 'N'),
+    'removeFrontmatterField': c => removeFrontmatterField(c, 'title'),
+  };
+
+  /** The frontmatter block of a result, up to and including the closing '---'. */
+  const blockOf = out => /^---\r?\n[\s\S]*?\r?\n---/.exec(out)?.[0] ?? '';
+  /** What follows the closing '---' line's own line break. */
+  const bodyOf = c => c.slice(/^---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/.exec(c)[0].length);
+
+  for (const [noteName, input] of Object.entries(NOTES)) {
+    describe(`on ${noteName}`, () => {
+      const ending = detectLineEnding(input);
+      const wrong = ending === '\r\n' ? /(?<!\r)\n/ : /\r\n/;
+      for (const [writeName, write] of Object.entries(WRITES)) {
+        it(`${writeName} writes the block in the note's ending and leaves the body as it was`, () => {
+          const out = write(input);
+          assert.notEqual(out, input, 'the write should change the note');
+          assert.ok(!wrong.test(blockOf(out)), `block has a mismatched line break: ${JSON.stringify(blockOf(out))}`);
+          assert.equal(bodyOf(out), bodyOf(input), 'the body must be byte for byte as it was');
+        });
+      }
+    });
+  }
+
+  for (const [noteName, input] of Object.entries(NO_FM_NOTES)) {
+    describe(`on ${noteName}`, () => {
+      const ending = detectLineEnding(input);
+      const wrong = ending === '\r\n' ? /(?<!\r)\n/ : /\r\n/;
+      for (const [writeName, write] of Object.entries({
+        'addTags': c => addTags(c, ['b']),
+        'setTags': c => setTags(c, ['b']),
+        'setFrontmatterField': c => setFrontmatterField(c, 'status', 'draft'),
+      })) {
+        it(`${writeName} adds a block in the note's ending above the unchanged text`, () => {
+          const out = write(input);
+          assert.ok(out.endsWith(input), 'the original text must follow the new block');
+          assert.ok(!wrong.test(out), `mismatched line break in ${JSON.stringify(out)}`);
+        });
+      }
+    });
+  }
+
+  it('an LF note never gets a carriage return, and a CRLF note never gets a bare line feed', () => {
+    for (const write of Object.values(WRITES)) {
+      assert.ok(!write(NOTES['an LF note']).includes('\r'));
+      assert.ok(!/(?<!\r)\n/.test(write(NOTES['a CRLF note'])));
+    }
+  });
+
+  it('adding then removing a tag gives a CRLF note back unchanged', () => {
+    const input = NOTES['a CRLF note'];
+    assert.equal(removeTags(addTags(input, ['b']), ['b']), input);
+  });
+
+  it('setting then removing a field gives a CRLF note back unchanged', () => {
+    const input = NOTES['a CRLF note'];
+    assert.equal(removeFrontmatterField(setFrontmatterField(input, 'status', 'draft'), 'status'), input);
+  });
+
+  it('renaming a tag there and back gives a CRLF note back unchanged', () => {
+    const input = NOTES['a CRLF note'];
+    assert.equal(renameTag(renameTag(input, 'a', 'z'), 'z', 'a'), input);
+  });
+
+  it('removing the last field of a CRLF block leaves an empty block in CRLF', () => {
+    assert.equal(removeFrontmatterField('---\r\ntitle: T\r\n---\r\nx\r\n', 'title'), '---\r\n---\r\nx\r\n');
+  });
+
+  it('returns a note unchanged when there is nothing to do', () => {
+    const crlf = NOTES['a CRLF note'];
+    assert.equal(addTags(crlf, ['a']), crlf);
+    assert.equal(removeTags(crlf, ['nope']), crlf);
+    assert.equal(removeFrontmatterField(crlf, 'nope'), crlf);
   });
 });
