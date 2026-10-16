@@ -45,6 +45,7 @@ import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
 import { fetchToBuffer } from './lib/fetch.mjs';
 import { formatAudit, toolTarget, requestHost } from './lib/audit.mjs';
 import { openLogFile } from './lib/logfile.mjs';
+import { SessionTable } from './lib/sessions.mjs';
 import {
   isNoteFile,
   walkAllFiles as libWalkAllFiles,
@@ -226,6 +227,12 @@ function loadConfig(configPath) {
     }
   }
 
+  const sessionTimeoutSeconds = config.sessionTimeoutSeconds ?? 1800;
+  if (!Number.isInteger(sessionTimeoutSeconds) || sessionTimeoutSeconds < 60) {
+    logErr(`Config file at ${configPath}: "sessionTimeoutSeconds" must be a whole number of at least 60`);
+    process.exit(1);
+  }
+
   const uploadNetworkPrefix = config.uploadNetworkPrefix ?? 32;
   if (!Number.isInteger(uploadNetworkPrefix) || uploadNetworkPrefix < 16 || uploadNetworkPrefix > 32) {
     logErr(`Config file at ${configPath}: "uploadNetworkPrefix" must be a whole number from 16 to 32`);
@@ -263,7 +270,7 @@ function loadConfig(configPath) {
   // authentication under any other name is an error, and any other unknown key is reported.
   const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'mcpPath', 'denyPaths', 'denyBinaryPaths',
     'graphifyQueryTimeoutMs', 'fetchMaxBytes', 'fetchTimeoutMs', 'readMaxBytes', 'readNoteMaxChars',
-    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
+    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'sessionTimeoutSeconds', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
   for (const key of Object.keys(config)) {
     if (knownKeys.has(key)) continue;
     if (/^(auth|oauth2?|authn|authentication|authorization|authorisation|tokens?|jwks|jwksuri|issuer|audience|users|readonlyusers|userclaim|tokenheader)$/i.test(key)) {
@@ -346,6 +353,7 @@ function loadConfig(configPath) {
     uploadStallSeconds,
     uploadNetworkPrefix,
     logFile: config.logFile,
+    sessionTimeoutSeconds,
     uploadTempDir: path.resolve(uploadTempDir),
     uploadTempDirIsDefault,
     trustedProxies,
@@ -369,6 +377,7 @@ const {
   uploadStallSeconds: UPLOAD_STALL_SECONDS,
   uploadNetworkPrefix: UPLOAD_NETWORK_PREFIX,
   logFile: LOG_FILE,
+  sessionTimeoutSeconds: SESSION_TIMEOUT_SECONDS,
   uploadTempDir: CONFIGURED_UPLOAD_TEMP_DIR,
   uploadTempDirIsDefault: UPLOAD_TEMP_DIR_IS_DEFAULT,
   trustedProxies: TRUSTED_PROXIES,
@@ -839,19 +848,34 @@ const sseStreams = new Map(); // sessionId → ServerResponse
 
 // ── active HTTP sessions ───────────────────────────────────────────────────
 
-const sessions    = new Set();
-const sessionUsers = new Map(); // sessionId → user, only when authentication is on
-const SESSION_TTL = 60_000; // remove sessions that never open a GET stream on the MCP endpoint
+const SESSION_GRACE_MS = 60_000; // a session with no GET stream open after this long is removed
+const SESSIONS = new SessionTable({
+  idleMs: SESSION_TIMEOUT_SECONDS * 1000,
+  onExpired: (removed) => {
+    for (const { sid, user, idleMs } of removed) {
+      audit('session-expired', { user: user ?? null, sid: sid.slice(0, 8), reason: 'idle', idle: Math.round(idleMs / 1000) });
+    }
+  },
+});
 
-function addSession(sid) {
-  if (sessions.size >= 1000) return false;
-  sessions.add(sid);
-  // If no SSE stream opens within TTL, drop the session
+/**
+ * Adds a session, and arranges for it to be removed if no notification stream is open on it a
+ * minute later. A session that is used is removed later, once it has been idle for
+ * sessionTimeoutSeconds (see the sweep below).
+ * @param {string} sid
+ * @param {string} [user] - Who the session belongs to, when authentication is on.
+ * @returns {boolean} false if the table is full.
+ */
+function addSession(sid, user) {
+  if (!SESSIONS.create(sid, user)) return false;
   setTimeout(() => {
-    if (!sseStreams.has(sid)) { sessions.delete(sid); sessionUsers.delete(sid); }
-  }, SESSION_TTL);
+    const owner = SESSIONS.user(sid);
+    if (SESSIONS.graceCheck(sid)) audit('session-expired', { user: owner ?? null, sid: sid.slice(0, 8), reason: 'no_stream' });
+  }, SESSION_GRACE_MS).unref();
   return true;
 }
+
+setInterval(() => SESSIONS.sweep(), 15_000).unref();
 
 // ── resource server mode ───────────────────────────────────────────────────
 
@@ -1073,7 +1097,7 @@ async function handleRequest(req, res) {
   if (EXPECTS_CONTINUE.test(req.headers.expect ?? '') && !url?.startsWith(UPLOAD_PREFIX)
       && !(AUTH && url === MCP_PATH)) res.writeContinue();
   // Validate session ID as a UUID — all legitimate IDs are created by randomUUID().
-  // Non-matching values become '' so sessions.has('') is always false.
+  // Non-matching values become '' so SESSIONS.has('') is always false.
   const rawSid = req.headers['mcp-session-id']?.trim() || '';
   const sid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawSid)
     ? rawSid : '';
@@ -1408,7 +1432,8 @@ async function route(req, res, url, sid) {
   if (AUTH) {
     principal = await authenticate(req, res);
     if (!principal) return;
-    if (sid && sessionUsers.has(sid) && sessionUsers.get(sid) !== principal.user) {
+    const owner = sid ? SESSIONS.user(sid) : undefined;
+    if (owner !== undefined && owner !== principal.user) {
       audit('session-refused', { ...auditContext(req, sid, principal), reason: 'session belongs to another user' });
       return refuseBody(req, res, 403, { 'Content-Type': 'application/json' }, { error: 'forbidden' });
     }
@@ -1416,9 +1441,26 @@ async function route(req, res, url, sid) {
     if (EXPECTS_CONTINUE.test(req.headers.expect ?? '')) res.writeContinue();
   }
 
+  // ── DELETE on the MCP endpoint — the client ends its session ────────────────────────
+  if (req.method === 'DELETE') {
+    if (!sid || !SESSIONS.has(sid)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'session not found' }));
+    }
+    audit('session-end', auditContext(req, sid, principal));
+    const stream = sseStreams.get(sid);
+    sseStreams.delete(sid);
+    if (stream && !stream.writableEnded) {
+      try { stream.end(); } catch { /* the stream is already gone */ }
+    }
+    SESSIONS.delete(sid);
+    res.writeHead(204);
+    return res.end();
+  }
+
   // ── GET on the MCP endpoint — notification SSE stream ────────────────────────────────
   if (req.method === 'GET') {
-    if (!sid || !sessions.has(sid)) {
+    if (!sid || !SESSIONS.has(sid)) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'session not found' }));
     }
@@ -1435,11 +1477,18 @@ async function route(req, res, url, sid) {
     });
     res.flushHeaders();
     sseStreams.set(sid, res);
-    // On close: remove the stream but keep the session alive so that POST
-    // requests (e.g. from a shim that reconnects the SSE stream) still work.
-    req.on('close', () => {
-      if (sseStreams.get(sid) === res) sseStreams.delete(sid);
-    });
+    SESSIONS.streamOpened(sid);
+    // On close: remove the stream but keep the session so that POST requests (e.g. from a
+    // shim that reconnects the SSE stream) still work. The session is then idle, and is
+    // removed if it stays so for sessionTimeoutSeconds.
+    const streamClosed = () => {
+      if (sseStreams.get(sid) !== res) return;
+      sseStreams.delete(sid);
+      SESSIONS.streamClosed(sid);
+    };
+    req.on('close', streamClosed);
+    // The client may already have gone while the token was checked, and 'close' fires only once.
+    if (req.destroyed || res.destroyed || req.socket?.destroyed) streamClosed();
     return;
   }
 
@@ -1447,6 +1496,16 @@ async function route(req, res, url, sid) {
   if (req.method !== 'POST') {
     res.writeHead(405);
     return res.end('method not allowed');
+  }
+
+  // A request in flight keeps its session from being counted idle, however long it runs. The
+  // client may already have gone while the token was checked, and 'close' fires only once.
+  if (sid && SESSIONS.has(sid)) {
+    SESSIONS.begin(sid);
+    let ended = false;
+    const done = () => { if (!ended) { ended = true; SESSIONS.end(sid); } };
+    res.once('close', done);
+    if (res.destroyed || req.socket?.destroyed) done();
   }
 
   const ct = req.headers['content-type'] || '';
@@ -1481,11 +1540,10 @@ async function route(req, res, url, sid) {
   // initialize → new session, no forwarding needed
   if (msg.method === 'initialize') {
     const newSid = randomUUID();
-    if (!addSession(newSid)) {
+    if (!addSession(newSid, principal?.user)) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ jsonrpc: '2.0', id: msgId, error: { code: -32603, message: 'session table full' } }));
     }
-    if (principal) sessionUsers.set(newSid, principal.user);
     audit('login', { ...auditContext(req, newSid, principal), role: principal?.role });
     return sendSse(res, 200, newSid, [{
       jsonrpc: '2.0',
@@ -1495,7 +1553,7 @@ async function route(req, res, url, sid) {
   }
 
   // All other requests need a valid session — 404 signals the shim to re-initialize.
-  if (!sid || !sessions.has(sid)) {
+  if (!sid || !SESSIONS.has(sid)) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: 'session not found' }));
   }

@@ -275,10 +275,25 @@ describe('resource server mode', () => {
       assert.equal((await request(srv, { method: 'GET', sid, token: tok(OWNER) })).status, 200);
     });
 
-    it('answers a method other than POST, GET or DELETE-with-token as before: 405 once authenticated', async () => {
+    it('ends a session for its own user with DELETE, and not twice', async () => {
+      const t = tok(OWNER);
+      const sid = await session(srv, t);
+      assert.equal((await request(srv, { method: 'DELETE', sid, token: t })).status, 204);
+      assert.equal((await request(srv, { method: 'DELETE', sid, token: t })).status, 404);
+      assert.equal((await request(srv, { method: 'GET', sid, token: t })).status, 404);
+    });
+
+    it('refuses DELETE without a token, and with another user\'s token, and keeps the session', async () => {
+      const sid = await session(srv, tok(OWNER));
+      assert.equal((await request(srv, { method: 'DELETE', sid })).status, 401);
+      assert.equal((await request(srv, { method: 'DELETE', sid, token: tok(VIEWER) })).status, 403);
+      assert.equal((await request(srv, { method: 'GET', sid, token: tok(OWNER) })).status, 200);
+    });
+
+    it('answers a method other than POST, GET or DELETE as before: 405 once authenticated', async () => {
       const t = tok();
       const sid = await session(srv, t);
-      assert.equal((await request(srv, { method: 'DELETE', sid, token: t })).status, 405);
+      assert.equal((await request(srv, { method: 'PATCH', sid, token: t })).status, 405);
       assert.equal((await request(srv, { method: 'PUT', path: '/mcp', body: '{}', token: t })).status, 405);
       assert.equal((await request(srv, { method: 'PUT', path: '/mcp', body: '{}' })).status, 401);
     });

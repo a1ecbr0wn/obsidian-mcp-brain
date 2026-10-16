@@ -36,6 +36,7 @@ except `CONFIG_PATH`, which says where to find it.
     "uploadStallSeconds": 30,
     "uploadNetworkPrefix": 32,
     "logFile": "/var/log/obsidian-mcp.log",
+    "sessionTimeoutSeconds": 1800,
     "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
     "trustedProxies": ["127.0.0.1", "::1"],
     "vaults": {
@@ -72,6 +73,7 @@ except `CONFIG_PATH`, which says where to find it.
 | `uploadNetworkPrefix`    | No       | `32`                                                               | Leading bits of an IPv4 address that an upload must share with the call that reserved it, 16 to 32. 32 is the same address. See below                                                                         |
 | `trustedProxies`         | No       | `[]`                                                               | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies)                                                                             |
 | `logFile`                | No       | `none`                                                             | Absolute path of a file to append the log to, as well as the console. Includes the audit log. See [Logging](#logging-and-the-audit-log)                                                                       |
+| `sessionTimeoutSeconds`  | No       | `1800`                                                             | How long a session may be idle before it is removed, in seconds (at least 60). See [Sessions](#sessions)                                                                                                      |
 | `auth`                   | No       | none                                                               | Turns on authentication: the server accepts only signed tokens from an external OAuth service, for the users you list. Without it the server is unauthenticated, as before. See [below](#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which
@@ -303,6 +305,31 @@ The address check is a second line of defence. Callers behind the same NAT share
 an address, so the real protection is the random token, which works once,
 briefly, for one destination. See [Security](security#upload-binary-file).
 
+### Sessions
+
+A client opens a session with `initialize` and names it with `Mcp-Session-Id`
+on every later request. The server keeps at most 1000 sessions, and a client
+that starts, reconnects after a `404` or restarts opens a new one each time, so
+an unused session has to go or the table fills and every new `initialize` is
+answered `503 session table full`.
+
+**`sessionTimeoutSeconds`** is how long a session may be idle before the server
+removes it: a whole number of at least 60, 1800 (30 minutes) by default. A
+session is idle while no request is being handled and no notification stream
+(`GET /mcp`) is open. A request that ends, and a stream that opens or closes,
+restart the time, and an open stream or a running request keeps the session for
+as long as it lasts. The server checks every 15 seconds, so a session goes up to
+15 seconds after the time is up. The next request with its id is answered
+`404`, which MCP clients take as the cue to start a new session; with `auth` on
+no new sign-in is needed, because the token is checked on every request. A
+session that has no stream open a minute after it was made is removed too,
+whatever it is doing.
+
+A client can end its session sooner with `DELETE /mcp`: the server removes the
+session, closes its stream and answers `204`. A session it doesn't know gets
+`404`. With `auth` on the request needs a valid token for the session's user,
+as any other request does.
+
 ### Logging and the audit log
 
 The server writes its log to the console: standard output, and standard error
@@ -361,6 +388,8 @@ can't add a field or a line. The events are:
 | `login` | A client opens a session | `role` (`full` or `readonly`), with authentication on |
 | `login-refused` | A token is missing or refused | `reason`; `user` when the token names one |
 | `session-refused` | A session is used by another user | `reason` |
+| `session-end` | A client ends its session with `DELETE /mcp` | none |
+| `session-expired` | A session is removed by the server | `reason` (`idle`, with `idle` in seconds, or `no_stream`) |
 | `tool` | Every tool call, including reads | `tool`, and the arguments listed below |
 | `tool-result` | The call has ended | `tool`, the same arguments, `outcome` (`ok`, `error`, or `aborted` when the client went away before the answer), `duration` in milliseconds |
 | `denied` | The call is refused by the read-only role, `denyPaths` or `denyBinaryPaths`, in place of `tool-result` | `tool`, the same arguments, `reason` |
