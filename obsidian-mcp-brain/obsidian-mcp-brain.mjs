@@ -557,7 +557,7 @@ const TOOLS = [
   },
   {
     name: 'edit-note',
-    description: 'Edit an existing note: append or prepend content, replace the whole note, replace or delete one section, or toggle a checkbox. A section is a heading line and everything under it up to the next heading of the same or higher level, so its sub-sections are part of it. replace-section keeps the heading line and replaces everything beneath it, sub-sections included, with content; it cannot change the heading itself, so to rename a heading use replace. delete-section removes the heading line and everything beneath it, sub-sections included. Use read-note with outline: true to see a note\'s headings.',
+    description: 'Edit an existing note: append or prepend content, replace the whole note, replace or delete one section, or toggle a checkbox. A section is a heading line and everything under it up to the next heading of the same or higher level, so its sub-sections are part of it. replace-section keeps the heading line and replaces everything beneath it, sub-sections included, with content; it cannot change the heading itself, so to rename a heading use replace. delete-section removes the heading line and everything beneath it, sub-sections included. A line of only # characters is not a heading, so a section runs through it and both operations remove it with the rest. Use read-note with outline: true to see a note\'s headings.',
     inputSchema: {
       type: 'object',
       properties: {
