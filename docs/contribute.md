@@ -11,8 +11,8 @@ Pull requests and issues are welcome on
 ### Repository layout
 
 - `obsidian-mcp-brain/` is the server, published to npm as `obsidian-mcp-brain`.
-- `mcp-shim/` is the Claude Desktop relay described under
-  [Connect a client](connect). It is not published.
+- `mcp-shim/` is the Claude Desktop relay described under [Connect a
+  client](connect). It is not published.
 - `docs/` is this site.
 
 The repository is an npm workspaces monorepo. From the repository root:
@@ -22,29 +22,33 @@ npm install
 npm test
 ```
 
-`npm test` runs the server's tests with Node's built-in test runner, so there are
-no test dependencies to install. `mcp-shim` has no tests of its own.
+`npm test` runs the server's tests with Node's built-in test runner, so there
+are no test dependencies to install. `mcp-shim` has no tests of its own.
+
+`npm run lint` runs ESLint on the JavaScript and markdownlint on the Markdown
+files. The rules are in `eslint.config.mjs` and `.markdownlint-cli2.jsonc`.
+markdownlint needs Node 22 or later. The same command runs in CI on every push.
 
 ### Commit messages
 
 Use [conventional commit](https://www.conventionalcommits.org) prefixes such as
-`feat:`, `fix:`, `build:` and `doc:`. The release changelog is generated from them,
-and the next version number is worked out from them when a release is made without
-naming one.
+`feat:`, `fix:`, `build:` and `doc:`. The release changelog is generated from
+them, and the next version number is worked out from them when a release is made
+without naming one.
 
 ### Releases
 
 Releases are made from the repository's **Actions** tab by running **Tag a
-release**. Leave the version blank to have it worked out from the commits since the
-last tag, or give one explicitly. The workflow bumps the version in both
-`package.json` files, then commits and tags with a GPG signature. It then
-starts the publish workflow, which runs the tests, publishes to npm with
-provenance, and creates a GitHub Release with the changelog. The release also carries
-the agent skills as `.skill` files and a `.plugin` file, built by
-`scripts/package-skills.sh`. The tag workflow bumps `.claude-plugin/plugin.json` with the
-two `package.json` files, so the plugin's version is the release's.
+release**. Leave the version blank to have it worked out from the commits since
+the last tag, or give one explicitly. The workflow bumps the version in both
+`package.json` files, then commits and tags with a GPG signature. It then starts
+the publish workflow, which runs the tests, publishes to npm with provenance,
+and creates a GitHub Release with the changelog. The release also carries the
+agent skills as `.skill` files and a `.plugin` file, built by
+`scripts/package-skills.sh`. The tag workflow bumps `.claude-plugin/plugin.json`
+with the two `package.json` files, so the plugin's version is the release's.
 
-Publishing to npm uses
-[Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) rather than a
-stored token. The package's npmjs.com settings must list this repository and the
+Publishing to npm uses [Trusted
+Publishing](https://docs.npmjs.com/trusted-publishers/) rather than a stored
+token. The package's npmjs.com settings must list this repository and the
 `publish.yml` workflow as a trusted publisher with direct publish allowed.

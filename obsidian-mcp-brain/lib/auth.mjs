@@ -35,6 +35,7 @@ export const TOOL_ROLES = Object.freeze({
   'new-notes': 'read',
   'changed-notes': 'read',
   'list-vaults': 'read',
+  'get-setup-status': 'read',
   'read-note': 'read',
   'read-binary-file': 'read',
   'find-backlinks': 'read',

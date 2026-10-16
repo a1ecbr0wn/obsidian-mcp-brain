@@ -28,6 +28,19 @@ jobs:
       - run: npm ci
       - run: npm test --workspaces --if-present
 
+  # ESLint on the JavaScript and markdownlint on the documentation, with the rules in
+  # eslint.config.mjs and .markdownlint-cli2.jsonc. One Node version is enough: the
+  # lint result does not depend on it, and markdownlint-cli2 needs Node 22.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run lint
+
   # Proves the Dockerfile builds and that a container started from the image works,
   # without publishing anything. This also gates Dependabot's base-image updates.
   image:

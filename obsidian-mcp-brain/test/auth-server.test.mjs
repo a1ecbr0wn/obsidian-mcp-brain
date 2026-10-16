@@ -100,8 +100,8 @@ function request(srv, { method = 'POST', path: p = '/mcp', headers = {}, body, t
       res.on('data', c => { text += c; });
       res.on('end', () => {
         const msgs = [];
-        for (const line of text.split('\n')) if (line.startsWith('data: ')) { try { msgs.push(JSON.parse(line.slice(6))); } catch {} }
-        let json; try { json = JSON.parse(text); } catch {}
+        for (const line of text.split('\n')) if (line.startsWith('data: ')) { try { msgs.push(JSON.parse(line.slice(6))); } catch { /* not a JSON event */ } }
+        let json; try { json = JSON.parse(text); } catch { /* the body is not JSON */ }
         resolve({ status: res.statusCode, headers: res.headers, text, json, msgs });
       });
     });
@@ -340,6 +340,14 @@ describe('resource server mode', () => {
       const read = Object.keys(TOOL_ROLES).filter(n => TOOL_ROLES[n] === 'read').sort();
       assert.deepEqual((await toolNames(srv, viewer, viewerSid)).sort(), read);
       assert.deepEqual((await toolNames(srv, owner, ownerSid)).sort(), Object.keys(TOOL_ROLES).sort());
+    });
+
+    it('may call get-setup-status', async () => {
+      const r = await request(srv, { body: rpc(7, 'tools/call', { name: 'get-setup-status', arguments: {} }), token: viewer, sid: viewerSid });
+      assert.equal(r.status, 200);
+      const result = r.msgs[0].result;
+      assert.ok(!result.isError, JSON.stringify(result));
+      assert.ok(result.content[0].text.includes('Companion skills and agents'));
     });
 
     it('every tool the server lists has a role', async () => {

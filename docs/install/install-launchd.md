@@ -6,11 +6,11 @@ title: "Run as a launchd agent | obsidian-mcp-brain"
 ## Run as a launchd agent (macOS)
 
 Create `~/Library/LaunchAgents/com.obsidian-mcp-brain.plist`. Adjust the path to
-`obsidian-mcp-brain` if `command -v obsidian-mcp-brain` shows somewhere other than
-`/usr/local/bin`, for example `/opt/homebrew/bin` with Homebrew on Apple Silicon.
-launchd starts agents with only a minimal `PATH`, and the command needs `node` on
-it, so add the directory containing `node` to the `EnvironmentVariables` entry
-below as a `PATH` key:
+`obsidian-mcp-brain` if `command -v obsidian-mcp-brain` shows somewhere other
+than `/usr/local/bin`, for example `/opt/homebrew/bin` with Homebrew on Apple
+Silicon. launchd starts agents with only a minimal `PATH`, and the command needs
+`node` on it, so add the directory containing `node` to the
+`EnvironmentVariables` entry below as a `PATH` key:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>

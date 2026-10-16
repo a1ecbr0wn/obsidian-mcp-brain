@@ -6,23 +6,24 @@ title: "Sign in with Cloudflare's workers-oauth-provider | obsidian-mcp-brain"
 ## Sign in with Cloudflare's workers-oauth-provider
 
 [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider)
-is a library for writing an OAuth service as a Cloudflare Worker. It is not a service you
-configure: you write a small Worker that uses it, and deploy that Worker yourself. This
-page gives that Worker in full, as a starting point, and shows how it connects to the
-server so that the Claude mobile app and claude.ai can sign in. The server stays
-reachable over HTTPS at an address of its own and runs with
-[`auth`](../configuration#authentication-auth) set; the Worker is what clients talk to.
+is a library for writing an OAuth service as a Cloudflare Worker. It is not a
+service you configure: you write a small Worker that uses it, and deploy that
+Worker yourself. This page gives that Worker in full, as a starting point, and
+shows how it connects to the server so that the Claude mobile app and claude.ai
+can sign in. The server stays reachable over HTTPS at an address of its own and
+runs with [`auth`](../configuration#authentication-auth) set; the Worker is what
+clients talk to.
 
-To get a sign-in with settings only and no Worker, see
-[Cloudflare Tunnel and Access](install-cloudflare-access).
+To get a sign-in with settings only and no Worker, see [Cloudflare Tunnel and
+Access](install-cloudflare-access).
 
 ### How the two fit together
 
-The library issues opaque access tokens, and only its own Worker can check one: the
-token record and its encrypted properties are in the Worker's KV namespace. This server
-checks signed tokens against a published key set and cannot call the Worker to check an
-opaque one. So the Worker does both jobs for the client, and passes each request on with
-a signed token of its own:
+The library issues opaque access tokens, and only its own Worker can check one:
+the token record and its encrypted properties are in the Worker's KV namespace.
+This server checks signed tokens against a published key set and cannot call the
+Worker to check an opaque one. So the Worker does both jobs for the client, and
+passes each request on with a signed token of its own:
 
 ```text
 Claude app ──▶ Worker (workers-oauth-provider)  ──▶  obsidian-mcp-brain
@@ -32,33 +33,40 @@ Claude app ──▶ Worker (workers-oauth-provider)  ──▶  obsidian-mcp-br
                   /.well-known/jwks.json
 ```
 
-- The client signs in to the Worker, and sees the Worker's address as the MCP server.
-- The Worker checks the client's token and the user, then forwards the request to the
-  server with `Authorization: Bearer <signed token>`. The token's `sub` is the user's id.
-- The server fetches the Worker's public key from `/.well-known/jwks.json`, checks the
-  signature, `iss`, `aud` and expiry, and looks `sub` up in `users` or `readOnlyUsers`.
+- The client signs in to the Worker, and sees the Worker's address as the MCP
+  server.
+- The Worker checks the client's token and the user, then forwards the request
+  to the server with `Authorization: Bearer <signed token>`. The token's `sub`
+  is the user's id.
+- The server fetches the Worker's public key from `/.well-known/jwks.json`,
+  checks the signature, `iss`, `aud` and expiry, and looks `sub` up in `users`
+  or `readOnlyUsers`.
 
-The user is checked twice: the Worker signs in only the ids in `ALLOWED_USERS`, and
-the server refuses a `sub` that is not in its own lists with `403`.
+The user is checked twice: the Worker signs in only the ids in `ALLOWED_USERS`,
+and the server refuses a `sub` that is not in its own lists with `403`.
 
 ### What you need
 
-- A Cloudflare account, and Node.js to build and deploy a Worker project with `wrangler`.
+- A Cloudflare account, and Node.js to build and deploy a Worker project with
+  `wrangler`.
 - The server reachable over HTTPS by the Worker at its own hostname, for example
-  `https://mcp-origin.example.com`, through any of the ways on the
-  [install page](../install#putting-https-in-front-of-the-server). This is a different
+  `https://mcp-origin.example.com`, through any of the ways on the [install
+  page](../install#putting-https-in-front-of-the-server). This is a different
   name from the Worker's. Every request to `/mcp` on it needs a valid token.
-- Somewhere for people to sign in. The example uses a GitHub OAuth app; the library's
-  [upstream sign-in guide](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/upstream-sign-in.md)
-  covers other providers, and replacing `authorize` and `callback` below is all it takes.
+- Somewhere for people to sign in. The example uses a GitHub OAuth app; the
+  library's [upstream sign-in
+  guide](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/upstream-sign-in.md)
+  covers other providers, and replacing `authorize` and `callback` below is all
+  it takes.
 
 ### 1. Make a signing key
 
-The Worker signs with an EC P-256 key. Generate it and store it as a Worker secret; the
-Worker's `/.well-known/jwks.json` publishes only the public half.
+The Worker signs with an EC P-256 key. Generate it and store it as a Worker
+secret; the Worker's `/.well-known/jwks.json` publishes only the public half.
 
-Run the command from the Worker project directory that [step 3](#3-create-the-worker-project)
-creates, since `wrangler` takes the Worker's name from the `wrangler.jsonc` there.
+Run the command from the Worker project directory that [step
+3](#3-create-the-worker-project) creates, since `wrangler` takes the Worker's
+name from the `wrangler.jsonc` there.
 
 ```sh
 node -e "const c=require('crypto');const k=c.generateKeyPairSync('ec',{namedCurve:'P-256'}).privateKey.export({format:'jwk'});k.kid=c.randomUUID();console.log(JSON.stringify(k))" \
@@ -78,19 +86,20 @@ node -e "const c=require('crypto');const k=c.generateKeyPairSync('ec',{namedCurv
 }
 ```
 
-- `mcpBaseUrl` is the server's own address, not the Worker's. The `audience` it implies
-  (`https://mcp-origin.example.com/mcp`) is what the Worker puts in `aud`. The server
-  also builds its upload URLs from it, so it has to be an address an agent can reach.
-- `issuer` is the Worker's address, exactly as the Worker's `PUBLIC_URL` variable has it,
-  and `jwksUri` is where the Worker serves its key document.
-- `users` lists the user ids the Worker signs: with the example sign-in this is the
-  GitHub numeric id (`curl https://api.github.com/users/<login>` shows it as `id`).
-  Add `readOnlyUsers` for people who may only read.
+- `mcpBaseUrl` is the server's own address, not the Worker's. The `audience` it
+  implies (`https://mcp-origin.example.com/mcp`) is what the Worker puts in
+  `aud`. The server also builds its upload URLs from it, so it has to be an
+  address an agent can reach.
+- `issuer` is the Worker's address, exactly as the Worker's `PUBLIC_URL`
+  variable has it, and `jwksUri` is where the Worker serves its key document.
+- `users` lists the user ids the Worker signs: with the example sign-in this is
+  the GitHub numeric id (`curl https://api.github.com/users/<login>` shows it as
+  `id`). Add `readOnlyUsers` for people who may only read.
 
 ### 3. Create the Worker project
 
-This is a Worker project of your own, kept outside this repository. Make an empty
-directory with these files:
+This is a Worker project of your own, kept outside this repository. Make an
+empty directory with these files:
 
 ```text
 mcp-front/
@@ -106,10 +115,10 @@ npm install --save-dev wrangler
 npx wrangler kv namespace create OAUTH_KV      # prints the id for wrangler.jsonc
 ```
 
-`src/index.ts` is the whole Worker. It does four things: it hands the library its
-settings, serves the key document, runs the sign-in (`authorize` and `callback`), and
-forwards each `/mcp` request to the server (`mcp`). Edit it for your own sign-in and
-hostnames.
+`src/index.ts` is the whole Worker. It does four things: it hands the library
+its settings, serves the key document, runs the sign-in (`authorize` and
+`callback`), and forwards each `/mcp` request to the server (`mcp`). Edit it for
+your own sign-in and hostnames.
 
 `src/index.ts`:
 
@@ -312,9 +321,10 @@ export default new OAuthProvider<Env>({
 });
 ```
 
-Replace `https://mcp.example.com` in `resourceMetadata` with the Worker's address, the
-same value as `PUBLIC_URL`. A client names the MCP server by this address when it asks
-for a token, so it has to be the address the client was given.
+Replace `https://mcp.example.com` in `resourceMetadata` with the Worker's
+address, the same value as `PUBLIC_URL`. A client names the MCP server by this
+address when it asks for a token, so it has to be the address the client was
+given.
 
 `wrangler.jsonc`:
 
@@ -335,13 +345,15 @@ for a token, so it has to be the address the client was given.
 }
 ```
 
-`global_fetch_strictly_public` is required for the Client ID Metadata Documents the
-library accepts from clients. `ALLOWED_USERS` takes the same ids as the server's
-`users` and `readOnlyUsers`; an id left out of it is refused by the Worker as well.
+`global_fetch_strictly_public` is required for the Client ID Metadata Documents
+the library accepts from clients. `ALLOWED_USERS` takes the same ids as the
+server's `users` and `readOnlyUsers`; an id left out of it is refused by the
+Worker as well.
 
 ### 4. Register the sign-in app and deploy
 
-1. In GitHub, create an OAuth app with the callback URL `https://mcp.example.com/callback`.
+1. In GitHub, create an OAuth app with the callback URL
+   `https://mcp.example.com/callback`.
 2. Put its client id in `GITHUB_CLIENT_ID` above, and its secret in the Worker:
    `npx wrangler secret put GITHUB_CLIENT_SECRET`.
 3. From the project directory, run `npx wrangler deploy`.
@@ -349,25 +361,28 @@ library accepts from clients. `ALLOWED_USERS` takes the same ids as the server's
 
 ### 5. Add the connector
 
-In claude.ai, or the mobile app, add a custom connector with the Worker's address and
-`/mcp` on the end: `https://mcp.example.com/mcp`. Claude opens the Worker's consent page,
-which sends the user to GitHub; on return the Worker issues the client its tokens.
+In claude.ai, or the mobile app, add a custom connector with the Worker's
+address and `/mcp` on the end: `https://mcp.example.com/mcp`. Claude opens the
+Worker's consent page, which sends the user to GitHub; on return the Worker
+issues the client its tokens.
 
-For Claude Code: `claude mcp add --transport http obsidian https://mcp.example.com/mcp`,
-then `/mcp` to sign in.
+For Claude Code:
+`claude mcp add --transport http obsidian https://mcp.example.com/mcp`, then
+`/mcp` to sign in.
 
 ### Notes
 
-- **Token lifetime.** `accessTokenTTL` is how long a client's token lasts before it
-  refreshes. The token the server sees lives for 60 seconds and is made per request, so
-  the server's only long-lived trust is in the Worker's key.
-- **Removing a user.** Take the id out of `ALLOWED_USERS` and redeploy: the Worker refuses
-  that user's next request, whatever token the client holds. Take it out of the server's
-  lists too, and restart.
-- **Rotating the key.** The key document lists the keys the server should accept. Put the
-  new key's public half in `jwks()` next to the old one, switch the secret, and remove the old
-  entry once its 60-second tokens have expired.
-- **`PUT /up/<token>` uploads** go straight to the server at its own address, with the
-  one-time URL from `upload-binary-file`, and do not pass through the Worker.
-- **Logging.** The server's log names the user and the reason for each refusal; the
-  Worker never logs a token.
+- **Token lifetime.** `accessTokenTTL` is how long a client's token lasts before
+  it refreshes. The token the server sees lives for 60 seconds and is made per
+  request, so the server's only long-lived trust is in the Worker's key.
+- **Removing a user.** Take the id out of `ALLOWED_USERS` and redeploy: the
+  Worker refuses that user's next request, whatever token the client holds. Take
+  it out of the server's lists too, and restart.
+- **Rotating the key.** The key document lists the keys the server should
+  accept. Put the new key's public half in `jwks()` next to the old one, switch
+  the secret, and remove the old entry once its 60-second tokens have expired.
+- **`PUT /up/<token>` uploads** go straight to the server at its own address,
+  with the one-time URL from `upload-binary-file`, and do not pass through the
+  Worker.
+- **Logging.** The server's log names the user and the reason for each refusal;
+  the Worker never logs a token.

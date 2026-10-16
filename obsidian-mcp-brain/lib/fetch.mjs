@@ -213,7 +213,7 @@ export async function fetchToBuffer(url, { maxBytes, timeoutMs }) {
       }
       return Buffer.concat(chunks);
     } catch (err) {
-      if (timedOut) throw new Error(`Request timed out after ${timeoutMs}ms`);
+      if (timedOut) throw new Error(`Request timed out after ${timeoutMs}ms`, { cause: err });
       throw err;
     } finally {
       clearTimeout(timer);

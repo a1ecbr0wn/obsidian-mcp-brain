@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError, matchesExtension } from './lib/access.mjs';
 import { mimeTypeFor } from './lib/mime.mjs';
+import { SETUP_INSTRUCTIONS, setupStatusText } from './lib/companions.mjs';
 import { parseAuthConfig, KeyStore, verifyAccessToken, extractToken, toolAllowed, AuthError } from './lib/auth.mjs';
 import {
   UploadSlots,
@@ -366,10 +367,14 @@ const FIELD_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 // Static initialize response — every tool is native, so there's no child
 // capabilities negotiation to wait on.
+// The version comes from package.json (copied beside this file by npm and by the Dockerfile),
+// so it is the release version; `instructions` points the agent at the companion skills.
+const SERVER_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 const SERVER_CAPS = {
   protocolVersion: '2024-11-05',
   capabilities: { tools: {} },
-  serverInfo: { name: 'obsidian-mcp-brain', version: '1.0.0' },
+  serverInfo: { name: 'obsidian-mcp-brain', version: SERVER_VERSION },
+  instructions: SETUP_INSTRUCTIONS,
 };
 
 // ── Native tools ────────────────────────────────────────────────────
@@ -444,6 +449,11 @@ const TOOLS = [
     name: 'list-vaults',
     description: 'List all configured Obsidian vaults.',
     inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get-setup-status',
+    description: 'List the companion skills and agents that make this server\'s tools work better, the server version, and how to install them on each Claude surface (Claude Code, Cowork, Claude Desktop chat, claude.ai). Call it once before the first use of read-binary-file or upload-binary-file, unless those skills are already in your skill list. It does not know what you have installed: compare the list with your own skills, and a skill\'s metadata.version with the server version. Takes no parameters and touches no vault.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'read-note',
@@ -528,7 +538,7 @@ const TOOLS = [
   },
   {
     name: 'create-binary-file',
-    description: 'Create a new binary file (e.g. an image) from base64-encoded content. Fails if the file already exists; list-notes with extension shows what is there.',
+    description: 'Create a new binary file (e.g. an image) from base64-encoded content. Fails if the file already exists; list-notes with extension shows what is there. The whole file travels as base64 text in the call, so use it for small files only: for a large file use upload-binary-file (get-setup-status says how to set it up).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -565,7 +575,8 @@ const TOOLS = [
       + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
       + 'A note (.md) can be uploaded too, if it is valid UTF-8: use this for a large or generated note that is already on disk, and create-note for text you have written yourself. '
       + 'Fails if the destination already exists; list-notes with extension shows what is there. '
-      + 'If the upload-binary-file skill is installed, use its upload-binary-file.sh script, which does the hashing and the curl call for you.',
+      + 'If the upload-binary-file skill is installed, use its upload-binary-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
+      + 'This needs a shell and curl. If the client refuses to run the command, the user can allow it for Claude Code with a permission rule, Bash(sh <path of the skill\'s upload-binary-file.sh> *), in permissions.allow of ~/.claude/settings.json, written the way the command appears when it is refused. For a small file, create-binary-file needs no curl.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -580,7 +591,7 @@ const TOOLS = [
   },
   {
     name: 'read-binary-file',
-    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed.',
+    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-binary-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1222,7 +1233,7 @@ async function route(req, res, url, sid) {
           try { return LOOPBACK.has(new URL(u).hostname); } catch { return false; }
         });
       }
-    } catch {}
+    } catch { /* a malformed registration body keeps the default redirect_uris */ }
     res.writeHead(201, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({
       client_id:              'public-client',
@@ -1257,7 +1268,7 @@ async function route(req, res, url, sid) {
     // End any previous SSE response for this session (e.g. reconnect after network blip).
     const prev = sseStreams.get(sid);
     if (prev && !prev.writableEnded) {
-      try { prev.end(); } catch {}
+      try { prev.end(); } catch { /* the previous stream is already gone */ }
     }
     res.writeHead(200, {
       'Content-Type':  'text/event-stream',
@@ -1371,6 +1382,11 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
       content: [{ type: 'text', text: `Available vaults:\n${names.map(n => `  - ${n}`).join('\n')}` }],
     } }]);
+  }
+
+  // get-setup-status describes the companion skills and agents; it touches no vault
+  if (msg.method === 'tools/call' && msg.params?.name === 'get-setup-status') {
+    return toolOk(res, sid, msgId, setupStatusText(SERVER_VERSION));
   }
 
   // path access control for tool calls
@@ -1846,6 +1862,7 @@ async function route(req, res, url, sid) {
       'Send the file with:',
       `curl --fail-with-body -sS -T "<path-to-file>" "${url}"`,
       'Replace <path-to-file> with the local file. If the upload fails for any reason, request a new URL.',
+      'If the client refuses to run the command, call get-setup-status for the upload-binary-file skill and the permission rule that allows its script. For a small file, create-binary-file needs no curl.',
     ].join('\n'));
   }
 
@@ -2160,7 +2177,7 @@ async function route(req, res, url, sid) {
         try { content = await libReadNote(filePath); } catch { return; }
         const updated = fmRenameTag(content, args.oldTag, args.newTag);
         if (updated !== content) {
-          try { await libWriteNote(filePath, updated); count++; } catch {}
+          try { await libWriteNote(filePath, updated); count++; } catch { /* a note that cannot be written is skipped and not counted */ }
         }
       });
       return toolOk(res, sid, msgId, `Renamed tag '${args.oldTag}' → '${args.newTag}' in ${count} note(s)`);

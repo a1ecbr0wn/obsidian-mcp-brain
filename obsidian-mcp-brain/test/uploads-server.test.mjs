@@ -82,7 +82,7 @@ function mcpPost(port, body, sid, extraHeaders = {}) {
       res.on('data', c => { data += c; });
       res.on('end', () => {
         const msgs = [];
-        for (const line of data.split('\n')) if (line.startsWith('data: ')) { try { msgs.push(JSON.parse(line.slice(6))); } catch {} }
+        for (const line of data.split('\n')) if (line.startsWith('data: ')) { try { msgs.push(JSON.parse(line.slice(6))); } catch { /* not a JSON event */ } }
         resolve({ status: res.statusCode, headers: res.headers, msgs });
       });
     });
@@ -130,7 +130,7 @@ function request(urlStr, { method = 'PUT', body, headers = {}, localAddress, abo
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
-        let json; try { json = JSON.parse(text); } catch {}
+        let json; try { json = JSON.parse(text); } catch { /* the body is not JSON */ }
         resolve({ status: res.statusCode, headers: res.headers, text, json });
       });
     });
@@ -198,6 +198,12 @@ describe('upload-binary-file and PUT /up/<token>', () => {
       assert.ok(text.includes('300 seconds'), text);
       assert.ok(text.includes('one request only'), text);
       assert.ok(text.includes('tool-1.bin'), text);
+    });
+
+    it('points to get-setup-status and create-binary-file for a client that refuses the command', async () => {
+      const { text } = await reserve(srv, { filename: 'tool-1b.bin', content });
+      assert.ok(text.includes('get-setup-status'), text);
+      assert.ok(text.includes('create-binary-file'), text);
     });
 
     it('returns a different URL each time', async () => {
@@ -1092,7 +1098,7 @@ describe('upload failures and placement', () => {
       let stop = false;
       const watcher = (async () => {
         while (!stop) {
-          try { seen.push((await fs.stat(path.join(srv.vaultDir, 'whole-dir', 'whole.bin'))).size); } catch {}
+          try { seen.push((await fs.stat(path.join(srv.vaultDir, 'whole-dir', 'whole.bin'))).size); } catch { /* the file is not there yet */ }
           await sleep(1);
         }
       })();
