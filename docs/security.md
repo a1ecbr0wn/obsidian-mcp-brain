@@ -199,9 +199,18 @@ destination; it doesn't decide who may upload. The URL also appears in the
 tool's result, so it is visible to the model and in the conversation transcript,
 which is why it is short-lived and works only once.
 
-The address check (the upload must come from the address that reserved it) adds
-a little: callers behind the same NAT share an address, and behind a reverse
-proxy the check does nothing unless
+An upload does not have to come from the address that reserved its URL: the
+check is off by default, because the call and the `curl` often leave from
+unrelated networks (a vendor's cloud and your own machine). What protects the URL
+is that it works once, briefly, for one destination, and for a file that matches
+the SHA-256 and size declared when it was reserved, so anyone who gets it can
+only upload those exact bytes or use it up. The audit log records the address of
+the call (`reserved_from`) and of the upload (`addr`) for every placed file.
+
+[`uploadNetworkPrefix`](configuration#uploads-and-reverse-proxies) turns the
+address check on: `32` for the same address, 16 to 31 for the same IPv4 network.
+Callers behind the same NAT share an address, and behind a reverse proxy the
+check does nothing unless
 [`trustedProxies`](configuration#uploads-and-reverse-proxies) is set. Set it
 only to proxies you run, because the `X-Forwarded-For` header from anywhere else
 is ignored; if the server can be reached directly as well as through the proxy,

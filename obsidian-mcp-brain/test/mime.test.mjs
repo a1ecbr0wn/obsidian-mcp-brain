@@ -6,6 +6,9 @@ describe('mimeTypeFor', () => {
   it('maps known extensions', () => {
     assert.equal(mimeTypeFor('report.pdf'), 'application/pdf');
     assert.equal(mimeTypeFor('a.png'), 'image/png');
+    assert.equal(mimeTypeFor('note.md'), 'text/markdown');
+    assert.equal(mimeTypeFor('Note.MD'), 'text/markdown');
+    assert.equal(mimeTypeFor('drawing.excalidraw.md'), 'text/markdown');
     assert.equal(mimeTypeFor('a.jpg'), 'image/jpeg');
     assert.equal(mimeTypeFor('a.jpeg'), 'image/jpeg');
     assert.equal(mimeTypeFor('a.gif'), 'image/gif');

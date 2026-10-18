@@ -49,7 +49,7 @@ container, use that address or its network range.
 | Behaviour | Result |
 | --- | --- |
 | Request body size | Not limited by default, so a file at `uploadMaxBytes` (50 MiB) went through. Do not set `request_body { max_size }` below `uploadMaxBytes`: at 1 MB a 20 MB upload was refused at once with a `413` and no message |
-| Real client address | Caddy adds `X-Forwarded-For` itself with the caller's address, so no header setting is needed. A request from a different address than the one that reserved the URL was refused with a `403` |
+| Real client address | Caddy adds `X-Forwarded-For` itself with the caller's address, so no header setting is needed. With `uploadNetworkPrefix` set, a request from a different address than the one that reserved the URL is refused with a `403` |
 | `Expect: 100-continue` | Forwarded. `curl` shows two `100 Continue` lines, one from Caddy and one from the server, then `201 Created`. This is harmless |
 | Request buffering | Caddy streams the body, so a refused upload is answered at once (0.1 s for a 20 MB body sent at 4 MB/s). nginx's default would take as long as the body |
 | Streaming responses | Nothing to set. The server's responses and the notification stream pass through; `flush_interval` is not needed |

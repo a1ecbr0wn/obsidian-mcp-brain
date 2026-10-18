@@ -53,8 +53,8 @@ calling `read-binary-file` repeatedly.
 
 1. If you do not know the path, call `list-notes` with `extension` (for example
    `pdf`) and, optionally, `path` to narrow it to a folder.
-2. Call `read-binary-file` with `vault`, `filename` and `folder`. The name must
-   not end in `.md`; use `read-note` for notes.
+2. Call `read-binary-file` with `vault`, `filename` and `folder`. A `.md` note
+   can be read too, but `read-note` is better for a note.
 3. In Claude Code, the result gives a saved path. Open it with your file-reading
    tool. A PDF with a text layer is read as text, and a scanned PDF is read from
    rendered page images.

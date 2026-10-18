@@ -11,6 +11,7 @@ const MIME_TYPES = {
   '.gif':  'image/gif',
   '.webp': 'image/webp',
   '.svg':  'image/svg+xml',
+  '.md':   'text/markdown',
 };
 
 /**
