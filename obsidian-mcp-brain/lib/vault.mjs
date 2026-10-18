@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { rewriteLinks, extractReferences } from './wikilinks.mjs';
 import { isDenied } from './access.mjs';
+import { moveToTrash } from './trash.mjs';
 
 /**
  * True if the file name is a markdown note: it ends in `.md`, in any letter case. This is
@@ -158,7 +159,7 @@ export async function writeNote(absPath, content) {
 }
 
 /**
- * Deletes a note permanently or moves to .trash. On filename collision, appends timestamp suffix.
+ * Deletes a note permanently or moves it to .trash, under a name that carries the time (see trashName).
  * @param {string} absPath - Absolute path to note
  * @param {boolean} permanent - If true, permanently delete; if false, move to .trash
  * @param {string} vaultPath - Absolute path to vault root
@@ -167,21 +168,7 @@ export async function deleteNote(absPath, permanent, vaultPath) {
   if (permanent) {
     await fs.unlink(absPath);
   } else {
-    const trashDir = path.join(vaultPath, '.trash');
-    await fs.mkdir(trashDir, { recursive: true });
-    const fileName = path.basename(absPath);
-    // Keep the note's own extension (.md or .MD) when a suffix is added.
-    const ext = isNoteFile(fileName) ? fileName.slice(-3) : '';
-    const stem = fileName.slice(0, fileName.length - ext.length);
-    let dest = path.join(trashDir, fileName);
-    try {
-      await fs.access(dest);
-      // Collision — suffix with timestamp to avoid silent overwrite
-      dest = path.join(trashDir, `${stem}_${Date.now()}${ext}`);
-    } catch {
-      // ENOENT: destination free, use it
-    }
-    await fs.rename(absPath, dest);
+    await moveToTrash(absPath, vaultPath);
   }
 }
 
@@ -249,8 +236,8 @@ export async function writeBinaryFile(absPath, buffer) {
 }
 
 /**
- * Deletes a binary file permanently or moves to .trash. On filename collision, appends a
- * timestamp suffix before the extension (unlike deleteNote, the extension varies per file).
+ * Deletes a binary file permanently or moves it to .trash, under a name that carries the time
+ * (see trashName).
  * @param {string} absPath - Absolute path to binary file
  * @param {boolean} permanent - If true, permanently delete; if false, move to .trash
  * @param {string} vaultPath - Absolute path to vault root
@@ -259,19 +246,7 @@ export async function deleteBinaryFile(absPath, permanent, vaultPath) {
   if (permanent) {
     await fs.unlink(absPath);
   } else {
-    const trashDir = path.join(vaultPath, '.trash');
-    await fs.mkdir(trashDir, { recursive: true });
-    const ext = path.extname(absPath);
-    const baseName = path.basename(absPath, ext);
-    let dest = path.join(trashDir, path.basename(absPath));
-    try {
-      await fs.access(dest);
-      // Collision — suffix with timestamp to avoid silent overwrite
-      dest = path.join(trashDir, `${baseName}_${Date.now()}${ext}`);
-    } catch {
-      // ENOENT: destination free, use it
-    }
-    await fs.rename(absPath, dest);
+    await moveToTrash(absPath, vaultPath);
   }
 }
 

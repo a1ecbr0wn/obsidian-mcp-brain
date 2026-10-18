@@ -410,6 +410,7 @@ describe('resource server mode', () => {
         ['add-tags', { filename: 'hello.md', tags: ['a'] }],
         ['create-binary-file', { filename: 'x.bin', content: 'AAAA' }],
         ['upload-binary-file', { filename: 'x.bin', size: 1, sha256: 'a'.repeat(64) }],
+        ['replace-binary-file', { filename: 'x.bin', size: 1, sha256: 'a'.repeat(64), expectedSha256: 'b'.repeat(64), expectedMtime: '2026-01-01T00:00:00.000Z' }],
         ['fetch-binary-file', { url: 'http://127.0.0.1:1/x', filename: 'x.bin' }],
         ['delete-binary-file', { filename: 'x.bin' }],
       ];

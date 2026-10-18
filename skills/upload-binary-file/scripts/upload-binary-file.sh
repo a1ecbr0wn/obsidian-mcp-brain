@@ -48,9 +48,10 @@ choose_hasher() {
 
 hash_of() {
   case "$HASHER" in
-    sha256sum) sha256sum "$1" ;;
-    shasum)    shasum -a 256 "$1" ;;
-    openssl)   openssl dgst -sha256 "$1" ;;
+    # The file goes in on stdin, so its name (a leading dash, a backslash) never reaches the tool.
+    sha256sum) sha256sum < "$1" ;;
+    shasum)    shasum -a 256 < "$1" ;;
+    openssl)   openssl dgst -sha256 < "$1" ;;
   esac | {
     # sha256sum/shasum print "<hash>  <name>"; openssl prints "SHA2-256(<name>)= <hash>".
     read -r first second

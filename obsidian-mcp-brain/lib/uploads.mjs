@@ -1,4 +1,4 @@
-// Pure helpers for upload-binary-file: the one-time upload slots, working out who a caller is,
+// Pure helpers for upload-binary-file and replace-binary-file: the one-time upload slots, working out who a caller is,
 // the staging folder, checking a received file (its UTF-8 validity), and resolving a destination
 // inside the vault. Nothing here touches the HTTP server, so it is unit-testable.
 
@@ -49,14 +49,18 @@ export class UploadSlots {
   }
 
   /**
-   * Reserves a slot and returns its token.
-   * @param {{vault: string, relPath: string, size: number, sha256: string, address: string, user?: string}} info
-   *   `user` is who reserved the slot, kept so the upload that fills it can be audited.
-   * @returns {{token: string, expiresAt: number}}
+   * Reserves a slot and returns its token. Expired slots are swept first, so they do not count
+   * towards the cap.
+   * @param {{vault: string, relPath: string, size: number, sha256: string, address: string, user?: string,
+   *   mode?: 'create'|'replace', expectedSha256?: string, expectedMtime?: string}} info
+   *   `user` is who reserved the slot, kept so the upload that fills it can be audited. A slot
+   *   in `replace` mode (default `create`) also holds the hash and mtime of the file it replaces;
+   *   expectedSha256 is required in that mode.
+   * @returns {{token: string, expiresAt: number}} expiresAt is in epoch milliseconds.
    * @throws {Error} with code TOO_MANY_SLOTS when the outstanding-slot cap is reached, or
    *   NO_ADDRESS when address is empty (an empty address would match any other empty one).
    */
-  create({ vault, relPath, size, sha256, address, user }) {
+  create({ vault, relPath, size, sha256, address, user, mode = 'create', expectedSha256, expectedMtime }) {
     if (!address) {
       const err = new Error('The caller address could not be determined');
       err.code = 'NO_ADDRESS';
@@ -70,7 +74,12 @@ export class UploadSlots {
     }
     const token = crypto.randomBytes(32).toString('base64url');
     const expiresAt = this.#now() + this.#ttlMs;
-    this.#slots.set(hashToken(token), { vault, relPath, size, sha256: sha256.toLowerCase(), address, user, expiresAt });
+    const slot = { vault, relPath, size, sha256: sha256.toLowerCase(), address, user, mode, expiresAt };
+    if (mode === 'replace') {
+      slot.expectedSha256 = expectedSha256.toLowerCase();
+      slot.expectedMtime = expectedMtime;
+    }
+    this.#slots.set(hashToken(token), slot);
     return { token, expiresAt };
   }
 
@@ -332,6 +341,18 @@ export async function sweepStaging(dir) {
  */
 export function stagingFileName() {
   return `upload-${crypto.randomBytes(8).toString('hex')}.part`;
+}
+
+/**
+ * The SHA-256 of a file, read as a stream so a large file is never held in memory.
+ * @param {string} filePath - Absolute path of the file.
+ * @returns {Promise<string>} 64 lower-case hexadecimal characters.
+ * @throws {Error} If the file cannot be read.
+ */
+export async function hashFile(filePath) {
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 /**

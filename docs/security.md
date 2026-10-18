@@ -216,6 +216,38 @@ only to proxies you run, because the `X-Forwarded-For` header from anywhere else
 is ignored; if the server can be reached directly as well as through the proxy,
 a forged header would otherwise defeat the check.
 
+### `replace-binary-file`
+
+This tool reserves the same kind of one-time URL, and everything above applies:
+the token, the single use, the fixed destination, size and hash, the `Origin`
+refusal, the staging folder and the symbolic-link handling. What differs is that
+it overwrites, so it has to be hard to use on the wrong file:
+
+- The caller must give the SHA-256 and mtime of the version it means to replace.
+  Both are checked at the reservation and again at placement, on the file that is
+  hard-linked into `.trash` just before the swap, so an edit made after the
+  agent read the file is refused rather than lost.
+- The old version is kept in `.trash`, not deleted, so a wrong replacement can be
+  undone, until the server's [purge](configuration#emptying-trash) removes it
+  (30 days by default).
+- The swap is a rename over the destination, so the real name never shows a
+  half-written file. Just before it, the destination is checked to still be the
+  file that went to `.trash`, which refuses a second replacement that raced the
+  first. A program that writes to the old file in place while the server hashes
+  it is not stopped (that would need file locking), but is noticed afterwards
+  and reported in the reply and the log.
+- The new file is copied under a hidden name beside the destination, which sync
+  tools can see for a moment; it takes the old file's permissions, without
+  setuid, setgid or sticky bits.
+- A refusal at the reservation does not give the file's current hash, so the
+  check can't be used to find it out. (It does name the current mtime, which
+  `list-notes` shows anyway.)
+- A file under `denyBinaryPaths` cannot be replaced, because the hash check would
+  be a way to test guesses at the content of a file that `read-binary-file`
+  refuses to show.
+- The audit log records the reservation (`upload-reserved` with `mode=replace`)
+  and the replacement (`upload-placed` with `mode=replace` and `previous_sha256`).
+
 ### The audit log
 
 The server can keep a record of who did what. Every tool call, every login and

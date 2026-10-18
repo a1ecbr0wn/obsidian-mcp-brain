@@ -45,7 +45,8 @@ once.
   `upload-binary-file` again for a new one.
 - **Do not share or log the URL.** The helper never prints it.
 - **Choose the destination before reserving.** An upload never overwrites: the
-  name must not already exist in the vault.
+  name must not already exist in the vault. To replace a file that is there, use
+  the `replace-binary-file` skill.
 
 ## When it fails
 
@@ -53,7 +54,7 @@ once.
 | --- | --- | --- |
 | `404` | The URL expired or was already used | Reserve a new URL (step 2) and send again |
 | `403` | The request carried an `Origin` header, came from a different address from the one that reserved it (only when the server checks that), or the destination is not allowed | Check the machine that ran `send` is the one that is connected to the server; if the path is restricted, tell the user |
-| `409`, or the tool itself says the file already exists | The destination exists (or appeared after the URL was reserved) | Choose another filename or folder, or ask the user; there is no overwrite |
+| `409`, or the tool itself says the file already exists | The destination exists (or appeared after the URL was reserved) | Choose another filename or folder, or ask the user; to replace the existing file use the `replace-binary-file` skill |
 | `422` | The file does not match the declared hash (it changed, or was damaged) | Run `prepare` again, then reserve a new URL |
 | `411`, `413` or `400` | The declared size does not match the file, or exceeds the upload limit | Run `prepare` again; if the file is over the limit, tell the user |
 | `503` | Too many uploads in progress | Wait a few seconds and start again from step 2 |

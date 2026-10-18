@@ -171,10 +171,11 @@ is logged with its reason.
 
 ### Agent skills and agents
 
-The repository ships two agent skills,
-[`read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file)
+The repository ships three agent skills,
+[`read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file),
+[`upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file)
 and
-[`upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file),
+[`replace-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/replace-binary-file),
 packaged as a plugin and as individual `.skill` files. A plugin can also carry
 agents (an `agents/` folder); each one is listed the same way as a skill. The
 tools work without them; the skills tell an agent how to use the tools well and,
@@ -186,8 +187,9 @@ and agents, the server's version, how to tell which Claude surface the agent is
 on, and the install steps for each. The server does not know what a client has
 installed: the agent checks its own skill list for the names and compares a
 skill's `metadata.version` with the server version, and tells you when a plugin
-update may be available. `upload-binary-file`, `read-binary-file` and
-`create-binary-file` point to `get-setup-status` in their descriptions.
+update may be available. `upload-binary-file`, `replace-binary-file`,
+`read-binary-file` and `create-binary-file` point to `get-setup-status` in
+their descriptions.
 
 How you get them depends on where you run Claude:
 
@@ -200,16 +202,18 @@ How you get them depends on where you run Claude:
 
 A plugin marketplace is a Claude Code feature, so the other surfaces upload the
 plugin file. Agents in a plugin run in Claude Code and Cowork; Claude Desktop
-chat and claude.ai ignore them. `upload-binary-file` needs a shell on a machine
-that can reach the server, so it is of use only where the agent has one. The
+chat and claude.ai ignore them. `upload-binary-file` and `replace-binary-file`
+need a shell on a machine that can reach the server, so they are of use only
+where the agent has one. The
 `.skill`, `.plugin` and agent files are built from the repository by
 `scripts/package-skills.sh`, which needs only `zip`, and are attached to each
 release.
 
-If Claude Code refuses the `curl` command that `upload-binary-file` runs, allow
-the skill's script with a permission rule in `permissions.allow` of
-`~/.claude/settings.json`:
-`Bash(sh <path of the skill's upload-binary-file.sh> *)`. A Bash rule matches
+If Claude Code refuses the `curl` command that `upload-binary-file` (or
+`replace-binary-file`) runs, allow the skill's script with a permission rule in
+`permissions.allow` of `~/.claude/settings.json`:
+`Bash(sh <path of the skill's upload-binary-file.sh> *)` (for the other skill,
+its `replace-binary-file.sh`). A Bash rule matches
 the command as the agent wrote it, from its first word (the skill runs its
 script with `sh`), so write the path the way it appears in the refusal;
 `/permissions` lists the rules. `Bash(curl *)` would allow every `curl`, which

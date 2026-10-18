@@ -148,9 +148,10 @@ describe('deleteNote', () => {
     await deleteNote(p, false, vault);
     // File should be gone from original location
     await assert.rejects(() => fs.access(p));
-    // Should exist in .trash
-    const trashed = path.join(vault, '.trash', 'to-delete.md');
-    await assert.doesNotReject(() => fs.access(trashed));
+    // Should exist in .trash, under a name that carries the time it was trashed
+    const trashed = (await fs.readdir(path.join(vault, '.trash'))).filter(n => /^to-delete_\d{13}\.md$/.test(n));
+    assert.equal(trashed.length, 1);
+    assert.equal(await fs.readFile(path.join(vault, '.trash', trashed[0]), 'utf8'), '# Delete me\n');
   });
 
   it('deletes note permanently', async () => {
@@ -159,11 +160,11 @@ describe('deleteNote', () => {
     await deleteNote(p, true, vault);
     await assert.rejects(() => fs.access(p));
     // Should NOT be in .trash
-    const trashed = path.join(vault, '.trash', 'to-delete-perm.md');
-    await assert.rejects(() => fs.access(trashed));
+    const trashed = (await fs.readdir(path.join(vault, '.trash'))).filter(n => n.startsWith('to-delete-perm'));
+    assert.deepEqual(trashed, []);
   });
 
-  it('keeps the original extension when a trashed .MD note collides', async () => {
+  it('keeps the original extension, and does not collide, when a .MD note is trashed twice', async () => {
     const p = path.join(vault, 'Dup.MD');
     await fs.writeFile(p, '# one\n');
     await deleteNote(p, false, vault);
@@ -171,8 +172,7 @@ describe('deleteNote', () => {
     await deleteNote(p, false, vault);
     const trash = (await fs.readdir(path.join(vault, '.trash'))).filter(n => n.startsWith('Dup'));
     assert.equal(trash.length, 2);
-    assert.ok(trash.includes('Dup.MD'));
-    assert.ok(trash.some(n => /^Dup_\d+\.MD$/.test(n)), trash.join(', '));
+    assert.ok(trash.every(n => /^Dup_\d{13}\.MD$/.test(n)), trash.join(', '));
   });
 });
 
@@ -283,8 +283,8 @@ describe('deleteBinaryFile', () => {
     await fs.writeFile(p, Buffer.from([0x01]));
     await deleteBinaryFile(p, false, vault);
     await assert.rejects(() => fs.access(p));
-    const trashed = path.join(vault, '.trash', 'to-delete.png');
-    await assert.doesNotReject(() => fs.access(trashed));
+    const trashed = (await fs.readdir(path.join(vault, '.trash'))).filter(n => /^to-delete_\d{13}\.png$/.test(n));
+    assert.equal(trashed.length, 1);
   });
 
   it('deletes binary file permanently', async () => {
@@ -292,14 +292,14 @@ describe('deleteBinaryFile', () => {
     await fs.writeFile(p, Buffer.from([0x01]));
     await deleteBinaryFile(p, true, vault);
     await assert.rejects(() => fs.access(p));
-    const trashed = path.join(vault, '.trash', 'to-delete-perm.png');
-    await assert.rejects(() => fs.access(trashed));
+    const trashed = (await fs.readdir(path.join(vault, '.trash'))).filter(n => n.startsWith('to-delete-perm'));
+    assert.deepEqual(trashed, []);
   });
 
-  it('suffixes with a timestamp on collision, preserving the extension', async () => {
+  it('gives two files of the same name their own timestamped names', async () => {
     const p1 = path.join(vault, 'dup.png');
     await fs.writeFile(p1, Buffer.from([0x01]));
-    await deleteBinaryFile(p1, false, vault); // now in .trash/dup.png
+    await deleteBinaryFile(p1, false, vault);
 
     const p2 = path.join(vault, 'dup.png');
     await fs.writeFile(p2, Buffer.from([0x02]));
@@ -308,7 +308,7 @@ describe('deleteBinaryFile', () => {
     const trashEntries = await fs.readdir(path.join(vault, '.trash'));
     const dupEntries = trashEntries.filter(e => e.startsWith('dup'));
     assert.equal(dupEntries.length, 2);
-    assert.ok(dupEntries.every(e => e.endsWith('.png')));
+    assert.ok(dupEntries.every(e => /^dup_\d{13}\.png$/.test(e)), dupEntries.join(', '));
   });
 });
 

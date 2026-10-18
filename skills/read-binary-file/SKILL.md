@@ -61,10 +61,13 @@ calling `read-binary-file` repeatedly.
 
 ## Step 3: check the result
 
-- **A text line and a file you can open**: you are done.
-- **Only the text line** (`<path> (<n> bytes, <mime type>)`) and no file or
-  content, for a file that is not an image: this surface drops non-image files.
-  Stop and tell the user as in step 1. Do not call the tool again.
+- **A text line and a file you can open**: you are done. The `sha256:` and
+  `Last-Modified:` lines name the version you read; the `replace-binary-file`
+  skill needs them to replace the file.
+- **Only the text lines** (`<path> (<n> bytes, <mime type>)`, then `sha256:` and
+  `Last-Modified:`) and no file or content, for a file that is not an image:
+  this surface drops non-image files. Stop and tell the user as in step 1. Do
+  not call the tool again.
 - **`The operation timed out`** on a large file that has not been read recently:
   the server is still working and a second call is fast. Call it again, up to
   twice, then tell the user.

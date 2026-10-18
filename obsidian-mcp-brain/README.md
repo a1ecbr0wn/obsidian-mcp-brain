@@ -248,6 +248,7 @@ except `CONFIG_PATH`, which says where to find it.
   "uploadNetworkPrefix": 0,
   "logFile": "/var/log/obsidian-mcp.log",
   "sessionTimeoutSeconds": 1800,
+  "trashRetentionDays": 30,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
   "trustedProxies": ["127.0.0.1", "::1"],
   "vaults": {
@@ -285,6 +286,7 @@ except `CONFIG_PATH`, which says where to find it.
 | `trustedProxies`         | No       | `[]`                                                          | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below                                                                                            |
 | `logFile`                | No       | `none`                                                        | Absolute path of a file to append the log to, as well as the console. Includes the audit log                                                                                          |
 | `sessionTimeoutSeconds`  | No       | `1800`                                                        | How long a session may be idle before it is removed, in seconds (at least 60)                                                                                                         |
+| `trashRetentionDays`     | No       | `30`                                                          | Days a file stays in `.trash` before it is deleted (`0`: for ever)                                                                                                                    |
 | `auth`                   | No       | none                                                          | Accept only signed tokens from an external OAuth service, for the users you list. Off by default. See [Authentication](https://brain.a1ecbr0wn.com/configuration#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which
@@ -556,6 +558,29 @@ failure: `403` an `Origin` header (or a wrong address, when
 destination appeared meanwhile, `411` no `Content-Length`, `413` or `400` size
 mismatch, `422` hash mismatch, `503` too many uploads at once.
 
+### replace-binary-file
+
+`upload-binary-file` never overwrites. `replace-binary-file` replaces a file that
+is already in the vault, with the same one-time URL and `curl` upload, but only
+if the file is still the version the caller read. Both `expectedSha256` and
+`expectedMtime` are required, and they come from the `sha256:` and
+`Last-Modified:` lines of `read-binary-file`:
+
+```text
+replace-binary-file → { filename: "report.pdf", folder: "attachments", size: 912340, sha256: "<new file>", expectedSha256: "<file in the vault>", expectedMtime: "2026-05-01T09:30:00.123Z" }
+```
+
+- The two values are checked when the URL is reserved and again when the file
+  arrives, so a file that someone changed in between is never overwritten
+  (`409`).
+- The old version moves to `.trash`; the new file is renamed over the
+  destination, so a complete file is always there.
+- The file must exist, a new file identical to it is refused, and a file under
+  `denyBinaryPaths` cannot be replaced.
+- Everything else, including the limits and the address rules, is as for
+  `upload-binary-file`. The `replace-binary-file` skill does the hashing and the
+  `curl` call.
+
 ### Binary read protection (`denyBinaryPaths`)
 
 `denyPaths` removes a path from every tool; `denyBinaryPaths` only stops the
@@ -652,8 +677,8 @@ Restart Claude Desktop after saving.
 
 ## Agent skills and agents
 
-The repository includes two agent skills, `read-binary-file` and
-`upload-binary-file`, in
+The repository includes three agent skills, `read-binary-file`,
+`upload-binary-file` and `replace-binary-file`, in
 [`skills/`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills).
 The tools work without them; the skills tell an agent how to use the tools well
 and what to say when a client can't show a file. The server tells a connected
@@ -687,6 +712,7 @@ how to install them, and a plugin can carry agents as well as skills.
 | `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
 | `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `replace-binary-file` | Reserve a one-time upload URL that replaces a file already in the vault, only if it is still the version named by its SHA-256 and mtime; the old version moves to `.trash` |
 | `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
 | `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |

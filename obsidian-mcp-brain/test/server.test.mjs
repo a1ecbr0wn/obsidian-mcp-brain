@@ -10,6 +10,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -256,7 +257,7 @@ describe('companion skills and agents', () => {
   });
 
   it('the tool texts point to the setup tool and do not repeat the install steps', async () => {
-    for (const name of ['upload-binary-file', 'read-binary-file', 'create-binary-file']) {
+    for (const name of ['upload-binary-file', 'replace-binary-file', 'read-binary-file', 'create-binary-file']) {
       const d = (await toolsList()).find(t => t.name === name).description;
       assert.ok(!d.includes('/plugin marketplace add'), name);
       assert.ok(!d.includes('Upload plugin'), name);
@@ -1559,11 +1560,13 @@ describe('read-binary-file', () => {
     await fs.writeFile(abs, bytes);
   }
 
-  it('returns a text block then an embedded resource carrying the exact bytes', async () => {
+  it('returns a text block then an embedded resource carrying the exact bytes, then the version read', async () => {
     await writeBin('read-bin/report.pdf', PDF_BYTES);
     const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'report.pdf' });
     assert.ok(!result.isError, JSON.stringify(result));
-    assert.equal(result.content.length, 2);
+    assert.equal(result.content.length, 4);
+    assert.equal(result.content[2].text, `sha256: ${crypto.createHash('sha256').update(PDF_BYTES).digest('hex')}`);
+    assert.match(result.content[3].text, /^Last-Modified: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.equal(result.content[0].type, 'text');
     assert.equal(result.content[0].text, `read-bin/report.pdf (${PDF_BYTES.length} bytes, application/pdf)`);
     assert.equal(result.content[1].type, 'resource');

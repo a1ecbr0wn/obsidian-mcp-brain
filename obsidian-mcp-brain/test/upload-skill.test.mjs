@@ -163,6 +163,17 @@ describe('upload-binary-file.sh', () => {
       assert.match(r.stdout, new RegExp(`^sha256=${sha256(content)}$`, 'm'));
     });
 
+    it('hashes a file whose name has a backslash or a newline in it', async () => {
+      for (const name of ['back\\slash.bin', 'new\nline.bin']) {
+        const odd = path.join(dir, name);
+        const bytes = crypto.randomBytes(300);
+        await fs.writeFile(odd, bytes);
+        const r = await run(['prepare', odd]);
+        assert.equal(r.code, 0, r.all);
+        assert.match(r.stdout, new RegExp(`^sha256=${sha256(bytes)}$`, 'm'), name);
+      }
+    });
+
     it('handles an empty file', async () => {
       const empty = path.join(dir, 'empty.bin');
       await fs.writeFile(empty, '');

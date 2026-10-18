@@ -464,6 +464,19 @@ describe('checkBinaryMove', () => {
   });
 });
 
+describe('replace-binary-file access', () => {
+  it('blocks a denied destination, also through ..-traversal', () => {
+    for (const folder of ['people', 'projects/../people']) {
+      const r = checkAccess(DENY, 'replace-binary-file', { folder, filename: 'a.pdf' });
+      assert.ok(r?.includes('restricted'), folder);
+    }
+  });
+
+  it('allows a permitted destination', () => {
+    assert.equal(checkAccess(DENY, 'replace-binary-file', { folder: 'projects', filename: 'a.pdf' }), null);
+  });
+});
+
 describe('upload-binary-file access', () => {
   it('blocks a denied destination', () => {
     const r = checkAccess(DENY, 'upload-binary-file', { folder: 'people', filename: 'a.pdf' });

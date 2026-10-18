@@ -48,6 +48,7 @@ export const TOOL_ROLES = Object.freeze({
   'create-binary-file': 'write',
   'fetch-binary-file': 'write',
   'upload-binary-file': 'write',
+  'replace-binary-file': 'write',
   'move-binary-file': 'write',
   'delete-binary-file': 'write',
   'create-folder': 'write',

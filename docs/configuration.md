@@ -37,6 +37,7 @@ except `CONFIG_PATH`, which says where to find it.
     "uploadNetworkPrefix": 0,
     "logFile": "/var/log/obsidian-mcp.log",
     "sessionTimeoutSeconds": 1800,
+    "trashRetentionDays": 30,
     "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
     "trustedProxies": ["127.0.0.1", "::1"],
     "vaults": {
@@ -74,6 +75,7 @@ except `CONFIG_PATH`, which says where to find it.
 | `trustedProxies`         | No       | `[]`                                                               | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies)                                                                             |
 | `logFile`                | No       | `none`                                                             | Absolute path of a file to append the log to, as well as the console. Includes the audit log. See [Logging](#logging-and-the-audit-log)                                                                       |
 | `sessionTimeoutSeconds`  | No       | `1800`                                                             | How long a session may be idle before it is removed, in seconds (at least 60). See [Sessions](#sessions)                                                                                                      |
+| `trashRetentionDays`     | No       | `30`                                                               | Days a file stays in `.trash` before the server deletes it for good; `0` keeps files. See [Emptying `.trash`](#emptying-trash)                                                                                |
 | `auth`                   | No       | none                                                               | Turns on authentication: the server accepts only signed tokens from an external OAuth service, for the users you list. Without it the server is unauthenticated, as before. See [below](#authentication-auth) |
 
 Each vault entry can also set its own `denyPaths` and `denyBinaryPaths`, which
@@ -343,6 +345,60 @@ A client can end its session sooner with `DELETE /mcp`: the server removes the
 session, closes its stream and answers `204`. A session it doesn't know gets
 `404`. With `auth` on the request needs a valid token for the session's user,
 as any other request does.
+
+### Emptying `.trash`
+
+The server moves what it deletes to the vault's `.trash` folder: `delete-note`,
+`delete-binary-file`, and the old version of a file that `replace-binary-file`
+replaces. Each file is named `<name>_<epoch milliseconds><extension>`, such as
+`report_1760812345678.pdf`, so the name says when it was trashed and files of
+the same name never collide (a very long name is shortened to fit). A file can
+be restored with `move-binary-file` or `move-note`.
+
+**`trashRetentionDays`** is how long a file may stay there before the server
+deletes it for good: a whole number of days, 30 by default, and `0` to keep
+everything for ever. Any other value stops the server at start-up. A vault can
+set its own value next to its `path`, which wins over the server-wide one:
+
+```json
+{ "trashRetentionDays": 30, "vaults": { "work": { "path": "/data/work", "trashRetentionDays": 90 } } }
+```
+
+The server empties `.trash` once, shortly after it starts, and then every 24
+hours. It deletes every regular file in `.trash` older than the limit,
+**including what Obsidian or you put there**, and the folders that this leaves
+empty or that are empty and older than the limit (never `.trash` itself). A
+deleted file is not recoverable.
+
+A file's age is the time since its change time (`ctime`), which the filesystem
+sets when the file is moved into `.trash`. The time in a file's name is for
+people and is not used: a name can be anything, so a name that claims a file is
+old cannot make a new file old. The modification time is not used either, since
+it is when the content was last edited, and a file edited a year ago and deleted
+today is not purged at once. A file inside a folder that was moved into `.trash`
+counts as old only when its folder is too, so trashing a whole folder does not
+expose its files to the next purge. Something that changes a file's `ctime`
+later, such as a backup tool restoring it, only delays its deletion. A file
+whose age cannot be worked out is kept.
+
+The purge never leaves `.trash`: it refuses a `.trash` that is a symbolic link
+(so do the tools that move files into it), does not follow links inside it (a
+link is removed as a link), checks before each folder is read and each file is
+removed that no folder on the way has been swapped for a link, and ignores
+`denyPaths`, because it only deletes. That check cannot close the few
+microseconds between the check and the removal, in which another process with
+write access to your vault could swap a folder for a link. A file that vanishes
+during the run is not an error, and a file that cannot be deleted is logged and
+counted while the run goes on.
+
+Every run writes a line to the log for each vault, such as
+`trash purge of work: 3 file(s) older than 30 day(s) removed`. Every file
+removed is written to the [audit log](#logging-and-the-audit-log) as
+`AUDIT event=trash-purged vault=… path=… bytes=… age_days=…`, and a run that
+removed or failed on anything adds `AUDIT event=trash-purge vault=… files=…
+bytes=… errors=…`. Files already in `.trash` when you upgrade keep their names
+and are purged by the same rule. If two vault names share a folder, the
+shorter limit applies to its `.trash`.
 
 ### Logging and the audit log
 

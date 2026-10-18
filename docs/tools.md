@@ -22,14 +22,15 @@ names.
 | `read-note` | Read a note's content and last-modified timestamp |
 | `create-note` | Create a new note. Fails if it already exists |
 | `edit-note` | Edit a note: append, prepend, replace, replace or delete the content under a heading, or toggle a checkbox |
-| `delete-note` | Delete a note, moving it to `.trash` by default |
+| `delete-note` | Delete a note, moving it to `.trash` by default (under a name that carries the time; see [Emptying `.trash`](configuration#emptying-trash)) |
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
 | `create-binary-file` | Create a new binary file (for example an image) from base64-encoded content. Fails if it already exists |
 | `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client sends only a URL |
 | `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `replace-binary-file` | Reserve a one-time upload URL that replaces a file already in the vault, but only if it is still the version named by its SHA-256 and mtime. The old version moves to `.trash` |
 | `read-binary-file` | Return an existing binary file, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
 | `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
-| `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
+| `delete-binary-file` | Delete a binary file, moving it to `.trash` by default (under a name that carries the time) |
 | `find-backlinks` | Find all notes that link to or embed a given note or binary file |
 | `resolve-wikilink` | Resolve a wikilink target string to the vault-relative file or files it points to |
 | `create-folder` | Create a new folder, and any missing parents, in the vault |
@@ -241,14 +242,95 @@ only images on a chat surface, and `upload-binary-file` needs a shell and
 with a permission rule. See [Agent skills and
 agents](connect#agent-skills-and-agents).
 
+### `replace-binary-file`
+
+`upload-binary-file` never overwrites. `replace-binary-file` is the same upload
+with the opposite rule: the destination must already exist, and the caller must
+say which version of it is being replaced, so a file someone else changed in the
+meantime is never overwritten by mistake.
+
+The flow:
+
+1. The agent reads the file in the vault with `read-binary-file`. The result
+   ends with a `sha256:` and a `Last-Modified:` line, which are the file's
+   current SHA-256 and mtime. (A file over `readMaxBytes` is refused, but the
+   refusal gives both values.)
+2. It works out the new file's size and SHA-256 with a tool, as for an upload.
+3. It calls the tool:
+
+   ```text
+   replace-binary-file -> { filename: "report.pdf", folder: "attachments", size: 912340, sha256: "<new file>", expectedSha256: "<file in the vault>", expectedMtime: "2026-05-01T09:30:00.123Z" }
+   ```
+
+4. The result is a one-time URL and a `curl` command, exactly as for an upload.
+5. The server checks the received bytes against the declared size and hash. If
+   both match, and the file in the vault is still the one named, it moves the
+   old version to `.trash` and puts the new one in its place. It answers `200`
+   with `{"path", "bytes", "sha256", "replaced": true, "previousSha256",
+   "trashedAs"}`.
+
+The rules, beyond those of [`upload-binary-file`](#upload-binary-file) (one
+request, short-lived, the same limits, address and note rules):
+
+- **Both version checks are required.** `expectedSha256` and `expectedMtime`
+  must both match the file in the vault. They are checked when the URL is
+  reserved, and again when the file arrives, on the very file that is about to
+  be swapped out. If it changed in between, nothing is replaced and the answer is
+  `409`. A refusal says that the file has changed and to read it again, and does
+  not give its hash.
+- **The file must exist** and be a regular file. A symbolic link is followed and
+  the file it points at is replaced; a link that leads out of the vault, or into
+  a denied folder, is refused.
+- **The old version is kept for a while.** It goes to `.trash` under a name that
+  carries the time, such as `report_1760812345678.pdf`, as with a
+  `delete-binary-file` that is not permanent, and the reply's `trashedAs` says
+  which. `move-binary-file` can put it back. The server deletes it for good
+  after [`trashRetentionDays`](configuration#emptying-trash) (30 by default).
+  The new file keeps the old file's permissions (but not setuid, setgid or
+  sticky bits, and not its owner).
+- **No half-written file.** The new file is written beside the destination under
+  a hidden name, checked again, and then renamed over it, so the destination
+  holds a complete file the whole time.
+- **A new file identical to the current one is refused** (nothing to replace).
+- **A file under [`denyBinaryPaths`](configuration#binary-file-read-protection)
+  cannot be replaced**, because the hash check would let a caller test guesses at
+  a file it is not allowed to read. A `.md` is not covered by that setting, and
+  is accepted only if it is valid UTF-8, as for an upload.
+
+The checks guard against an edit made since the agent read the file, which is
+the realistic case. Just before the swap the server also checks that the
+destination is still the file it moved to `.trash`, so a second replacement that
+got in first is refused. A program that writes to the old file in place during
+the short time it takes to hash it cannot be stopped without locking the file;
+the server notices afterwards, and the reply then carries a `warning` saying that
+the copy in `.trash` may hold newer content than `previousSha256`.
+
+While the new file is being copied, a hidden temporary file (`.upload-<hex>.part`)
+exists beside the destination; it is removed afterwards, but one left by a
+process that was killed is not cleaned up automatically.
+
+What `curl` receives is the same as for an upload, except that a successful
+replacement is `200` (not `201`) and `409` means that the file changed or no
+longer exists.
+
+The repository includes an agent skill,
+[`skills/replace-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/replace-binary-file),
+with a script, `scripts/replace-binary-file.sh`: `prepare <file>` (prints the new
+file's name, size and SHA-256) and `send <file> <url> <old sha256>` (uploads, then
+compares the server's reply with the local file and with the version that was
+expected). Install it as described for the [upload
+skill](#upload-binary-file); see [Security](security#replace-binary-file).
+
 ### `read-binary-file`
 
 The other binary tools can create, move and delete a file but not hand its
-contents to the agent. `read-binary-file` does that: it returns the file as two
-content blocks, a short text line
-(`attachments/report.pdf (48213 bytes, application/pdf)`) followed by an MCP
-embedded `resource` carrying the file's bytes as base64, its `mimeType`, and a
-`file:///` URI built from the vault-relative path.
+contents to the agent. `read-binary-file` does that: it returns the file as a
+short text line (`attachments/report.pdf (48213 bytes, application/pdf)`),
+an MCP embedded `resource` carrying the file's bytes as base64, its `mimeType`,
+and a `file:///` URI built from the vault-relative path, and then a `sha256:` line
+and a `Last-Modified:` line that name the version that was read, which
+[`replace-binary-file`](#replace-binary-file) takes as `expectedSha256` and
+`expectedMtime`.
 
 ```text
 read-binary-file -> { filename: "report.pdf", folder: "attachments" }
@@ -342,7 +424,8 @@ The rules:
   `trustedProxies`; see
   [Configuration](configuration#uploads-and-reverse-proxies).
 - **Short-lived.** A URL lasts `uploadTtlSeconds` (300 by default).
-- **The destination.** The destination must not already exist, and it must pass
+- **The destination.** The destination must not already exist (to replace a
+  file use [`replace-binary-file`](#replace-binary-file)), and it must pass
   the [`denyPaths`](configuration#path-deny-list) check, both when the URL is
   reserved and again when the file is placed, after following any symbolic
   links, so a link that leads out of the vault, or into a denied folder, is

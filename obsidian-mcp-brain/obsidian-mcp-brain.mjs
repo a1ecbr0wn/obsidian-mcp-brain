@@ -34,6 +34,7 @@ import {
   checkStagingDirOwner,
   defaultUploadTempDir,
   isValidUtf8File,
+  hashFile,
   resolveDestination,
   sweepStaging,
   stagingFileName,
@@ -41,12 +42,13 @@ import {
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
 import { replaceSection, deleteSection, toggleCheckbox, readSection, outlineSections } from './lib/sections.mjs';
-import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
+import { assertUnmodified, formatMtime, validateExpectedMtime } from './lib/preconditions.mjs';
 import { fetchToBuffer } from './lib/fetch.mjs';
 import { formatAudit, toolTarget, requestHost } from './lib/audit.mjs';
 import { openLogFile } from './lib/logfile.mjs';
 import { SessionTable } from './lib/sessions.mjs';
 import { detectLineEnding, toLineEnding } from './lib/lineending.mjs';
+import { trashDestination, purgeVaults } from './lib/trash.mjs';
 import {
   isNoteFile,
   walkAllFiles as libWalkAllFiles,
@@ -234,6 +236,17 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  // How long a file stays in .trash before the server deletes it: whole days, 0 to keep for ever.
+  const parseRetention = (value, label) => {
+    if (value === undefined) return undefined;
+    if (!Number.isInteger(value) || value < 0) {
+      logErr(`Config file at ${configPath}: ${label} must be a whole number of days, 0 or more (0 keeps files in .trash for ever)`);
+      process.exit(1);
+    }
+    return value;
+  };
+  const trashRetentionDays = parseRetention(config.trashRetentionDays, '"trashRetentionDays"') ?? 30;
+
   const uploadNetworkPrefix = config.uploadNetworkPrefix ?? 0;
   if (!Number.isInteger(uploadNetworkPrefix) || (uploadNetworkPrefix !== 0 && (uploadNetworkPrefix < 16 || uploadNetworkPrefix > 32))) {
     logErr(`Config file at ${configPath}: "uploadNetworkPrefix" must be 0 (no address check) or a whole number from 16 to 32`);
@@ -271,7 +284,7 @@ function loadConfig(configPath) {
   // authentication under any other name is an error, and any other unknown key is reported.
   const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'mcpPath', 'denyPaths', 'denyBinaryPaths',
     'graphifyQueryTimeoutMs', 'fetchMaxBytes', 'fetchTimeoutMs', 'readMaxBytes', 'readNoteMaxChars',
-    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'sessionTimeoutSeconds', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
+    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'sessionTimeoutSeconds', 'trashRetentionDays', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
   for (const key of Object.keys(config)) {
     if (knownKeys.has(key)) continue;
     if (/^(auth|oauth2?|authn|authentication|authorization|authorisation|tokens?|jwks|jwksuri|issuer|audience|users|readonlyusers|userclaim|tokenheader)$/i.test(key)) {
@@ -325,6 +338,7 @@ function loadConfig(configPath) {
     }
     vaults[name] = {
       path: entry.path,
+      trashRetentionDays: parseRetention(entry.trashRetentionDays, `vaults.${name}.trashRetentionDays`) ?? trashRetentionDays,
       denyPaths: [...globalDenyPaths, ...normDenyPaths(entry.denyPaths, configPath, `vaults.${name}.denyPaths`)],
       denyBinaryPaths: compileBinaryPatterns(withTrash([
         ...globalDenyBinaryPaths,
@@ -697,8 +711,33 @@ const TOOLS = [
     },
   },
   {
+    name: 'replace-binary-file',
+    description: 'Replace a file that is already in the vault (a PDF, an image) with a new version from the local disk, without sending its contents through the model. '
+      + 'It works like upload-binary-file: give the new file\'s size and SHA-256 (from `wc -c` and `sha256sum`, never by hand) and you get a one-time URL and a `curl` command. '
+      + 'It also needs to know which version is being replaced: expectedSha256 and expectedMtime of the file in the vault, both from a prior read-binary-file call (its sha256 and Last-Modified lines). '
+      + 'The reservation is refused if the vault file does not match them, and the check is made again when the file arrives, so a file that someone changed in between is never overwritten; read it again and retry. '
+      + 'The server checks the received file against the declared size and hash and, only if all of that matches, puts it in place and moves the old version to .trash, from where it can be restored. '
+      + 'The file must already exist (to add a new one use upload-binary-file); a file under denyBinaryPaths cannot be replaced; a new file identical to the current one is refused. '
+      + 'The URL works for ONE request only, for a few minutes; if the upload fails for any reason, call this tool again for a new URL. '
+      + 'If the replace-binary-file skill is installed, use its replace-binary-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
+      + 'This needs a shell and curl.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:          { type: 'string', description: 'Vault name' },
+        filename:       { type: 'string', description: 'Filename of the file to replace, including extension' },
+        folder:         { type: 'string', description: 'Optional vault-relative folder' },
+        size:           { type: 'integer', description: 'Size of the NEW file in bytes (for example from `wc -c`)' },
+        sha256:         { type: 'string', description: 'SHA-256 of the NEW file as 64 hexadecimal characters (for example from `sha256sum`)' },
+        expectedSha256: { type: 'string', description: 'SHA-256 of the file in the vault that is being replaced, from read-binary-file' },
+        expectedMtime:  { type: 'string', description: 'ISO 8601 mtime of the file in the vault that is being replaced, from the Last-Modified line of read-binary-file or from list-notes' },
+      },
+      required: ['vault', 'filename', 'size', 'sha256', 'expectedSha256', 'expectedMtime'],
+    },
+  },
+  {
     name: 'read-binary-file',
-    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-binary-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
+    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. The result also gives the file\'s sha256 and Last-Modified, which replace-binary-file takes as expectedSha256 and expectedMtime (a file over the limit is refused, but the refusal gives both). Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-binary-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1302,12 +1341,119 @@ async function placeUpload(vault, relPath, stagePath, sha256) {
 }
 
 /**
+ * Replaces a file in the vault with a received one. The file being replaced must still be the
+ * one the caller expects: its mtime is checked, then its mtime and SHA-256 again on the copy that
+ * goes to .trash (the very file that is about to be swapped out), so a change after the reservation
+ * is caught. The
+ * received file is copied beside the destination under a hidden name (re-checking its hash,
+ * and keeping the old file's permissions, without setuid, setgid or sticky bits), the old file
+ * is hard-linked into .trash (copied where hard links fail), and the new file is renamed over
+ * the destination, so the destination holds a complete file the whole time. Just before the
+ * rename the destination is checked to still be the file that was trashed, which catches a
+ * second replacement that got in first. A write in place by another process during the hash of
+ * the old file, or in the few microseconds before the rename, is not prevented; the rename is
+ * followed by a check of the trashed file and a change is reported as `raced`. trashedAs is the
+ * old file's vault-relative path in .trash.
+ * @param {object} vault - A configured vault.
+ * @param {{relPath: string, sha256: string, expectedSha256: string, expectedMtime: string}} slot
+ * @param {string} stagePath - The received file.
+ * @returns {Promise<{outcome: 'ok', trashedAs: string, raced: boolean}|{outcome: 'missing'|'notfile'|'changed'|'denied'|'outside'|'corrupt'|'notutf8'}>}
+ */
+async function placeReplace(vault, slot, stagePath) {
+  const { relPath, sha256, expectedSha256, expectedMtime } = slot;
+  if (_isDenied(vault.denyPaths, relPath)) return { outcome: 'denied' };
+  const resolved = await resolveDestination(vault.path, relPath);
+  if (!resolved.ok) return { outcome: 'outside' };
+  if (_isDenied(vault.denyPaths, resolved.rel)) return { outcome: 'denied' };
+  // A protected binary file is judged where it really is, so a link cannot reach it.
+  if (!isNoteFile(resolved.rel) && isBinaryReadDenied(vault.denyBinaryPaths, resolved.rel)) return { outcome: 'denied' };
+  // A note is text that the note tools parse: judged by the name asked for and by the file really replaced.
+  if ((isNoteFile(relPath) || isNoteFile(resolved.rel)) && !(await isValidUtf8File(stagePath))) return { outcome: 'notutf8' };
+  // Replaced where the file really is: renaming over a link would swap the link, not its target.
+  const dest = path.join(vault.path, resolved.rel);
+  let stat;
+  try {
+    stat = await fs.stat(dest);
+  } catch (err) {
+    if (err.code === 'ENOENT') return { outcome: 'missing' };
+    throw err;
+  }
+  if (!stat.isFile()) return { outcome: 'notfile' };
+  if (formatMtime(stat) !== expectedMtime) return { outcome: 'changed' };
+  const mode = stat.mode & 0o777;
+  const tmp = path.join(path.dirname(dest), `.${stagingFileName()}`);
+  let trash;
+  try {
+    const hash = createHash('sha256');
+    const hasher = new Transform({ transform(chunk, _e, cb) { hash.update(chunk); cb(null, chunk); } });
+    await pipeline(createReadStream(stagePath), hasher, createWriteStream(tmp, { flags: 'wx', mode }));
+    if (hash.digest('hex') !== sha256) return { outcome: 'corrupt' };
+    await fs.chmod(tmp, mode);
+    // Hard-link the old file into .trash; a name that is taken is retried, and a filesystem
+    // without hard links gets a copy. A copy that fails part way is removed.
+    for (let attempt = 0; !trash; attempt++) {
+      if (attempt === 5) throw new Error('no free name in .trash');
+      const candidate = await trashDestination(dest, vault.path);
+      try {
+        await fs.link(dest, candidate);
+        trash = candidate;
+      } catch (err) {
+        if (err.code === 'ENOENT' && !(await fs.access(dest).then(() => true, () => false))) return { outcome: 'missing' };
+        if (err.code === 'EEXIST') { await new Promise(r => setTimeout(r, 2)); continue; }
+        try {
+          await fs.copyFile(dest, candidate, fsConstants.COPYFILE_EXCL);
+          trash = candidate;
+        } catch (copyErr) {
+          if (copyErr.code === 'ENOENT') return { outcome: 'missing' };
+          if (copyErr.code === 'EEXIST') { await new Promise(r => setTimeout(r, 2)); continue; }
+          await fs.unlink(candidate).catch(() => {});
+          throw copyErr;
+        }
+      }
+    }
+    const trashed = await fs.stat(trash);
+    if (formatMtime(trashed) !== expectedMtime || (await hashFile(trash)) !== expectedSha256) {
+      await fs.unlink(trash).catch(() => {});
+      return { outcome: 'changed' };
+    }
+    // The destination must still be the file that was trashed: a replacement that finished
+    // while the old file was being hashed has put another file there.
+    const now = await fs.stat(dest).catch(() => null);
+    if (!now || now.ino !== trashed.ino || now.dev !== trashed.dev) {
+      await fs.unlink(trash).catch(() => {});
+      return { outcome: now ? 'changed' : 'missing' };
+    }
+    try {
+      await fs.rename(tmp, dest);
+    } catch (err) {
+      await fs.unlink(trash).catch(() => {});
+      throw err;
+    }
+    // A write in place to the old file after it was checked would also have changed the trashed copy.
+    const after = await fs.stat(trash).catch(() => null);
+    const raced = !after || after.size !== trashed.size || after.mtimeMs !== trashed.mtimeMs;
+    return { outcome: 'ok', trashedAs: path.relative(vault.path, trash).split(path.sep).join('/'), raced };
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+/**
  * Handles every request to /up/...: the one-time upload URL. The order matters: the slot is
  * used up first, so whatever the request turns out to be, the URL is dead afterwards. The
  * received file must match the declared size and hash, and a note (.md) must also be valid
  * UTF-8; a failed check is answered with an error status (for example 400 or 422) and the file
- * is not placed in the vault. The
- * staging file is always removed before any answer (success or error) is sent to the client.
+ * is not placed in the vault. The staging file is always removed before any answer (success or
+ * error) is sent to the client.
+ *
+ * A create slot places the file at a new path and answers 201 with {path, bytes, sha256}. A
+ * replace slot (from replace-binary-file) goes through placeReplace, which moves the old file to
+ * .trash, and answers 200 with {path, bytes, sha256, replaced: true, previousSha256, trashedAs},
+ * where trashedAs is vault-relative, plus a warning if the old file was written to while it was
+ * being replaced. For a replace, 403 means denied or outside the vault, 409 means the file is
+ * missing, is not a regular file or has changed since it was read, 400 means a note that is not
+ * UTF-8, and 500 means the placed file was corrupted; a create answers 409 when the destination
+ * exists.
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  * @param {string} url - The request path.
@@ -1357,8 +1503,28 @@ async function handleUpload(req, res, url) {
       return await answer(422, { error: 'sha256 does not match the declared hash', expected: slot.sha256, actual: digest });
     }
     // A note is text that the note tools parse, so only valid UTF-8 is accepted for one.
-    if (isNoteFile(slot.relPath) && !(await isValidUtf8File(stagePath))) {
+    // (A replacement is judged in placeReplace, on the file it really replaces too.)
+    if (slot.mode !== 'replace' && isNoteFile(slot.relPath) && !(await isValidUtf8File(stagePath))) {
       return await answer(400, { error: 'a note must be valid UTF-8 text' });
+    }
+    if (slot.mode === 'replace') {
+      const placed = await placeReplace(vault, slot, stagePath);
+      if (placed.outcome === 'denied' || placed.outcome === 'outside') return await answer(403, { error: 'Access denied' }, `the destination ${logSafe(slot.relPath)} is denied or outside the vault`);
+      if (placed.outcome === 'notutf8') return await answer(400, { error: 'a note must be valid UTF-8 text' });
+      if (placed.outcome === 'notfile') return await answer(409, { error: 'the file to replace is not a regular file', path: slot.relPath });
+      if (placed.outcome === 'missing') return await answer(409, { error: 'the file to replace no longer exists; use upload-binary-file for a new file', path: slot.relPath });
+      if (placed.outcome === 'changed') return await answer(409, { error: 'the file has changed since it was read; read it again with read-binary-file and request a new URL', path: slot.relPath });
+      if (placed.outcome === 'corrupt') return await answer(500, { error: 'the file changed while it was being placed; request a new URL and try again' });
+      await discard();
+      audit('upload-placed', {
+        user: slot.user ?? null, addr: caller || null, reserved_from: slot.address, host: requestHost(req, TRUSTED_PROXIES) || null,
+        vault: slot.vault, path: slot.relPath, bytes: received, sha256: digest, mode: 'replace', previous_sha256: slot.expectedSha256,
+        ...(placed.raced ? { raced: true } : {}),
+      });
+      const warning = placed.raced ? `the old version was written to while it was being replaced, so the copy in ${placed.trashedAs} may hold newer content than previousSha256; check it` : undefined;
+      if (warning) logErr(`replace of ${logSafe(slot.relPath)}: ${warning}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ path: slot.relPath, bytes: received, sha256: digest, replaced: true, previousSha256: slot.expectedSha256, trashedAs: placed.trashedAs, ...(warning ? { warning } : {}) }));
     }
     const outcome = await placeUpload(vault, slot.relPath, stagePath, slot.sha256);
     if (outcome === 'denied' || outcome === 'outside') return await answer(403, { error: 'Access denied' }, `the destination ${logSafe(slot.relPath)} is denied or outside the vault`);
@@ -2087,7 +2253,11 @@ async function route(req, res, url, sid) {
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'upload-binary-file') {
+  // Both tools reserve a one-time URL here. replace-binary-file also checks, now, that the vault
+  // file is the one the caller read (expectedMtime and expectedSha256), and placeReplace checks
+  // both again when the new file arrives. A new file identical to the current one is refused.
+  if (msg.method === 'tools/call' && (msg.params?.name === 'upload-binary-file' || msg.params?.name === 'replace-binary-file')) {
+    const replacing = msg.params.name === 'replace-binary-file';
     if (UPLOADS_UNAVAILABLE) return toolErr(res, sid, msgId, `Uploads are not available: ${UPLOADS_UNAVAILABLE}`);
     const args = msg.params.arguments ?? {};
     const vault = Object.hasOwn(VAULTS, args.vault) ? VAULTS[args.vault] : undefined;
@@ -2101,17 +2271,49 @@ async function route(req, res, url, sid) {
     if (typeof sha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
       return toolErr(res, sid, msgId, 'sha256 must be 64 hexadecimal characters: the SHA-256 of the file, from a tool such as sha256sum');
     }
+    const { expectedSha256, expectedMtime } = args;
+    if (replacing) {
+      if (typeof expectedSha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(expectedSha256)) {
+        return toolErr(res, sid, msgId, 'expectedSha256 must be 64 hexadecimal characters: the SHA-256 of the file in the vault, from read-binary-file');
+      }
+      try { validateExpectedMtime(expectedMtime); } catch (err) { return toolErr(res, sid, msgId, err.message); }
+      if (expectedSha256.toLowerCase() === sha256.toLowerCase()) {
+        return toolErr(res, sid, msgId, `The new file is identical to the file in the vault (sha256 ${sha256.toLowerCase()}); nothing to replace`);
+      }
+    }
     try {
       const resolved = await resolveDestination(vault.path, relPath);
       if (!resolved.ok || _isDenied(vault.denyPaths, resolved.rel)) return toolErr(res, sid, msgId, 'Access denied');
-      await fs.access(path.join(vault.path, relPath));
-      return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
+      if (replacing) {
+        // Judged on the file's own name and on where it really is, as read-binary-file does: the
+        // hash check would otherwise let a caller test guesses at a file it may not read.
+        for (const rel of [relPath, resolved.rel]) {
+          if (!isNoteFile(rel) && isBinaryReadDenied(vault.denyBinaryPaths, rel)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+        }
+        const current = path.join(vault.path, resolved.rel);
+        let stat;
+        try { stat = await fs.stat(current); } catch (err) {
+          if (err.code === 'ENOENT') return toolErr(res, sid, msgId, `File does not exist: ${relPath}. To add a new file use upload-binary-file`);
+          throw err;
+        }
+        if (!stat.isFile()) return toolErr(res, sid, msgId, `Not a regular file: ${relPath}`);
+        await assertUnmodified(current, expectedMtime);
+        if ((await hashFile(current)) !== expectedSha256.toLowerCase()) {
+          return toolErr(res, sid, msgId, `Precondition failed: the file has changed since it was read (sha256 differs). Read ${relPath} again with read-binary-file and retry`);
+        }
+      } else {
+        await fs.access(path.join(vault.path, relPath));
+        return toolErr(res, sid, msgId, `File already exists: ${relPath}. To replace it use replace-binary-file`);
+      }
     } catch (err) {
-      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+      if (replacing || err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
     let slot;
     try {
-      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req) || (UPLOAD_NETWORK_PREFIX === 0 ? 'unknown' : ''), user: principal?.user });
+      slot = uploads.create({
+        vault: args.vault, relPath, size, sha256, address: clientAddress(req) || (UPLOAD_NETWORK_PREFIX === 0 ? 'unknown' : ''), user: principal?.user,
+        ...(replacing ? { mode: 'replace', expectedSha256, expectedMtime } : {}),
+      });
     } catch (err) {
       if (err.code === 'TOO_MANY_SLOTS') {
         return toolErr(res, sid, msgId, 'Too many pending uploads. Wait for one to finish or expire, then try again');
@@ -2121,10 +2323,10 @@ async function route(req, res, url, sid) {
       }
       throw err;
     }
-    audit('upload-reserved', { ...auditContext(req, sid, principal), vault: args.vault, path: relPath, size });
+    audit('upload-reserved', { ...auditContext(req, sid, principal), vault: args.vault, path: relPath, size, ...(replacing ? { mode: 'replace' } : {}) });
     const url = `${BASE_URL.replace(/\/+$/, '')}${UPLOAD_PREFIX}${slot.token}`;
     return toolOk(res, sid, msgId, [
-      `Upload reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()}).`,
+      `${replacing ? 'Replacement' : 'Upload'} reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()})${replacing ? `; it replaces the version with sha256 ${expectedSha256.toLowerCase()}, which moves to .trash` : ''}.`,
       `URL: ${url}`,
       `Valid for ${UPLOAD_TTL_SECONDS} seconds, for one request only${UPLOAD_NETWORK_PREFIX === 0 ? '' : UPLOAD_NETWORK_PREFIX === 32 ? ', and only from the address that made this request' : ', and only from the network of the request that reserved it'}.`,
       'Send the file with:',
@@ -2162,7 +2364,8 @@ async function route(req, res, url, sid) {
       const stat = await fs.stat(realAbs);
       if (!stat.isFile()) return toolErr(res, sid, msgId, `Not a regular file: ${relPath}`);
       if (stat.size > READ_MAX_BYTES) {
-        return toolErr(res, sid, msgId, `File is ${stat.size} bytes, which exceeds the ${READ_MAX_BYTES}-byte read limit: ${relPath}`);
+        // The file cannot be returned, but the version it is can still be named, for replace-binary-file.
+        return toolErr(res, sid, msgId, `File is ${stat.size} bytes, which exceeds the ${READ_MAX_BYTES}-byte read limit: ${relPath} (sha256 ${await hashFile(realAbs)}, Last-Modified ${formatMtime(stat)})`);
       }
       const buffer = await libReadBinaryFile(realAbs);
       // The file can grow between stat and read; the cap is enforced on what was actually read.
@@ -2174,6 +2377,10 @@ async function route(req, res, url, sid) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { content: [
         { type: 'text', text: `${relPath} (${buffer.length} bytes, ${mimeType})` },
         { type: 'resource', resource: { uri, mimeType, blob: buffer.toString('base64') } },
+        // The version that was read, as replace-binary-file takes it: expectedSha256 is the hash of
+        // the bytes, expectedMtime the Last-Modified from the stat taken just before the read.
+        { type: 'text', text: `sha256: ${createHash('sha256').update(buffer).digest('hex')}` },
+        { type: 'text', text: `Last-Modified: ${formatMtime(stat)}` },
       ] } }]);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
@@ -2581,7 +2788,31 @@ async function prepareStagingDir() {
 }
 await prepareStagingDir();
 
+// ── .trash purge ───────────────────────────────────────────────────────────
+
+const TRASH_PURGE_FIRST_RUN_MS = 1000;
+const TRASH_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+let trashPurgeRunning = false;
+
+/**
+ * Empties each vault's .trash of what has been there longer than the vault's trashRetentionDays
+ * (see purgeVaults). A run that starts while the last is still going is skipped.
+ * @returns {Promise<void>}
+ */
+async function purgeAllTrash() {
+  if (trashPurgeRunning) return;
+  trashPurgeRunning = true;
+  try {
+    await purgeVaults(VAULTS, { audit, log, logErr });
+  } finally {
+    trashPurgeRunning = false;
+  }
+}
+
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+  setTimeout(purgeAllTrash, TRASH_PURGE_FIRST_RUN_MS).unref();
+  setInterval(purgeAllTrash, TRASH_PURGE_INTERVAL_MS).unref();
   audit('start', {
     version: SERVER_VERSION, listen: `${LISTEN_HOST}:${LISTEN_PORT}`,
     auth: AUTH ? 'on' : 'off', logfile: LOG_FILE ? 'yes' : 'no',
