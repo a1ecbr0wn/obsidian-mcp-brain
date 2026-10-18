@@ -31,6 +31,12 @@ describe('trashName', () => {
     assert.ok(!wide.includes('�'), 'no character is cut in half');
   });
 
+  it('does not let a very long extension push the name over 255 bytes', () => {
+    const name = trashName(`file.${'e'.repeat(250)}`, 1760000000000);
+    assert.ok(Buffer.byteLength(name) <= 255, String(Buffer.byteLength(name)));
+    assert.ok(name.includes('_1760000000000'));
+  });
+
   it('leaves a name that fits alone', () => {
     const name = `${'a'.repeat(200)}.pdf`;
     assert.equal(trashName(name, 1760000000000), `${'a'.repeat(200)}_1760000000000.pdf`);
@@ -154,6 +160,18 @@ describe('with a vault', () => {
       assert.equal(await exists(server), true);
     });
 
+    it('lets a time in the name make a file look younger, never older', async () => {
+      const plain = await put('.trash/plain.pdf');
+      const ctime = (await fs.lstat(plain)).ctimeMs;
+      const recent = await put(`.trash/recent_${Math.round(ctime + 35 * DAY)}.pdf`); // claims to be trashed 35 days on
+      const future = await put(`.trash/future_${Math.round(ctime + 900 * DAY)}.pdf`); // a time that has not come: ignored
+      const r = await purgeTrash({ vaultPath: vault, maxAgeDays: 30, now: ctime + 40 * DAY });
+      assert.equal(await exists(plain), false);
+      assert.equal(await exists(recent), true, 'five days old by its name, though its ctime is 40 days old');
+      assert.equal(await exists(future), false, 'a time in the future is ignored, so its ctime decides');
+      assert.equal(r.files, 2);
+    });
+
     it('goes by the ctime, not the modification time', async () => {
       const file = await put('.trash/edited-long-ago.pdf');
       const long = new Date(Date.now() - 400 * DAY);
@@ -260,6 +278,18 @@ describe('with a vault', () => {
       assert.equal(await fs.readFile(out2, 'utf8'), 'outside 2');
       assert.equal(r.files, 1, 'only the file removed before the swap');
       assert.ok(r.errors >= 1 && errors.length >= 1, 'the rest is refused, not deleted through the link');
+    });
+
+    it('is not stopped by a reporter that throws', async () => {
+      const a = await put('.trash/a.pdf');
+      await put('.trash/b.pdf');
+      const r = await purgeTrash({
+        vaultPath: vault, maxAgeDays: 30, now: await after(a, 90),
+        onRemoved: () => { throw new Error('log write failed'); },
+        onError: () => { throw new Error('log write failed'); },
+      });
+      assert.equal(r.files, 2);
+      assert.equal(r.errors, 0);
     });
 
     it('counts a failure on one entry and goes on with the rest', async (t) => {

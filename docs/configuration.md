@@ -370,16 +370,18 @@ hours. It deletes every regular file in `.trash` older than the limit,
 empty or that are empty and older than the limit (never `.trash` itself). A
 deleted file is not recoverable.
 
-A file's age is the time since its change time (`ctime`), which the filesystem
-sets when the file is moved into `.trash`. The time in a file's name is for
-people and is not used: a name can be anything, so a name that claims a file is
-old cannot make a new file old. The modification time is not used either, since
-it is when the content was last edited, and a file edited a year ago and deleted
-today is not purged at once. A file inside a folder that was moved into `.trash`
-counts as old only when its folder is too, so trashing a whole folder does not
-expose its files to the next purge. Something that changes a file's `ctime`
-later, such as a backup tool restoring it, only delays its deletion. A file
-whose age cannot be worked out is kept.
+A file's age is the time since the latest of three: its change time (`ctime`),
+the `ctime` of the folders it sits in below `.trash`, and the time in its name
+if the server gave it one. On a Linux filesystem the `ctime` is set when the
+file is moved into `.trash`. On some others (exFAT, some network mounts) it is
+not, which is what the time in the name is for. Each of the three can only make
+a file look younger, so a file named to look old is not purged early, and a
+whole folder moved into `.trash` is not exposed to the next purge. The
+modification time is not used, since it is when the content was last edited,
+and a file edited a year ago and deleted today is not purged at once. Anything
+that changes a file's `ctime` later, such as a backup tool restoring it or a
+nightly `chown -R` of the vault, only delays its deletion. A file whose age
+cannot be worked out is kept.
 
 The purge never leaves `.trash`: it refuses a `.trash` that is a symbolic link
 (so do the tools that move files into it), does not follow links inside it (a
@@ -398,7 +400,7 @@ removed is written to the [audit log](#logging-and-the-audit-log) as
 removed or failed on anything adds `AUDIT event=trash-purge vault=… files=…
 bytes=… errors=…`. Files already in `.trash` when you upgrade keep their names
 and are purged by the same rule. If two vault names share a folder, the
-shorter limit applies to its `.trash`.
+shorter limit applies to its `.trash`, even if the other is set to 0.
 
 ### Logging and the audit log
 

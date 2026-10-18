@@ -2811,8 +2811,9 @@ async function purgeAllTrash() {
 }
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-  setTimeout(purgeAllTrash, TRASH_PURGE_FIRST_RUN_MS).unref();
-  setInterval(purgeAllTrash, TRASH_PURGE_INTERVAL_MS).unref();
+  const runPurge = () => purgeAllTrash().catch(err => logErr(`trash purge failed: ${err.message}`));
+  setTimeout(runPurge, TRASH_PURGE_FIRST_RUN_MS).unref();
+  setInterval(runPurge, TRASH_PURGE_INTERVAL_MS).unref();
   audit('start', {
     version: SERVER_VERSION, listen: `${LISTEN_HOST}:${LISTEN_PORT}`,
     auth: AUTH ? 'on' : 'off', logfile: LOG_FILE ? 'yes' : 'no',

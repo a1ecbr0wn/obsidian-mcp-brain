@@ -11,6 +11,7 @@ export const TRASH_DIR = '.trash';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_NAME_BYTES = 255;
+const NAME_TIME_RE = /_(\d{13})$/;
 
 /**
  * The first characters of `text` that fit in `maxBytes` bytes of UTF-8, never cutting a
@@ -40,10 +41,36 @@ function truncateBytes(text, maxBytes) {
  * @returns {string}
  */
 export function trashName(fileName, time) {
-  const ext = path.extname(fileName);
+  let ext = path.extname(fileName);
+  if (Buffer.byteLength(ext) > 64) ext = ''; // not a real extension: it would not leave room for the rest
   const stem = fileName.slice(0, fileName.length - ext.length);
   const suffix = `_${time}${ext}`;
   return `${truncateBytes(stem, MAX_NAME_BYTES - Buffer.byteLength(suffix))}${suffix}`;
+}
+
+/**
+ * The time (epoch milliseconds) in a name trashName made.
+ * @param {string} trashedPath - A path in .trash.
+ * @returns {number}
+ */
+function timeOfName(trashedPath) {
+  const name = path.basename(trashedPath);
+  const stem = name.slice(0, name.length - path.extname(name).length);
+  return Number(/_(\d+)$/.exec(stem)?.[1] ?? Date.now());
+}
+
+/**
+ * When a file was trashed, going by its name: the time in a name trashName made, or 0 for any
+ * other name and for a time in the future. It is used only to make a file look younger, never
+ * older, because anyone can name a file anything.
+ * @param {string} name - The file's base name.
+ * @param {number} now - Epoch milliseconds.
+ * @returns {number}
+ */
+function nameTime(name, now) {
+  const found = NAME_TIME_RE.exec(name.slice(0, name.length - path.extname(name).length));
+  const time = found ? Number(found[1]) : 0;
+  return time <= now ? time : 0;
 }
 
 /**
@@ -103,21 +130,38 @@ export async function trashDestination(absPath, vaultPath, now = Date.now()) {
  * @throws {Error} If .trash is not a real folder, or the file cannot be moved.
  */
 export async function moveToTrash(absPath, vaultPath) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const dest = await trashDestination(absPath, vaultPath);
+  // Each retry starts after the name that was just taken, not from the clock again, or files
+  // trashed together would keep choosing the same names.
+  let time = Date.now();
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const dest = await trashDestination(absPath, vaultPath, time);
     try {
       await fs.link(absPath, dest);
     } catch (err) {
-      if (err.code === 'EEXIST') continue;
+      if (err.code === 'EEXIST') {
+        time = timeOfName(dest) + 1;
+        continue;
+      }
       if (['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'EMLINK'].includes(err.code)) {
+        // No hard links here (or not for this file): a rename, which would replace a file that
+        // appeared at the new name since it was checked, so the name is checked again first.
+        const taken = await fs.lstat(dest).then(() => true, () => false);
+        if (taken) {
+          time = timeOfName(dest) + 1;
+          continue;
+        }
         await fs.rename(absPath, dest);
         return dest;
       }
       throw err;
     }
     try {
-      await fs.unlink(absPath);
+      // If another process put a different file at the old name since the link was made, that
+      // file is not the one being trashed and stays.
+      const [now, linked] = await Promise.all([fs.lstat(absPath), fs.lstat(dest)]);
+      if (now.ino === linked.ino && now.dev === linked.dev) await fs.unlink(absPath);
     } catch (err) {
+      if (err.code === 'ENOENT') return dest;
       await fs.unlink(dest).catch(() => {});
       throw err;
     }
@@ -128,10 +172,12 @@ export async function moveToTrash(absPath, vaultPath) {
 
 /**
  * Deletes what has been in a vault's .trash for longer than a limit. A file's age is the time
- * since its ctime, or since the newest ctime among the folders it sits in below .trash if that
- * is later (a folder moved into .trash is renamed, which changes its own ctime and not its
- * files'). A ctime is never earlier than the moment a file was moved into .trash, so this can
- * only make a file look younger than it is, which is the safe way to be wrong; a file whose
+ * since the latest of: its ctime; the ctime of the folders it sits in below .trash (a folder
+ * moved into .trash is renamed, which changes its own ctime and not its files'); and the time
+ * in its name, if trashName made it. On a Linux filesystem a ctime is never earlier than the
+ * moment a file was moved into .trash; on some others (exFAT, some network mounts) it is, and
+ * the time in the name covers that for files the server trashed. Every one of these can only
+ * make a file look younger than it is, which is the safe way to be wrong, and a file whose
  * age cannot be worked out is kept. Folders that this leaves empty, and empty folders older
  * than the limit, are removed; .trash itself never is.
  *
@@ -168,7 +214,7 @@ export async function purgeTrash({ vaultPath, maxAgeDays, now = Date.now(), onRe
   const maxAgeMs = maxAgeDays * DAY_MS;
   const fail = (target, error) => {
     result.errors++;
-    onError?.({ path: path.relative(vaultPath, target), error });
+    try { onError?.({ path: path.relative(vaultPath, target), error }); } catch { /* a failing reporter must not stop the purge */ }
   };
   const tooOld = (ctimeMs) => now - ctimeMs > maxAgeMs; // false for NaN: such a file is kept
 
@@ -195,21 +241,21 @@ export async function purgeTrash({ vaultPath, maxAgeDays, now = Date.now(), onRe
           const floor = Math.max(floorMs, dirStat.ctimeMs);
           const removedBelow = await walk(full, floor);
           if (removedBelow) removedHere = true;
-          if (removedBelow || tooOld(floor)) {
+          if ((removedBelow || tooOld(floor)) && (await stillThere(dir))) {
             await fs.rmdir(full).catch(err => {
               if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(err.code)) throw err;
             });
           }
         } else if (entry.isFile() || entry.isSymbolicLink()) {
           const stat = await fs.lstat(full);
-          const age = now - Math.max(stat.ctimeMs, floorMs);
+          const age = now - Math.max(stat.ctimeMs, floorMs, nameTime(entry.name, now));
           if (!(age > maxAgeMs)) continue;
           if (!(await stillThere(dir))) throw new Error('a folder in .trash was replaced by a link');
           await fs.unlink(full);
           removedHere = true;
           result.files++;
           result.bytes += stat.size;
-          onRemoved?.({ path: path.relative(vaultPath, full), bytes: stat.size, ageDays: Math.floor(age / DAY_MS) });
+          try { onRemoved?.({ path: path.relative(vaultPath, full), bytes: stat.size, ageDays: Math.floor(age / DAY_MS) }); } catch { /* the file is already gone: a failing reporter changes nothing */ }
         }
       } catch (err) {
         if (err.code !== 'ENOENT') fail(full, err);
