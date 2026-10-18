@@ -499,16 +499,25 @@ describe('isValidUtf8File', () => {
 // ── addressesMatch ──────────────────────────────────────────────────────────
 
 describe('addressesMatch', () => {
-  it('by default needs the same address, in any spelling', () => {
-    assert.equal(addressesMatch('160.79.106.186', '160.79.106.186'), true);
-    assert.equal(addressesMatch('::ffff:160.79.106.186', '160.79.106.186'), true);
-    assert.equal(addressesMatch('2001:db8::1', '2001:db8:0:0::1'), true);
+  it('with a prefix of 0 (the default) matches any pair, an unknown address included', () => {
+    for (const prefix of [undefined, 0]) {
+      assert.equal(addressesMatch('160.79.106.186', '80.229.19.177', prefix), true);
+      assert.equal(addressesMatch('2001:db8::1', '160.79.106.186', prefix), true);
+      assert.equal(addressesMatch('', '160.79.106.186', prefix), true);
+      assert.equal(addressesMatch('not-an-address', '', prefix), true);
+    }
   });
 
-  it('by default refuses a neighbouring address', () => {
-    assert.equal(addressesMatch('160.79.106.186', '160.79.106.20'), false);
-    assert.equal(addressesMatch('160.79.106.186', '160.79.7.1'), false);
-    assert.equal(addressesMatch('2001:db8::1', '2001:db8::2'), false);
+  it('with a prefix of 32 needs the same address, in any spelling', () => {
+    assert.equal(addressesMatch('160.79.106.186', '160.79.106.186', 32), true);
+    assert.equal(addressesMatch('::ffff:160.79.106.186', '160.79.106.186', 32), true);
+    assert.equal(addressesMatch('2001:db8::1', '2001:db8:0:0::1', 32), true);
+  });
+
+  it('with a prefix of 32 refuses a neighbouring address', () => {
+    assert.equal(addressesMatch('160.79.106.186', '160.79.106.20', 32), false);
+    assert.equal(addressesMatch('160.79.106.186', '160.79.7.1', 32), false);
+    assert.equal(addressesMatch('2001:db8::1', '2001:db8::2', 32), false);
   });
 
   it('with a prefix accepts IPv4 addresses that share that many leading bits', () => {
@@ -530,18 +539,18 @@ describe('addressesMatch', () => {
     assert.equal(addressesMatch('2001:db8::1', '160.79.106.186', 16), false);
   });
 
-  it('treats a prefix outside 1 to 31 as an exact match', () => {
-    for (const prefix of [0, -1, 24.5, NaN, 32, 33]) {
-      assert.equal(addressesMatch('160.79.106.186', '160.79.106.20', prefix), false);
-      assert.equal(addressesMatch('160.79.106.186', '160.79.106.186', prefix), true);
-    }
-  });
-
-  it('never matches an empty or unrecognised address', () => {
+  it('with a prefix of 1 or more never matches an empty or unrecognised address', () => {
     for (const prefix of [32, 16]) {
       assert.equal(addressesMatch('', '', prefix), false);
       assert.equal(addressesMatch('', '160.79.106.186', prefix), false);
       assert.equal(addressesMatch('not-an-address', 'not-an-address', prefix), false);
+    }
+  });
+
+  it('treats a prefix that is not a whole number of 1 to 31 as an exact match', () => {
+    for (const prefix of [-1, 24.5, NaN, 33]) {
+      assert.equal(addressesMatch('160.79.106.186', '160.79.106.20', prefix), false);
+      assert.equal(addressesMatch('160.79.106.186', '160.79.106.186', prefix), true);
     }
   });
 });

@@ -137,13 +137,14 @@ address (`mcpBaseUrl`).
 
 - **Claude Code** has a shell, so it can use it directly.
 - **Claude Desktop chat and claude.ai** run `curl` in a sandbox, but make the
-  tool call from the vendor's cloud. The two requests leave from different
-  hosts, so the server refuses the upload with `403` and logs the reason, unless
-  [`uploadNetworkPrefix`](configuration#uploads-and-reverse-proxies) is set
-  low enough to cover both hosts. A sandbox that restricts outbound network
-  access also needs the server's host in its allowed domains (in Claude
-  Desktop: Settings > Capabilities > Domain Allowlist), or its proxy answers
-  `403` before the request reaches the server.
+  tool call from the vendor's cloud. **Claude Code through the claude.ai
+  connector** also makes the call from the vendor's cloud while `curl` runs on
+  your machine. The two requests leave from different networks, which the server
+  accepts: it does not check the address unless
+  [`uploadNetworkPrefix`](configuration#uploads-and-reverse-proxies) is set. A
+  sandbox that restricts outbound network access also needs the server's host in
+  its allowed domains (in Claude Desktop: Settings > Capabilities > Domain
+  Allowlist), or its proxy answers `403` before the request reaches the server.
 - **Clients with no shell** can't run `curl` at all and use
   `create-binary-file` for small files.
 

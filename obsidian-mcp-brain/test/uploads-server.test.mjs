@@ -53,6 +53,7 @@ async function startServer(extra = {}) {
     denyPaths: ['private'],
     uploadMaxBytes: 65536,
     uploadTempDir: uploadDir,
+    uploadNetworkPrefix: 32, // the tests of refusal need the strict rule; the default is 0
     vaults: { v: { path: vaultDir } },
     ...extra,
   }));
@@ -453,7 +454,12 @@ describe('upload-binary-file and PUT /up/<token>', () => {
       assert.equal(await exists(path.join(srv.vaultDir, 'kill-addr.bin')), false);
     });
 
-    it('a request from a neighbouring address answers 403 by default', async t => {
+    it('tells the caller the URL is tied to the address that made the request', async () => {
+      const { text } = await reserve(srv, { filename: 'text-32.bin', content });
+      assert.ok(text.includes('only from the address that made this request'), text);
+    });
+
+    it('a request from a neighbouring address answers 403 with a prefix of 32', async t => {
       const { url } = await reserve(srv, { filename: 'same-net-default.bin', content });
       const r = await request(url, { body: content, localAddress: '127.0.0.2' });
       if (r.error?.code === 'EADDRNOTAVAIL') return t.skip('127.0.0.2 is not available on this machine');
@@ -633,6 +639,62 @@ describe('upload-binary-file and PUT /up/<token>', () => {
   });
 });
 
+// ── no address check (uploadNetworkPrefix 0, the default) ───────────────────
+
+for (const [what, extra] of [['by default', { uploadNetworkPrefix: undefined }], ['with uploadNetworkPrefix 0', { uploadNetworkPrefix: 0 }]]) {
+  describe(`upload addresses ${what}`, () => {
+    let srv;
+    before(async () => { srv = await startServer(extra); });
+    after(async () => { await srv.stop(); });
+    const content = crypto.randomBytes(100);
+
+    it('accepts an upload from a different network than the one that reserved the URL, and logs both', async t => {
+      const { url } = await reserve(srv, { filename: 'anywhere.bin', content });
+      const r = await request(url, { body: content, localAddress: '127.1.0.1' });
+      if (r.error?.code === 'EADDRNOTAVAIL') return t.skip('127.1.0.1 is not available on this machine');
+      assert.equal(r.status, 201, r.text);
+      assert.equal(await exists(path.join(srv.vaultDir, 'anywhere.bin')), true);
+      await until(() => srv.log().split('\n').some(l => l.includes('event=upload-placed') && l.includes('addr=127.1.0.1') && /reserved_from=(127\.0\.0\.1|::1)/.test(l)), 'the upload-placed line with both addresses');
+    });
+
+    it('does not tell the caller the URL is tied to an address', async () => {
+      const { text } = await reserve(srv, { filename: 'text.bin', content });
+      assert.match(text, /Valid for \d+ seconds, for one request only\./);
+      assert.ok(!text.includes('only from'), text);
+    });
+
+    it('still uses the URL up, and still refuses an Origin header and the wrong method', async () => {
+      const { url } = await reserve(srv, { filename: 'once.bin', content });
+      assert.equal((await request(url, { body: content })).status, 201);
+      assert.equal((await request(url, { body: content })).status, 404);
+      const other = await reserve(srv, { filename: 'origin.bin', content });
+      assert.equal((await request(other.url, { body: content, headers: { Origin: 'http://example.com' } })).status, 403);
+      const get = await reserve(srv, { filename: 'method.bin', content });
+      assert.equal((await request(get.url, { method: 'GET' })).status, 405);
+    });
+
+    it('still refuses a file that does not match the declared hash', async () => {
+      const { url } = await reserve(srv, { filename: 'hash.bin', content });
+      assert.equal((await request(url, { body: crypto.randomBytes(100) })).status, 422);
+      assert.equal(await exists(path.join(srv.vaultDir, 'hash.bin')), false);
+    });
+  });
+}
+
+describe('upload addresses with no check and a malformed proxy header', () => {
+  let srv;
+  before(async () => { srv = await startServer({ uploadNetworkPrefix: 0, trustedProxies: ['127.0.0.1', '::1'] }); });
+  after(async () => { await srv.stop(); });
+  const content = crypto.randomBytes(50);
+
+  it('still reserves an upload, and records the reserving address as unknown', async () => {
+    const { result, url } = await reserve(srv, { filename: 'unreadable.bin', content, headers: { 'X-Forwarded-For': 'garbage' } });
+    assert.ok(!result.isError, JSON.stringify(result));
+    assert.equal((await request(url, { body: content })).status, 201);
+    await until(() => srv.log().split('\n').some(l => l.includes('event=upload-placed') && l.includes('reserved_from=unknown')), 'reserved_from=unknown');
+  });
+});
+
 // ── uploadNetworkPrefix ─────────────────────────────────────────────────────
 
 for (const [prefix, inside, outside] of [[16, '127.0.1.1', '127.1.0.1'], [24, '127.0.0.2', '127.0.1.1']]) {
@@ -641,6 +703,11 @@ for (const [prefix, inside, outside] of [[16, '127.0.1.1', '127.1.0.1'], [24, '1
     before(async () => { srv = await startServer({ uploadNetworkPrefix: prefix }); });
     after(async () => { await srv.stop(); });
     const content = crypto.randomBytes(100);
+
+    it('tells the caller the URL is tied to the network of the request', async () => {
+      const { text } = await reserve(srv, { filename: `text-${prefix}.bin`, content });
+      assert.ok(text.includes('only from the network of the request that reserved it'), text);
+    });
 
     it(`accepts an upload from ${inside}, which shares the first ${prefix} bits`, async t => {
       const { url } = await reserve(srv, { filename: 'inside.bin', content });
@@ -915,8 +982,8 @@ describe('upload settings', () => {
     rejects(`uploadStallSeconds ${JSON.stringify(bad)}`, { uploadStallSeconds: bad }, '"uploadStallSeconds" must be a positive number');
   }
 
-  for (const bad of [true, '24', 15, 33, 24.5, 0, -1, {}]) {
-    rejects(`uploadNetworkPrefix ${JSON.stringify(bad)}`, { uploadNetworkPrefix: bad }, '"uploadNetworkPrefix" must be a whole number from 16 to 32');
+  for (const bad of [true, '24', 15, 1, 33, 24.5, -1, {}]) {
+    rejects(`uploadNetworkPrefix ${JSON.stringify(bad)}`, { uploadNetworkPrefix: bad }, '"uploadNetworkPrefix" must be 0 (no address check) or a whole number from 16 to 32');
   }
 
   for (const bad of [123, '', '   ', ['/tmp/x'], {}]) {

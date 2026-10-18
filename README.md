@@ -253,7 +253,7 @@ except `CONFIG_PATH`, which says where to find it.
   "uploadMaxBytes": 52428800,
   "uploadTtlSeconds": 300,
   "uploadStallSeconds": 30,
-  "uploadNetworkPrefix": 32,
+  "uploadNetworkPrefix": 0,
   "logFile": "/var/log/obsidian-mcp.log",
   "sessionTimeoutSeconds": 1800,
   "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
@@ -289,7 +289,7 @@ except `CONFIG_PATH`, which says where to find it.
 | `uploadTtlSeconds`       | No       | `300`                                                         | How long an upload URL lasts (seconds)                                                                                                                                                |
 | `uploadStallSeconds`     | No       | `30`                                                          | How long an upload may send nothing before it is cut off (seconds)                                                                                                                    |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user                                                                  |
-| `uploadNetworkPrefix`    | No       | `32`                                                          | Leading bits of an IPv4 address that an upload must share with the call that reserved it, 16 to 32. 32 is the same address. See below                                                 |
+| `uploadNetworkPrefix`    | No       | `0`                                                           | Whether an upload must come from the address that reserved its URL: 0 for no check, or the leading bits of an IPv4 address that must agree, 16 to 32                                  |
 | `trustedProxies`         | No       | `[]`                                                          | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` is believed. See below                                                                                            |
 | `logFile`                | No       | `none`                                                        | Absolute path of a file to append the log to, as well as the console. Includes the audit log                                                                                          |
 | `sessionTimeoutSeconds`  | No       | `1800`                                                        | How long a session may be idle before it is removed, in seconds (at least 60)                                                                                                         |
@@ -505,8 +505,9 @@ images. In Claude Code the bytes are saved to a file and the agent opens that
 path with its `Read` tool (checked end to end for both kinds of PDF). Claude
 Desktop chat shows images but silently drops a PDF and rejects other types, so
 use a code mode chat there; other clients have not been checked. The
-`skills/read-binary-file` skill makes an agent check this first. The `filename`
-must not end in `.md`; use `read-note` for notes. A file larger than
+`skills/read-binary-file` skill makes an agent check this first. A `.md`
+note is returned too, as its raw bytes (`text/markdown`), but `read-note` is
+better for a note. A file larger than
 `readMaxBytes` (10 MiB by default) is refused before it is read.
 
 ### upload-binary-file
@@ -530,9 +531,10 @@ both match; otherwise it discards it.
 
 - The URL works for **one request only**: the first request that names it uses
   it up, whatever that request is. If anything goes wrong, request a new URL.
-- It works only from the **same address** as the call that reserved it (or the
-  same network, with `uploadNetworkPrefix`), and lasts `uploadTtlSeconds` (300
-  by default). The server logs the reason for every refusal.
+- It works from any address by default, and lasts `uploadTtlSeconds` (300 by
+  default). `uploadNetworkPrefix` can require the same address as the call that
+  reserved it (32) or the same network (16 to 31). The server logs the reason
+  for every refusal.
 - The destination must not exist, and `denyPaths` is checked when the URL is
   reserved and again when the file is placed.
 - A note (`.md`) can be uploaded too, for a large or generated file that is
@@ -547,19 +549,20 @@ both match; otherwise it discards it.
 - Symbolic links in the destination are followed before the deny rules are
   checked, so an upload can't be used to write outside the vault.
 - Behind a reverse proxy, set `trustedProxies` to the proxy's address (for
-  example `["127.0.0.1", "::1"]`) so the address check can see the real caller
-  from `X-Forwarded-For`. The header is ignored from any other connection.
-  Without it the check always passes, and a hint is logged once.
+  example `["127.0.0.1", "::1"]`) so the address in the log and in
+  the `uploadNetworkPrefix` check is the real caller's, from `X-Forwarded-For`.
+  The header is ignored from any other connection. Without it every caller looks
+  like the proxy, and a hint is logged once.
 
 It needs an agent with a shell on a machine that can reach the server's address,
 such as Claude Code. The token limits one upload to one destination but is not
 authentication: anyone who can call the server's tools can reserve a URL, and
 the URL is visible in the conversation, which is why it is short-lived and
 single-use. `curl` exits with code 22 and prints the server's explanation on any
-failure: `403` wrong address or an `Origin` header, `404` unknown, used or
-expired URL, `409` destination appeared meanwhile, `411` no `Content-Length`,
-`413` or `400` size mismatch, `422` hash mismatch, `503` too many uploads at
-once.
+failure: `403` an `Origin` header (or a wrong address, when
+`uploadNetworkPrefix` is set), `404` unknown, used or expired URL, `409`
+destination appeared meanwhile, `411` no `Content-Length`, `413` or `400` size
+mismatch, `422` hash mismatch, `503` too many uploads at once.
 
 ### Binary read protection (`denyBinaryPaths`)
 

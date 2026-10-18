@@ -201,16 +201,18 @@ export function callerAddress(req, trusted) {
 }
 
 /**
- * Whether the caller of an upload is the caller that reserved it. By default the addresses must
- * be the same. With a `prefix` below 32, two IPv4 addresses also match when they share that many
- * leading bits (a client's tool call and its upload can leave from neighbouring hosts of one
- * network); IPv6 must still match exactly. An empty or unrecognised address matches nothing.
+ * Whether the caller of an upload is the caller that reserved it. A `prefix` of 0 turns the
+ * check off: every pair matches, an unknown address included (a client's tool call and its
+ * upload often leave from unrelated networks). With 32 the addresses must be the same. With
+ * 16 to 31 two IPv4 addresses also match when they share that many leading bits; IPv6 must
+ * still match exactly. Below 32 an empty or unrecognised address matches nothing.
  * @param {string} a - An address, in any spelling.
  * @param {string} b - An address, in any spelling.
- * @param {number} [prefix=32] - Leading bits of an IPv4 address that must agree, 1 to 32.
+ * @param {number} [prefix=0] - 0 for no check, or the leading bits of an IPv4 address that must agree.
  * @returns {boolean}
  */
-export function addressesMatch(a, b, prefix = 32) {
+export function addressesMatch(a, b, prefix = 0) {
+  if (prefix === 0) return true;
   a = normalizeAddress(a);
   b = normalizeAddress(b);
   if (!net.isIP(a) || !net.isIP(b)) return false;

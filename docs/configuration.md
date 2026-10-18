@@ -34,7 +34,7 @@ except `CONFIG_PATH`, which says where to find it.
     "uploadMaxBytes": 52428800,
     "uploadTtlSeconds": 300,
     "uploadStallSeconds": 30,
-    "uploadNetworkPrefix": 32,
+    "uploadNetworkPrefix": 0,
     "logFile": "/var/log/obsidian-mcp.log",
     "sessionTimeoutSeconds": 1800,
     "uploadTempDir": "/var/tmp/obsidian-mcp-uploads",
@@ -70,7 +70,7 @@ except `CONFIG_PATH`, which says where to find it.
 | `uploadTtlSeconds`       | No       | `300`                                                              | How long an upload URL lasts, in seconds                                                                                                                                                                      |
 | `uploadStallSeconds`     | No       | `30`                                                               | How long an upload may send nothing before it is cut off, in seconds. Raise it if clients on very slow links are cut off                                                                                      |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing                                                               |
-| `uploadNetworkPrefix`    | No       | `32`                                                               | Leading bits of an IPv4 address that an upload must share with the call that reserved it, 16 to 32. 32 is the same address. See below                                                                         |
+| `uploadNetworkPrefix`    | No       | `0`                                                                | Whether an upload must come from the address that reserved its URL: `0` for no check, or the leading bits of an IPv4 address that must agree, 16 to 32. See below                                             |
 | `trustedProxies`         | No       | `[]`                                                               | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. See [below](#uploads-and-reverse-proxies)                                                                             |
 | `logFile`                | No       | `none`                                                             | Absolute path of a file to append the log to, as well as the console. Includes the audit log. See [Logging](#logging-and-the-audit-log)                                                                       |
 | `sessionTimeoutSeconds`  | No       | `1800`                                                             | How long a session may be idle before it is removed, in seconds (at least 60). See [Sessions](#sessions)                                                                                                      |
@@ -176,20 +176,24 @@ The protection also closes the other routes to a protected file's content:
 - **`.trash`** is protected automatically whenever any `denyBinaryPaths` are
   set, in that vault. A non-permanent `delete-binary-file` moves a file into
   `.trash`, so without this a protected file could be deleted and then read, or
-  moved out, from there. The side effect is that nothing in `.trash` can be read
-  with `read-binary-file` while the feature is on.
+  moved out, from there. The side effect is that no file in `.trash` other than
+  a `.md` note can be read with `read-binary-file` while the feature is on.
 - **`read-note`** refuses a protected file that is not a `.md` file, since it
   would otherwise return an SVG, CSV or text-layer PDF as text. Markdown notes
   are never affected.
 - **`move-note`** applies the same move rule as `move-binary-file` to a source
-  that is not a `.md` file, so it can't be used to relocate a protected file.
+  that is not a `.md` file, so it can't be used to relocate a protected file. It
+  also refuses to rename a protected file to a `.md` name, because a note is
+  not protected and `read-binary-file` would then return it.
 - **`read-binary-file`** resolves symbolic links before checking. A link is
   judged by where it points: a link to a protected file is refused, and a link
-  to a file outside the vault is refused outright.
+  to a file outside the vault is refused outright. It returns a `.md` file
+  whatever the patterns say, as `read-note` does (`denyPaths` still applies),
+  and judges a `.md` link by its target.
 
-Apart from those, `denyBinaryPaths` changes nothing: notes stay under
-`denyPaths` alone. The other tools still judge a path as given and don't resolve
-symbolic links. See [Security](security).
+Apart from those, `denyBinaryPaths` changes nothing: notes, however they are
+read, stay under `denyPaths` alone. The other tools still judge a path as given
+and don't resolve symbolic links. See [Security](security).
 
 ### Uploads and reverse proxies
 
@@ -219,24 +223,29 @@ answers `404` when another path is set. The protected resource metadata names
 address they connected to. A proxy or tunnel that adds a path in front of the
 server still has to remove it before the request reaches the server.
 
-**`uploadNetworkPrefix`** is how much of an IPv4 address must agree between
-the call that reserved an upload URL and the upload that uses it: a whole number
-of leading bits from 16 to 32. The default, 32, means the whole address, so the
-upload must come from the same address as the call. A smaller number accepts any
-address that shares that many leading bits. For example, with `21`,
-`160.79.106.186` and `160.79.109.20` match, because they are both in
-`160.79.104.0/21`, and `160.79.112.20` does not. IPv6 addresses always have to
-match exactly. Numbers below 16 are refused so that the setting can't be made
-wide enough to defeat the check.
+**`uploadNetworkPrefix`** decides whether an upload must come from the same
+place as the call that reserved its URL. The default, `0`, means no check: any
+address may use the URL. That is what a client needs when its tool call and its
+`curl` leave from unrelated networks, which is how Claude Code works through the
+claude.ai connector (the call comes from the vendor's cloud and `curl` runs on
+your own machine) and how Claude Desktop chat and claude.ai work (the call comes
+from the vendor's cloud and `curl` runs in a sandbox).
 
-Set it for a client whose tool call and upload leave from different hosts of one
-network, such as Claude Desktop chat or claude.ai, where the call comes from the
-vendor's cloud and `curl` runs in a sandbox. Use the smallest network that
-covers the client: any host in it can use a leaked URL during its lifetime. The
-URL is still one-time, short-lived and checked against the declared size and
-hash. The server's log says which two addresses a refused upload compared. Behind
-a reverse proxy, set `trustedProxies` too, so the address that is compared is
-the caller's and not the proxy's.
+Set it to require the caller to match. `32` means the same address. A number
+from 16 to 31 accepts any IPv4 address that shares that many leading bits: with
+`21`, `160.79.106.186` and `160.79.109.20` match, because they are both in
+`160.79.104.0/21`, and `160.79.112.20` does not. IPv6 addresses always have to
+match exactly. Anything else is refused at start-up, so the setting can't be
+made wide enough to defeat the check by mistake.
+
+With the check off, the protection of an upload URL is the URL itself: a random
+token that works once, for `uploadTtlSeconds`, for one destination that must not
+exist, and a file that must match the size and SHA-256 declared when it was
+reserved. Someone who gets the URL can only upload those exact bytes or use the
+URL up. The audit log records both ends of every placed upload: `addr` is where
+the upload came from and `reserved_from` is where the call came from. When the
+check is on, set `trustedProxies` too behind a reverse proxy, so the address that
+is compared is the caller's and not the proxy's.
 
 **`uploadTempDir`** is where a file is held while it is being received, before
 it has been checked. It defaults to an `obsidian-mcp-uploads-<user id>` folder
@@ -276,11 +285,12 @@ body has arrived. See [Putting HTTPS in front of the
 server](install/#putting-https-in-front-of-the-server).
 
 **`trustedProxies`** matters only if the server sits behind a reverse proxy
-(nginx, Caddy, a tunnel, Tailscale Serve and so on). An upload URL works only
-from the address that reserved it. Behind a proxy every connection comes from
-the proxy, so unless the server is told otherwise, every caller looks the same
-and that check always passes. List the proxy's address here and the server reads
-the real caller from the `X-Forwarded-For` header the proxy adds (the
+(nginx, Caddy, a tunnel, Tailscale Serve and so on). Behind a proxy every
+connection comes from the proxy, so unless the server is told otherwise, every
+caller looks the same: the address in the log is the proxy's, and an
+`uploadNetworkPrefix` check, if you use one, always passes. List the proxy's
+address here and the server reads the real caller from the `X-Forwarded-For`
+header the proxy adds (the
 [nginx](install/install-nginx), [Caddy](install/install-caddy) and
 [Tailscale](install/install-tailscale) pages show the proxy side):
 
@@ -297,13 +307,17 @@ on the same machine, or the range of the container network if the proxy runs in
 Docker. If a request arrives with `X-Forwarded-For` from a connection that isn't
 trusted, the server logs a hint once, which usually means this setting is
 missing. If a trusted proxy sends a header the server can't read (an entry that
-isn't an address, or one with a port), the caller can't be determined:
-`upload-binary-file` refuses to reserve a URL, and an upload to an existing one
-is refused.
+isn't an address, or one with a port), the caller can't be determined. With
+`uploadNetworkPrefix` above 0, `upload-binary-file` then refuses to reserve a
+URL, and an upload to an existing one is refused. With the default (`0`) no
+address is needed: the upload goes ahead and the audit log records the address
+as `unknown`.
 
-The address check is a second line of defence. Callers behind the same NAT share
-an address, so the real protection is the random token, which works once,
-briefly, for one destination. See [Security](security#upload-binary-file).
+The address check is off by default, and when it is on it is only a second line
+of defence. Callers behind the same NAT share an address, so the real protection
+is the random token, which works once, briefly, for one destination, with a file
+that must match the declared hash. See
+[Security](security#upload-binary-file).
 
 ### Sessions
 

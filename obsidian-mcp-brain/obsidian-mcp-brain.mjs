@@ -234,9 +234,9 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
-  const uploadNetworkPrefix = config.uploadNetworkPrefix ?? 32;
-  if (!Number.isInteger(uploadNetworkPrefix) || uploadNetworkPrefix < 16 || uploadNetworkPrefix > 32) {
-    logErr(`Config file at ${configPath}: "uploadNetworkPrefix" must be a whole number from 16 to 32`);
+  const uploadNetworkPrefix = config.uploadNetworkPrefix ?? 0;
+  if (!Number.isInteger(uploadNetworkPrefix) || (uploadNetworkPrefix !== 0 && (uploadNetworkPrefix < 16 || uploadNetworkPrefix > 32))) {
+    logErr(`Config file at ${configPath}: "uploadNetworkPrefix" must be 0 (no address check) or a whole number from 16 to 32`);
     process.exit(1);
   }
 
@@ -698,7 +698,7 @@ const TOOLS = [
   },
   {
     name: 'read-binary-file',
-    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-binary-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
+    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-binary-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1366,7 +1366,7 @@ async function handleUpload(req, res, url) {
     if (outcome === 'corrupt') return await answer(500, { error: 'the file changed while it was being placed; request a new URL and try again' });
     await discard();
     audit('upload-placed', {
-      user: slot.user ?? null, addr: caller || null, host: requestHost(req, TRUSTED_PROXIES) || null,
+      user: slot.user ?? null, addr: caller || null, reserved_from: slot.address, host: requestHost(req, TRUSTED_PROXIES) || null,
       vault: slot.vault, path: slot.relPath, bytes: received, sha256: digest,
     });
     res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -2009,6 +2009,10 @@ async function route(req, res, url, sid) {
     if (!isNoteFile(srcRel)) {
       const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
       if (escapes) return toolErr(res, sid, msgId, escapes);
+      // A note is not protected, and read-binary-file would return a renamed file as one.
+      if (isNoteFile(dstRel) && isBinaryReadDenied(vault.denyBinaryPaths, srcRel)) {
+        return toolErr(res, sid, msgId, `Reading is restricted for '${srcRel}' and the destination is a note`);
+      }
     }
     try {
       if (args.expectedMtime !== undefined) await assertUnmodified(path.join(vault.path, srcRel), args.expectedMtime);
@@ -2107,7 +2111,7 @@ async function route(req, res, url, sid) {
     }
     let slot;
     try {
-      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req), user: principal?.user });
+      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req) || (UPLOAD_NETWORK_PREFIX === 0 ? 'unknown' : ''), user: principal?.user });
     } catch (err) {
       if (err.code === 'TOO_MANY_SLOTS') {
         return toolErr(res, sid, msgId, 'Too many pending uploads. Wait for one to finish or expire, then try again');
@@ -2122,7 +2126,7 @@ async function route(req, res, url, sid) {
     return toolOk(res, sid, msgId, [
       `Upload reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()}).`,
       `URL: ${url}`,
-      `Valid for ${UPLOAD_TTL_SECONDS} seconds, for one request only, and only from the address that made this request.`,
+      `Valid for ${UPLOAD_TTL_SECONDS} seconds, for one request only${UPLOAD_NETWORK_PREFIX === 0 ? '' : UPLOAD_NETWORK_PREFIX === 32 ? ', and only from the address that made this request' : ', and only from the network of the request that reserved it'}.`,
       'Send the file with:',
       `curl --fail-with-body -sS -T "<path-to-file>" "${url}"`,
       'Replace <path-to-file> with the local file. If the upload fails for any reason, request a new URL.',
@@ -2136,9 +2140,11 @@ async function route(req, res, url, sid) {
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use read-note for .md files');
+    // A .md file is read like any other, but denyBinaryPaths protects binary files and never a
+    // note (as for read-note). It is judged on the file actually read, below, so a .md link to a
+    // protected file is still refused.
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
-    if (isBinaryReadDenied(vault.denyBinaryPaths, relPath)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+    if (!isNoteFile(relPath) && isBinaryReadDenied(vault.denyBinaryPaths, relPath)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
     const absPath = path.join(vault.path, relPath);
     try {
       // Resolve symlinks first and judge the real location, so a link can neither reach a
@@ -2151,7 +2157,7 @@ async function route(req, res, url, sid) {
       }
       const resolvedRel = realRel.split(path.sep).join('/');
       if (_isDenied(vault.denyPaths, resolvedRel)) return toolErr(res, sid, msgId, 'Access denied');
-      if (isBinaryReadDenied(vault.denyBinaryPaths, resolvedRel)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+      if (!isNoteFile(resolvedRel) && isBinaryReadDenied(vault.denyBinaryPaths, resolvedRel)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
       // Size is checked from stat before the file is read, so an oversized file is never loaded.
       const stat = await fs.stat(realAbs);
       if (!stat.isFile()) return toolErr(res, sid, msgId, `Not a regular file: ${relPath}`);

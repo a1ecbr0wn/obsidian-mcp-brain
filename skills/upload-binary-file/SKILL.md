@@ -52,7 +52,7 @@ once.
 | The helper reports | Meaning | What to do |
 | --- | --- | --- |
 | `404` | The URL expired or was already used | Reserve a new URL (step 2) and send again |
-| `403` | The request came from a different address from the one that reserved it, or the destination is not allowed | Check the machine that ran `send` is the one that is connected to the server; if the path is restricted, tell the user |
+| `403` | The request carried an `Origin` header, came from a different address from the one that reserved it (only when the server checks that), or the destination is not allowed | Check the machine that ran `send` is the one that is connected to the server; if the path is restricted, tell the user |
 | `409`, or the tool itself says the file already exists | The destination exists (or appeared after the URL was reserved) | Choose another filename or folder, or ask the user; there is no overwrite |
 | `422` | The file does not match the declared hash (it changed, or was damaged) | Run `prepare` again, then reserve a new URL |
 | `411`, `413` or `400` | The declared size does not match the file, or exceeds the upload limit | Run `prepare` again; if the file is over the limit, tell the user |
