@@ -109,10 +109,10 @@ mainly on Linux.
 ### Hardening
 
 The server writes only inside the vaults, plus a staging folder for
-[uploads](../tools#upload-binary-file), so the container runs with a read-only
+[uploads](../tools#upload-file), so the container runs with a read-only
 root filesystem, no Linux capabilities and no privilege escalation, as the
 compose example shows. The `tmpfs: /tmp` line gives the server somewhere to
-stage an upload. Without it the server still starts, but `upload-binary-file`
+stage an upload. Without it the server still starts, but `upload-file`
 answers that uploads are not available; set [`uploadTempDir`](../configuration)
 to a folder on a mounted volume instead if you prefer. These flags shrink what a
 compromised server process could do to the container and the host; they do not

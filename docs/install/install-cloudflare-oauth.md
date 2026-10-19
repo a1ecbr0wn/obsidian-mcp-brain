@@ -382,7 +382,7 @@ For Claude Code:
   accept. Put the new key's public half in `jwks()` next to the old one, switch
   the secret, and remove the old entry once its 60-second tokens have expired.
 - **`PUT /up/<token>` uploads** go straight to the server at its own address,
-  with the one-time URL from `upload-binary-file`, and do not pass through the
+  with the one-time URL from `upload-file`, and do not pass through the
   Worker.
 - **Logging.** The server's log names the user and the reason for each refusal;
   the Worker never logs a token.

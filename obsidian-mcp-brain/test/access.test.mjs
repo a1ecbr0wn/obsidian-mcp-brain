@@ -165,38 +165,38 @@ describe('checkAccess', () => {
     });
   });
 
-  describe('create-binary-file / delete-binary-file', () => {
+  describe('create-file / delete-file', () => {
     it('blocks denied path', () => {
-      const r1 = checkAccess(DENY, 'create-binary-file', { folder: 'people', filename: 'photo.png' });
+      const r1 = checkAccess(DENY, 'create-file', { folder: 'people', filename: 'photo.png' });
       assert.ok(r1?.includes('restricted'));
-      const r2 = checkAccess(DENY, 'delete-binary-file', { folder: 'people', filename: 'photo.png' });
+      const r2 = checkAccess(DENY, 'delete-file', { folder: 'people', filename: 'photo.png' });
       assert.ok(r2?.includes('restricted'));
     });
 
     it('allows permitted path', () => {
-      assert.equal(checkAccess(DENY, 'create-binary-file', { folder: 'projects', filename: 'photo.png' }), null);
-      assert.equal(checkAccess(DENY, 'delete-binary-file', { folder: 'projects', filename: 'photo.png' }), null);
+      assert.equal(checkAccess(DENY, 'create-file', { folder: 'projects', filename: 'photo.png' }), null);
+      assert.equal(checkAccess(DENY, 'delete-file', { folder: 'projects', filename: 'photo.png' }), null);
     });
 
     it('handles missing folder (filename only)', () => {
-      assert.equal(checkAccess(DENY, 'create-binary-file', { filename: 'photo.png' }), null);
-      assert.equal(checkAccess(DENY, 'delete-binary-file', { filename: 'photo.png' }), null);
+      assert.equal(checkAccess(DENY, 'create-file', { filename: 'photo.png' }), null);
+      assert.equal(checkAccess(DENY, 'delete-file', { filename: 'photo.png' }), null);
     });
   });
 
-  describe('move-binary-file', () => {
+  describe('move-file', () => {
     it('blocks denied source', () => {
-      const r = checkAccess(DENY, 'move-binary-file', { folder: 'people', filename: 'photo.png', newFilename: 'photo.png' });
+      const r = checkAccess(DENY, 'move-file', { folder: 'people', filename: 'photo.png', newFilename: 'photo.png' });
       assert.ok(r?.includes('source'));
     });
 
     it('blocks denied destination', () => {
-      const r = checkAccess(DENY, 'move-binary-file', { filename: 'photo.png', newFolder: 'people', newFilename: 'photo.png' });
+      const r = checkAccess(DENY, 'move-file', { filename: 'photo.png', newFolder: 'people', newFilename: 'photo.png' });
       assert.ok(r?.includes('destination'));
     });
 
     it('allows permitted source and destination', () => {
-      assert.equal(checkAccess(DENY, 'move-binary-file', { filename: 'a.png', newFolder: 'projects', newFilename: 'a.png' }), null);
+      assert.equal(checkAccess(DENY, 'move-file', { filename: 'a.png', newFolder: 'projects', newFilename: 'a.png' }), null);
     });
   });
 
@@ -464,19 +464,32 @@ describe('checkBinaryMove', () => {
   });
 });
 
-describe('upload-binary-file access', () => {
+describe('replace-file access', () => {
+  it('blocks a denied destination, also through ..-traversal', () => {
+    for (const folder of ['people', 'projects/../people']) {
+      const r = checkAccess(DENY, 'replace-file', { folder, filename: 'a.pdf' });
+      assert.ok(r?.includes('restricted'), folder);
+    }
+  });
+
+  it('allows a permitted destination', () => {
+    assert.equal(checkAccess(DENY, 'replace-file', { folder: 'projects', filename: 'a.pdf' }), null);
+  });
+});
+
+describe('upload-file access', () => {
   it('blocks a denied destination', () => {
-    const r = checkAccess(DENY, 'upload-binary-file', { folder: 'people', filename: 'a.pdf' });
+    const r = checkAccess(DENY, 'upload-file', { folder: 'people', filename: 'a.pdf' });
     assert.ok(r?.includes('restricted'));
   });
 
   it('blocks a ..-traversal into a denied destination', () => {
-    const r = checkAccess(DENY, 'upload-binary-file', { folder: 'projects/../people', filename: 'a.pdf' });
+    const r = checkAccess(DENY, 'upload-file', { folder: 'projects/../people', filename: 'a.pdf' });
     assert.ok(r?.includes('restricted'));
   });
 
   it('allows a permitted destination', () => {
-    assert.equal(checkAccess(DENY, 'upload-binary-file', { folder: 'projects', filename: 'a.pdf' }), null);
+    assert.equal(checkAccess(DENY, 'upload-file', { folder: 'projects', filename: 'a.pdf' }), null);
   });
 });
 

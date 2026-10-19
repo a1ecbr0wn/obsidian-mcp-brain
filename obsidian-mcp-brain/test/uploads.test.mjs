@@ -14,6 +14,7 @@ import {
   checkStagingDirOwner,
   defaultUploadTempDir,
   isValidUtf8File,
+  hashFile,
   resolveDestination,
   sweepStaging,
 } from '../lib/uploads.mjs';
@@ -552,5 +553,53 @@ describe('addressesMatch', () => {
       assert.equal(addressesMatch('160.79.106.186', '160.79.106.20', prefix), false);
       assert.equal(addressesMatch('160.79.106.186', '160.79.106.186', prefix), true);
     }
+  });
+});
+
+// ── replace mode and hashFile ───────────────────────────────────────────────
+
+describe('UploadSlots in replace mode', () => {
+  const makeStore = () => new UploadSlots({ ttlMs: 5000, maxOutstanding: 3, now: () => 1_000_000 });
+  const MTIME = '2026-01-02T03:04:05.678Z';
+
+  it('is create mode unless it is told otherwise, with no expected version', () => {
+    const store = makeStore();
+    const slot = store.consume(store.create(slotInfo()).token);
+    assert.equal(slot.mode, 'create');
+    assert.equal('expectedSha256' in slot, false);
+    assert.equal('expectedMtime' in slot, false);
+  });
+
+  it('keeps the version it replaces, with the hash in lower case', () => {
+    const store = makeStore();
+    const { token } = store.create(slotInfo({ mode: 'replace', expectedSha256: 'B'.repeat(64), expectedMtime: MTIME }));
+    const slot = store.consume(token);
+    assert.equal(slot.mode, 'replace');
+    assert.equal(slot.expectedSha256, 'b'.repeat(64));
+    assert.equal(slot.expectedMtime, MTIME);
+  });
+});
+
+describe('hashFile', () => {
+  const withFile = async (bytes, fn) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hashfile-'));
+    try {
+      const file = path.join(dir, 'f.bin');
+      await fs.writeFile(file, bytes);
+      return await fn(file);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  };
+  const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+
+  it('hashes a file, an empty one and one larger than a read chunk', async () => {
+    for (const bytes of [Buffer.from('hello'), Buffer.alloc(0), crypto.randomBytes(300_000)]) {
+      assert.equal(await withFile(bytes, hashFile), sha(bytes));
+    }
+  });
+
+  it('fails for a file that is not there', async () => {
+    await assert.rejects(hashFile(path.join(os.tmpdir(), 'no-such-file-for-hashfile')), { code: 'ENOENT' });
   });
 });

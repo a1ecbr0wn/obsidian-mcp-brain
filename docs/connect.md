@@ -95,9 +95,24 @@ SSE stream for server-initiated messages once the server has issued a session
 ID, reconnects that stream with exponential backoff if it drops, and sends an
 HTTP DELETE to end the session cleanly when Claude Desktop exits.
 
+### Tool names and titles
+
+Each tool has a function name with dashes, such as `read-note`, and a display
+title with spaces, such as "Read note". The server sends both in its tool list,
+and Claude shows the title where the client supports it; the
+[tool table](tools) lists them side by side. Permission rules, `allowedTools`
+entries and the audit log always use the function name. The server speaks MCP
+protocol versions `2025-06-18`, `2025-03-26` and `2024-11-05`. It answers
+`initialize` with the version the client asks for if it speaks it, and with the
+newest otherwise. A request that names another version in an
+`MCP-Protocol-Version` header is refused with `400` (a header that lists several
+versions is fine if the server speaks them all); a client that sends no such
+header is fine. A request carries one JSON-RPC message: a batch (an array) is
+refused with `400`.
+
 ### Reading PDFs and other binary files
 
-`read-binary-file` returns a file as an MCP embedded resource, and what a client
+`read-file` returns a file as an MCP embedded resource, and what a client
 does with that is up to the client.
 
 - **Claude Code** doesn't put the bytes into the conversation. It saves the file
@@ -119,7 +134,7 @@ does with that is up to the client.
   with an embedded resource can't read files this way.
 
 The repository includes an agent skill,
-[`skills/read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file),
+[`skills/read-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-file),
 that works out which Claude surface it is running on, and on a chat surface
 tells the user that a non-image file can't be shown and suggests a code mode
 chat, instead of the agent reporting an empty result. It is only effective where
@@ -130,7 +145,7 @@ connects.
 
 ### Uploading files
 
-[`upload-binary-file`](tools#upload-binary-file) gives the agent a URL to send a
+[`upload-file`](tools#upload-file) gives the agent a URL to send a
 file to with `curl`, so the file doesn't pass through the model. It therefore
 needs an agent that can run commands on a machine that can reach the server's
 address (`mcpBaseUrl`).
@@ -146,7 +161,7 @@ address (`mcpBaseUrl`).
   its allowed domains (in Claude Desktop: Settings > Capabilities > Domain
   Allowlist), or its proxy answers `403` before the request reaches the server.
 - **Clients with no shell** can't run `curl` at all and use
-  `create-binary-file` for small files.
+  `create-file` for small files.
 
 ### When the server has authentication on
 
@@ -164,21 +179,22 @@ Your OAuth service has to support what the clients use: see [what the OAuth
 service has to do](configuration#authentication-auth).
 
 An agent's `curl` upload from a cloud sandbox is not signed in: it uses the
-one-time URL from `upload-binary-file`, which needs no token.
+one-time URL from `upload-file`, which needs no token.
 
 If a client reports that it cannot sign in, check the server's log: each refusal
 is logged with its reason.
 
 ### Agent skills and agents
 
-The repository ships two agent skills,
-[`read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file)
+The repository ships three agent skills,
+[`read-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-file),
+[`upload-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-file)
 and
-[`upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file),
+[`replace-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/replace-file),
 packaged as a plugin and as individual `.skill` files. A plugin can also carry
 agents (an `agents/` folder); each one is listed the same way as a skill. The
 tools work without them; the skills tell an agent how to use the tools well and,
-in `read-binary-file`'s case, what to say when the client can't show a file.
+in `read-file`'s case, what to say when the client can't show a file.
 
 The server tells a connected agent about them. The `initialize` response carries
 short `instructions`, and the `get-setup-status` tool returns the list of skills
@@ -186,8 +202,9 @@ and agents, the server's version, how to tell which Claude surface the agent is
 on, and the install steps for each. The server does not know what a client has
 installed: the agent checks its own skill list for the names and compares a
 skill's `metadata.version` with the server version, and tells you when a plugin
-update may be available. `upload-binary-file`, `read-binary-file` and
-`create-binary-file` point to `get-setup-status` in their descriptions.
+update may be available. `upload-file`, `replace-file`,
+`read-file` and `create-file` point to `get-setup-status` in
+their descriptions.
 
 How you get them depends on where you run Claude:
 
@@ -200,17 +217,28 @@ How you get them depends on where you run Claude:
 
 A plugin marketplace is a Claude Code feature, so the other surfaces upload the
 plugin file. Agents in a plugin run in Claude Code and Cowork; Claude Desktop
-chat and claude.ai ignore them. `upload-binary-file` needs a shell on a machine
-that can reach the server, so it is of use only where the agent has one. The
+chat and claude.ai ignore them. `upload-file` and `replace-file`
+need a shell on a machine that can reach the server, so they are of use only
+where the agent has one. The
 `.skill`, `.plugin` and agent files are built from the repository by
 `scripts/package-skills.sh`, which needs only `zip`, and are attached to each
 release.
 
-If Claude Code refuses the `curl` command that `upload-binary-file` runs, allow
-the skill's script with a permission rule in `permissions.allow` of
-`~/.claude/settings.json`:
-`Bash(sh <path of the skill's upload-binary-file.sh> *)`. A Bash rule matches
+If Claude Code refuses the `curl` command that `upload-file` (or
+`replace-file`) runs, allow the skill's script with a permission rule in
+`permissions.allow` of `~/.claude/settings.json`:
+`Bash(sh <path of the skill's upload-file.sh> *)` (for the other skill,
+its `replace-file.sh`). A Bash rule matches
 the command as the agent wrote it, from its first word (the skill runs its
 script with `sh`), so write the path the way it appears in the refusal;
 `/permissions` lists the rules. `Bash(curl *)` would allow every `curl`, which
-is broader than needed. For a small file, `create-binary-file` needs no `curl`.
+is broader than needed. For a small file, `create-file` needs no `curl`.
+
+**Upgrading from a version that called the tools `*-binary-file`.** The seven
+tools were renamed (`create-file`, `fetch-file`, `upload-file`, `replace-file`,
+`read-file`, `move-file`, `delete-file`) and the old names no longer exist, so a
+client that calls one gets `Unknown tool`. The three skills were renamed with
+them, so install the plugin (or the `.skill` files) again from the new release
+and remove the old copies. A permission rule written for the old script,
+`Bash(sh <path>/upload-binary-file.sh *)`, no longer matches: write it again
+for `upload-file.sh`, and for `replace-file.sh`.

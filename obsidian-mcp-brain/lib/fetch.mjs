@@ -1,4 +1,4 @@
-// SSRF-safe URL fetching for fetch-binary-file. A caller-supplied URL is effectively
+// SSRF-safe URL fetching for fetch-file. A caller-supplied URL is effectively
 // a request to make this host issue an arbitrary outbound call — on any deployment,
 // that host may have private network services reachable that shouldn't be — so every
 // function here exists to keep that call scoped to the public internet.

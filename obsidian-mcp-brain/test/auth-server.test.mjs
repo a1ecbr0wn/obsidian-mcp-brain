@@ -165,6 +165,12 @@ describe('resource server mode', () => {
       assert.equal(r.json.error, 'unauthorized');
     });
 
+    it('answers 401, not 400, to an unauthenticated request that also names an unsupported protocol version', async () => {
+      const r = await request(srv, { body: INIT, headers: { 'mcp-protocol-version': '2020-01-01' } });
+      assert.equal(r.status, 401);
+      assert.equal(r.json.error, 'unauthorized');
+    });
+
     it('refuses a token that is not valid: 401 with invalid_token', async () => {
       const r = await request(srv, { body: INIT, token: tok(OWNER, { exp: 1 }) });
       assert.equal(r.status, 401);
@@ -408,10 +414,11 @@ describe('resource server mode', () => {
         ['move-note', { filename: 'hello.md', newFolder: 'moved' }],
         ['create-folder', { folder: 'viewer-folder' }],
         ['add-tags', { filename: 'hello.md', tags: ['a'] }],
-        ['create-binary-file', { filename: 'x.bin', content: 'AAAA' }],
-        ['upload-binary-file', { filename: 'x.bin', size: 1, sha256: 'a'.repeat(64) }],
-        ['fetch-binary-file', { url: 'http://127.0.0.1:1/x', filename: 'x.bin' }],
-        ['delete-binary-file', { filename: 'x.bin' }],
+        ['create-file', { filename: 'x.bin', content: 'AAAA' }],
+        ['upload-file', { filename: 'x.bin', size: 1, sha256: 'a'.repeat(64) }],
+        ['replace-file', { filename: 'x.bin', size: 1, sha256: 'a'.repeat(64), expectedSha256: 'b'.repeat(64), expectedMtime: '2026-01-01T00:00:00.000Z' }],
+        ['fetch-file', { url: 'http://127.0.0.1:1/x', filename: 'x.bin' }],
+        ['delete-file', { filename: 'x.bin' }],
       ];
       for (const [name, args] of attempts) {
         const r = await call(srv, viewer, viewerSid, name, args);

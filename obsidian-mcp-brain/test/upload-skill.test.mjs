@@ -1,5 +1,5 @@
 /**
- * Tests for the upload-binary-file skill's helper script (skills/upload-binary-file/scripts/upload-binary-file.sh).
+ * Tests for the upload-file skill's helper script (skills/upload-file/scripts/upload-file.sh).
  * `send` is run against a small local HTTP server that answers like the real PUT /up/<token>
  * endpoint, so what is checked is the script's own behaviour: its output, its exit status, and
  * that the upload token never appears in anything it prints.
@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.join(__dirname, '..', '..', 'skills', 'upload-binary-file', 'scripts', 'upload-binary-file.sh');
+const SCRIPT = path.join(__dirname, '..', '..', 'skills', 'upload-file', 'scripts', 'upload-file.sh');
 const TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCde'; // 43 characters
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
@@ -76,8 +76,8 @@ function rpc(port, body, sid) {
   });
 }
 
-// The whole workflow an agent follows, against a real server: prepare, upload-binary-file, send.
-describe('upload-binary-file skill against a real server', () => {
+// The whole workflow an agent follows, against a real server: prepare, upload-file, send.
+describe('upload-file skill against a real server', () => {
   let root;
   let proc;
   const port = 19900;
@@ -123,7 +123,7 @@ describe('upload-binary-file skill against a real server', () => {
     });
     const call = await rpc(port, {
       jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: 'upload-binary-file', arguments: { vault: 'v', folder: 'inbox', filename: field('filename'), size: Number(field('size')), sha256: field('sha256') } },
+      params: { name: 'upload-file', arguments: { vault: 'v', folder: 'inbox', filename: field('filename'), size: Number(field('size')), sha256: field('sha256') } },
     }, init.sid);
     const text = call.msg.result.content[0].text;
     const url = text.match(/https?:\/\/\S+\/up\/[A-Za-z0-9_-]{43}/)?.[0];
@@ -142,7 +142,7 @@ describe('upload-binary-file skill against a real server', () => {
   });
 });
 
-describe('upload-binary-file.sh', () => {
+describe('upload-file.sh', () => {
   let dir;
   let file;
   const content = crypto.randomBytes(5000);
@@ -161,6 +161,17 @@ describe('upload-binary-file.sh', () => {
       assert.match(r.stdout, /^filename=sample scan\.pdf$/m);
       assert.match(r.stdout, /^size=5000$/m);
       assert.match(r.stdout, new RegExp(`^sha256=${sha256(content)}$`, 'm'));
+    });
+
+    it('hashes a file whose name has a backslash or a newline in it', async () => {
+      for (const name of ['back\\slash.bin', 'new\nline.bin']) {
+        const odd = path.join(dir, name);
+        const bytes = crypto.randomBytes(300);
+        await fs.writeFile(odd, bytes);
+        const r = await run(['prepare', odd]);
+        assert.equal(r.code, 0, r.all);
+        assert.match(r.stdout, new RegExp(`^sha256=${sha256(bytes)}$`, 'm'), name);
+      }
     });
 
     it('handles an empty file', async () => {

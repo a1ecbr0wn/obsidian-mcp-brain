@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * MCP server exposing one or more Obsidian vaults to remote MCP clients over HTTP.
- *   - Implements MCP Streamable HTTP transport (2024-11-05 spec)
+ *   - Implements MCP Streamable HTTP transport (speaks the 2024-11-05, 2025-03-26 and 2025-06-18 specs; see lib/protocol.mjs)
  *   - Provides the OAuth 2.0 discovery endpoints Claude Code requires
  *   - Reads and writes vault files directly, with no child process dependency
  *
@@ -34,6 +34,7 @@ import {
   checkStagingDirOwner,
   defaultUploadTempDir,
   isValidUtf8File,
+  hashFile,
   resolveDestination,
   sweepStaging,
   stagingFileName,
@@ -41,12 +42,15 @@ import {
 import { parseTags as fmParseTags, addTags as fmAddTags, removeTags as fmRemoveTags, renameTag as fmRenameTag, setFrontmatterField, removeFrontmatterField } from './lib/frontmatter.mjs';
 import { escRe } from './lib/utils.mjs';
 import { replaceSection, deleteSection, toggleCheckbox, readSection, outlineSections } from './lib/sections.mjs';
-import { assertUnmodified, formatMtime } from './lib/preconditions.mjs';
+import { assertUnmodified, formatMtime, validateExpectedMtime } from './lib/preconditions.mjs';
 import { fetchToBuffer } from './lib/fetch.mjs';
 import { formatAudit, toolTarget, requestHost } from './lib/audit.mjs';
 import { openLogFile } from './lib/logfile.mjs';
 import { SessionTable } from './lib/sessions.mjs';
 import { detectLineEnding, toLineEnding } from './lib/lineending.mjs';
+import { trashDestination, purgeVaults } from './lib/trash.mjs';
+import { withTitles } from './lib/tool-titles.mjs';
+import { negotiateProtocolVersion, protocolHeaderAcceptable } from './lib/protocol.mjs';
 import {
   isNoteFile,
   walkAllFiles as libWalkAllFiles,
@@ -59,6 +63,7 @@ import {
   searchFilename as libSearchFilename,
   readBinaryFile as libReadBinaryFile,
   writeBinaryFile as libWriteBinaryFile,
+  noteBytesError,
   deleteBinaryFile as libDeleteBinaryFile,
   moveBinaryFile as libMoveBinaryFile,
   findBacklinks as libFindBacklinks,
@@ -113,7 +118,7 @@ function normDenyPaths(list, configPath, fieldLabel) {
 
 /**
  * When any denyBinaryPaths are set, `.trash` is protected too. A non-permanent
- * delete-binary-file moves a file there, and without this a protected file could be
+ * delete-file moves a file there, and without this a protected file could be
  * deleted to the trash and then read, or moved out, from a path no pattern covers.
  * @param {string[]} patterns - A vault's merged denyBinaryPaths.
  * @returns {string[]} The same list plus `.trash`, or [] if nothing is protected.
@@ -124,7 +129,7 @@ const withTrash = (patterns) => (patterns.length ? [...patterns, '.trash'] : pat
  * Loads and validates the configuration file from the given path.
  * Config fields: listenPort (default 3002), listenHost (default "127.0.0.1"),
  * mcpBaseUrl (required), denyPaths (default []), denyBinaryPaths (default [], wildcard
- * patterns whose binary files read-binary-file refuses to return), graphifyQueryTimeoutMs
+ * patterns whose binary files read-file refuses to return), graphifyQueryTimeoutMs
  * (default 60000), fetchMaxBytes (default 10MB), fetchTimeoutMs (default 30000),
  * readMaxBytes (default 10MB), readNoteMaxChars (default 50000, the longest text read-note returns
  * before it asks for an outline or a heading instead), uploadMaxBytes (default 50MB), uploadTtlSeconds (default 300),
@@ -234,6 +239,17 @@ function loadConfig(configPath) {
     process.exit(1);
   }
 
+  // How long a file stays in .trash before the server deletes it: whole days, 0 to keep for ever.
+  const parseRetention = (value, label) => {
+    if (value === undefined) return undefined;
+    if (!Number.isInteger(value) || value < 0) {
+      logErr(`Config file at ${configPath}: ${label} must be a whole number of days, 0 or more (0 keeps files in .trash for ever)`);
+      process.exit(1);
+    }
+    return value;
+  };
+  const trashRetentionDays = parseRetention(config.trashRetentionDays, '"trashRetentionDays"') ?? 30;
+
   const uploadNetworkPrefix = config.uploadNetworkPrefix ?? 0;
   if (!Number.isInteger(uploadNetworkPrefix) || (uploadNetworkPrefix !== 0 && (uploadNetworkPrefix < 16 || uploadNetworkPrefix > 32))) {
     logErr(`Config file at ${configPath}: "uploadNetworkPrefix" must be 0 (no address check) or a whole number from 16 to 32`);
@@ -271,7 +287,7 @@ function loadConfig(configPath) {
   // authentication under any other name is an error, and any other unknown key is reported.
   const knownKeys = new Set(['listenPort', 'listenHost', 'mcpBaseUrl', 'mcpPath', 'denyPaths', 'denyBinaryPaths',
     'graphifyQueryTimeoutMs', 'fetchMaxBytes', 'fetchTimeoutMs', 'readMaxBytes', 'readNoteMaxChars',
-    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'sessionTimeoutSeconds', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
+    'uploadMaxBytes', 'uploadTtlSeconds', 'uploadStallSeconds', 'uploadNetworkPrefix', 'logFile', 'sessionTimeoutSeconds', 'trashRetentionDays', 'uploadTempDir', 'trustedProxies', 'auth', 'vaults']);
   for (const key of Object.keys(config)) {
     if (knownKeys.has(key)) continue;
     if (/^(auth|oauth2?|authn|authentication|authorization|authorisation|tokens?|jwks|jwksuri|issuer|audience|users|readonlyusers|userclaim|tokenheader)$/i.test(key)) {
@@ -325,6 +341,7 @@ function loadConfig(configPath) {
     }
     vaults[name] = {
       path: entry.path,
+      trashRetentionDays: parseRetention(entry.trashRetentionDays, `vaults.${name}.trashRetentionDays`) ?? trashRetentionDays,
       denyPaths: [...globalDenyPaths, ...normDenyPaths(entry.denyPaths, configPath, `vaults.${name}.denyPaths`)],
       denyBinaryPaths: compileBinaryPatterns(withTrash([
         ...globalDenyBinaryPaths,
@@ -417,7 +434,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
 // cannot move staging somewhere that was never checked.
 let UPLOAD_TEMP_DIR = CONFIGURED_UPLOAD_TEMP_DIR;
 // Set when the default staging folder cannot be created (a read-only container has no writable
-// temporary directory). Uploads are optional, so the server still starts and only upload-binary-file
+// temporary directory). Uploads are optional, so the server still starts and only upload-file
 // refuses, with this as the reason. A folder the owner configured is never excused like this.
 let UPLOADS_UNAVAILABLE = null;
 
@@ -477,8 +494,8 @@ const FIELD_NAME_RE = /^[A-Za-z0-9_-]+$/;
 // The version comes from package.json (copied beside this file by npm and by the Dockerfile),
 // so it is the release version; `instructions` points the agent at the companion skills.
 const SERVER_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+// The protocolVersion is chosen per client (negotiateProtocolVersion), so it is not part of this.
 const SERVER_CAPS = {
-  protocolVersion: '2024-11-05',
   capabilities: { tools: {} },
   serverInfo: { name: 'obsidian-mcp-brain', version: SERVER_VERSION },
   instructions: SETUP_INSTRUCTIONS,
@@ -487,10 +504,10 @@ const SERVER_CAPS = {
 // ── Native tools ────────────────────────────────────────────────────
 
 
-const TOOLS = [
+const TOOL_DEFINITIONS = [
   {
     name: 'list-notes',
-    description: 'List the files in the vault, or scoped to a folder. By default it lists the notes (.md files); give extension to list other files, such as the PDFs or images that read-binary-file and the other binary-file tools work on. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
+    description: 'List the files in the vault, or scoped to a folder. By default it lists the notes (.md files); give extension to list other files, such as the PDFs or images that read-file and the other file tools work on. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -559,7 +576,7 @@ const TOOLS = [
   },
   {
     name: 'get-setup-status',
-    description: 'List the companion skills and agents that make this server\'s tools work better, the server version, and how to install them on each Claude surface (Claude Code, Cowork, Claude Desktop chat, claude.ai). Call it once before the first use of read-binary-file or upload-binary-file, unless those skills are already in your skill list. It does not know what you have installed: compare the list with your own skills, and a skill\'s metadata.version with the server version. Takes no parameters and touches no vault.',
+    description: 'List the companion skills and agents that make this server\'s tools work better, the server version, and how to install them on each Claude surface (Claude Code, Cowork, Claude Desktop chat, claude.ai). Call it once before the first use of read-file or upload-file, unless those skills are already in your skill list. It does not know what you have installed: compare the list with your own skills, and a skill\'s metadata.version with the server version. Takes no parameters and touches no vault.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -644,8 +661,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'create-binary-file',
-    description: 'Create a new binary file (e.g. an image) from base64-encoded content. Fails if the file already exists; list-notes with extension shows what is there. The whole file travels as base64 text in the call, so use it for small files only: for a large file use upload-binary-file (get-setup-status says how to set it up).',
+    name: 'create-file',
+    description: 'Create a new file of any type (an image, a PDF, a .md note) from base64-encoded content. A .md note must be valid UTF-8; to write text you have composed, create-note is simpler. Fails if the file already exists; list-notes with extension shows what is there. The whole file travels as base64 text in the call, so use it for small files only: for a large file use upload-file (get-setup-status says how to set it up).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -658,8 +675,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'fetch-binary-file',
-    description: 'Create a new binary file by downloading a URL server-side, so the client only needs to send a URL rather than the full file content. Fails if the file already exists. The URL must be http(s) and resolve to a public address.',
+    name: 'fetch-file',
+    description: 'Create a new file of any type by downloading a URL server-side, so the client only needs to send a URL rather than the full file content. A .md note must be valid UTF-8. Fails if the file already exists. The URL must be http(s) and resolve to a public address.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -674,7 +691,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'upload-binary-file',
+    name: 'upload-file',
     description: 'Reserve a one-time URL for uploading a file (a PDF, an image) to the vault without sending its contents through the model. '
       + 'Give the destination, the file\'s size in bytes and its SHA-256, both computed with a tool such as `wc -c` and `sha256sum`, never by hand. '
       + 'The result is a URL and a ready-to-run command: `curl --fail-with-body -sS -T <file> <url>`. '
@@ -682,8 +699,8 @@ const TOOLS = [
       + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
       + 'A note (.md) can be uploaded too, if it is valid UTF-8: use this for a large or generated note that is already on disk, and create-note for text you have written yourself. '
       + 'Fails if the destination already exists; list-notes with extension shows what is there. '
-      + 'If the upload-binary-file skill is installed, use its upload-binary-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
-      + 'This needs a shell and curl. If the client refuses to run the command, the user can allow it for Claude Code with a permission rule, Bash(sh <path of the skill\'s upload-binary-file.sh> *), in permissions.allow of ~/.claude/settings.json, written the way the command appears when it is refused. For a small file, create-binary-file needs no curl.',
+      + 'If the upload-file skill is installed, use its upload-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
+      + 'This needs a shell and curl. If the client refuses to run the command, the user can allow it for Claude Code with a permission rule, Bash(sh <path of the skill\'s upload-file.sh> *), in permissions.allow of ~/.claude/settings.json, written the way the command appears when it is refused. For a small file, create-file needs no curl.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -697,8 +714,33 @@ const TOOLS = [
     },
   },
   {
-    name: 'read-binary-file',
-    description: 'Read a binary file (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-binary-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
+    name: 'replace-file',
+    description: 'Replace a file that is already in the vault (a PDF, an image) with a new version from the local disk, without sending its contents through the model. '
+      + 'It works like upload-file: give the new file\'s size and SHA-256 (from `wc -c` and `sha256sum`, never by hand) and you get a one-time URL and a `curl` command. '
+      + 'It also needs to know which version is being replaced: expectedSha256 and expectedMtime of the file in the vault, both from a prior read-file call (its sha256 and Last-Modified lines). '
+      + 'The reservation is refused if the vault file does not match them, and the check is made again when the file arrives, so a file that someone changed in between is never overwritten; read it again and retry. '
+      + 'The server checks the received file against the declared size and hash and, only if all of that matches, puts it in place and moves the old version to .trash, from where it can be restored. '
+      + 'The file must already exist (to add a new one use upload-file); a file under denyBinaryPaths cannot be replaced; a new file identical to the current one is refused. '
+      + 'The URL works for ONE request only, for a few minutes; if the upload fails for any reason, call this tool again for a new URL. '
+      + 'If the replace-file skill is installed, use its replace-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
+      + 'This needs a shell and curl.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault:          { type: 'string', description: 'Vault name' },
+        filename:       { type: 'string', description: 'Filename of the file to replace, including extension' },
+        folder:         { type: 'string', description: 'Optional vault-relative folder' },
+        size:           { type: 'integer', description: 'Size of the NEW file in bytes (for example from `wc -c`)' },
+        sha256:         { type: 'string', description: 'SHA-256 of the NEW file as 64 hexadecimal characters (for example from `sha256sum`)' },
+        expectedSha256: { type: 'string', description: 'SHA-256 of the file in the vault that is being replaced, from read-file' },
+        expectedMtime:  { type: 'string', description: 'ISO 8601 mtime of the file in the vault that is being replaced, from the Last-Modified line of read-file or from list-notes' },
+      },
+      required: ['vault', 'filename', 'size', 'sha256', 'expectedSha256', 'expectedMtime'],
+    },
+  },
+  {
+    name: 'read-file',
+    description: 'Read a file of any type (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. The result also gives the file\'s sha256 and Last-Modified, which replace-file takes as expectedSha256 and expectedMtime (a file over the limit is refused, but the refusal gives both). Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -710,8 +752,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'move-binary-file',
-    description: 'Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path.',
+    name: 'move-file',
+    description: 'Move or rename a file of any type. For a .md note it rewrites the wikilinks that point at it, as move-note does; for any other file it rewrites the embeds that point at it. A note cannot be renamed to another file type or the reverse: use move-note for that.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -726,8 +768,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'delete-binary-file',
-    description: 'Delete a binary file, moving it to .trash by default.',
+    name: 'delete-file',
+    description: 'Delete a file of any type (a .md note too, as delete-note does), moving it to .trash by default.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -742,7 +784,7 @@ const TOOLS = [
   },
   {
     name: 'find-backlinks',
-    description: 'Find all notes that link to or embed a given note or binary file. Returns sorted vault-relative paths.',
+    description: 'Find all notes that link to or embed a given note or file. Returns sorted vault-relative paths.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -878,6 +920,11 @@ const TOOLS = [
     },
   },
 ];
+
+// Each tool also carries its display title (lib/tool-titles.mjs). A tool with no title, or a title
+// for no tool, is logged as a warning; a tool with no title gets one made from its name, so a bad
+// edit cannot stop the server.
+const TOOLS = withTitles(TOOL_DEFINITIONS, undefined, (message) => logErr(`WARNING: ${message}`));
 
 // ── SSE streams (GET on the MCP endpoint per session) ────────────────────────────────────
 
@@ -1302,12 +1349,119 @@ async function placeUpload(vault, relPath, stagePath, sha256) {
 }
 
 /**
+ * Replaces a file in the vault with a received one. The file being replaced must still be the
+ * one the caller expects: its mtime is checked, then its mtime and SHA-256 again on the copy that
+ * goes to .trash (the very file that is about to be swapped out), so a change after the reservation
+ * is caught. The
+ * received file is copied beside the destination under a hidden name (re-checking its hash,
+ * and keeping the old file's permissions, without setuid, setgid or sticky bits), the old file
+ * is hard-linked into .trash (copied where hard links fail), and the new file is renamed over
+ * the destination, so the destination holds a complete file the whole time. Just before the
+ * rename the destination is checked to still be the file that was trashed, which catches a
+ * second replacement that got in first. A write in place by another process during the hash of
+ * the old file, or in the few microseconds before the rename, is not prevented; the rename is
+ * followed by a check of the trashed file and a change is reported as `raced`. trashedAs is the
+ * old file's vault-relative path in .trash.
+ * @param {object} vault - A configured vault.
+ * @param {{relPath: string, sha256: string, expectedSha256: string, expectedMtime: string}} slot
+ * @param {string} stagePath - The received file.
+ * @returns {Promise<{outcome: 'ok', trashedAs: string, raced: boolean}|{outcome: 'missing'|'notfile'|'changed'|'denied'|'outside'|'corrupt'|'notutf8'}>}
+ */
+async function placeReplace(vault, slot, stagePath) {
+  const { relPath, sha256, expectedSha256, expectedMtime } = slot;
+  if (_isDenied(vault.denyPaths, relPath)) return { outcome: 'denied' };
+  const resolved = await resolveDestination(vault.path, relPath);
+  if (!resolved.ok) return { outcome: 'outside' };
+  if (_isDenied(vault.denyPaths, resolved.rel)) return { outcome: 'denied' };
+  // A protected binary file is judged where it really is, so a link cannot reach it.
+  if (!isNoteFile(resolved.rel) && isBinaryReadDenied(vault.denyBinaryPaths, resolved.rel)) return { outcome: 'denied' };
+  // A note is text that the note tools parse: judged by the name asked for and by the file really replaced.
+  if ((isNoteFile(relPath) || isNoteFile(resolved.rel)) && !(await isValidUtf8File(stagePath))) return { outcome: 'notutf8' };
+  // Replaced where the file really is: renaming over a link would swap the link, not its target.
+  const dest = path.join(vault.path, resolved.rel);
+  let stat;
+  try {
+    stat = await fs.stat(dest);
+  } catch (err) {
+    if (err.code === 'ENOENT') return { outcome: 'missing' };
+    throw err;
+  }
+  if (!stat.isFile()) return { outcome: 'notfile' };
+  if (formatMtime(stat) !== expectedMtime) return { outcome: 'changed' };
+  const mode = stat.mode & 0o777;
+  const tmp = path.join(path.dirname(dest), `.${stagingFileName()}`);
+  let trash;
+  try {
+    const hash = createHash('sha256');
+    const hasher = new Transform({ transform(chunk, _e, cb) { hash.update(chunk); cb(null, chunk); } });
+    await pipeline(createReadStream(stagePath), hasher, createWriteStream(tmp, { flags: 'wx', mode }));
+    if (hash.digest('hex') !== sha256) return { outcome: 'corrupt' };
+    await fs.chmod(tmp, mode);
+    // Hard-link the old file into .trash; a name that is taken is retried, and a filesystem
+    // without hard links gets a copy. A copy that fails part way is removed.
+    for (let attempt = 0; !trash; attempt++) {
+      if (attempt === 5) throw new Error('no free name in .trash');
+      const candidate = await trashDestination(dest, vault.path);
+      try {
+        await fs.link(dest, candidate);
+        trash = candidate;
+      } catch (err) {
+        if (err.code === 'ENOENT' && !(await fs.access(dest).then(() => true, () => false))) return { outcome: 'missing' };
+        if (err.code === 'EEXIST') { await new Promise(r => setTimeout(r, 2)); continue; }
+        try {
+          await fs.copyFile(dest, candidate, fsConstants.COPYFILE_EXCL);
+          trash = candidate;
+        } catch (copyErr) {
+          if (copyErr.code === 'ENOENT') return { outcome: 'missing' };
+          if (copyErr.code === 'EEXIST') { await new Promise(r => setTimeout(r, 2)); continue; }
+          await fs.unlink(candidate).catch(() => {});
+          throw copyErr;
+        }
+      }
+    }
+    const trashed = await fs.stat(trash);
+    if (formatMtime(trashed) !== expectedMtime || (await hashFile(trash)) !== expectedSha256) {
+      await fs.unlink(trash).catch(() => {});
+      return { outcome: 'changed' };
+    }
+    // The destination must still be the file that was trashed: a replacement that finished
+    // while the old file was being hashed has put another file there.
+    const now = await fs.stat(dest).catch(() => null);
+    if (!now || now.ino !== trashed.ino || now.dev !== trashed.dev) {
+      await fs.unlink(trash).catch(() => {});
+      return { outcome: now ? 'changed' : 'missing' };
+    }
+    try {
+      await fs.rename(tmp, dest);
+    } catch (err) {
+      await fs.unlink(trash).catch(() => {});
+      throw err;
+    }
+    // A write in place to the old file after it was checked would also have changed the trashed copy.
+    const after = await fs.stat(trash).catch(() => null);
+    const raced = !after || after.size !== trashed.size || after.mtimeMs !== trashed.mtimeMs;
+    return { outcome: 'ok', trashedAs: path.relative(vault.path, trash).split(path.sep).join('/'), raced };
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+/**
  * Handles every request to /up/...: the one-time upload URL. The order matters: the slot is
  * used up first, so whatever the request turns out to be, the URL is dead afterwards. The
  * received file must match the declared size and hash, and a note (.md) must also be valid
  * UTF-8; a failed check is answered with an error status (for example 400 or 422) and the file
- * is not placed in the vault. The
- * staging file is always removed before any answer (success or error) is sent to the client.
+ * is not placed in the vault. The staging file is always removed before any answer (success or
+ * error) is sent to the client.
+ *
+ * A create slot places the file at a new path and answers 201 with {path, bytes, sha256}. A
+ * replace slot (from replace-file) goes through placeReplace, which moves the old file to
+ * .trash, and answers 200 with {path, bytes, sha256, replaced: true, previousSha256, trashedAs},
+ * where trashedAs is vault-relative, plus a warning if the old file was written to while it was
+ * being replaced. For a replace, 403 means denied or outside the vault, 409 means the file is
+ * missing, is not a regular file or has changed since it was read, 400 means a note that is not
+ * UTF-8, and 500 means the placed file was corrupted; a create answers 409 when the destination
+ * exists.
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  * @param {string} url - The request path.
@@ -1357,8 +1511,28 @@ async function handleUpload(req, res, url) {
       return await answer(422, { error: 'sha256 does not match the declared hash', expected: slot.sha256, actual: digest });
     }
     // A note is text that the note tools parse, so only valid UTF-8 is accepted for one.
-    if (isNoteFile(slot.relPath) && !(await isValidUtf8File(stagePath))) {
+    // (A replacement is judged in placeReplace, on the file it really replaces too.)
+    if (slot.mode !== 'replace' && isNoteFile(slot.relPath) && !(await isValidUtf8File(stagePath))) {
       return await answer(400, { error: 'a note must be valid UTF-8 text' });
+    }
+    if (slot.mode === 'replace') {
+      const placed = await placeReplace(vault, slot, stagePath);
+      if (placed.outcome === 'denied' || placed.outcome === 'outside') return await answer(403, { error: 'Access denied' }, `the destination ${logSafe(slot.relPath)} is denied or outside the vault`);
+      if (placed.outcome === 'notutf8') return await answer(400, { error: 'a note must be valid UTF-8 text' });
+      if (placed.outcome === 'notfile') return await answer(409, { error: 'the file to replace is not a regular file', path: slot.relPath });
+      if (placed.outcome === 'missing') return await answer(409, { error: 'the file to replace no longer exists; use upload-file for a new file', path: slot.relPath });
+      if (placed.outcome === 'changed') return await answer(409, { error: 'the file has changed since it was read; read it again with read-file and request a new URL', path: slot.relPath });
+      if (placed.outcome === 'corrupt') return await answer(500, { error: 'the file changed while it was being placed; request a new URL and try again' });
+      await discard();
+      audit('upload-placed', {
+        user: slot.user ?? null, addr: caller || null, reserved_from: slot.address, host: requestHost(req, TRUSTED_PROXIES) || null,
+        vault: slot.vault, path: slot.relPath, bytes: received, sha256: digest, mode: 'replace', previous_sha256: slot.expectedSha256,
+        ...(placed.raced ? { raced: true } : {}),
+      });
+      const warning = placed.raced ? `the old version was written to while it was being replaced, so the copy in ${placed.trashedAs} may hold newer content than previousSha256; check it` : undefined;
+      if (warning) logErr(`replace of ${logSafe(slot.relPath)}: ${warning}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ path: slot.relPath, bytes: received, sha256: digest, replaced: true, previousSha256: slot.expectedSha256, trashedAs: placed.trashedAs, ...(warning ? { warning } : {}) }));
     }
     const outcome = await placeUpload(vault, slot.relPath, stagePath, slot.sha256);
     if (outcome === 'denied' || outcome === 'outside') return await answer(403, { error: 'Access denied' }, `the destination ${logSafe(slot.relPath)} is denied or outside the vault`);
@@ -1389,6 +1563,26 @@ async function handleUpload(req, res, url) {
     await discard(); // a safety net for any path that did not already
   }
 }
+
+/**
+ * Whether a vault-relative path is a folder (a link to one is not: it is moved or deleted as the
+ * link). The file tools refuse a folder, because the deny rules are judged on the path of a file
+ * and moving or trashing a folder would carry files out from under them. A path that does not
+ * exist, or cannot be looked at, is not a folder.
+ * @param {object} vault - A configured vault.
+ * @param {string} relPath - Vault-relative path.
+ * @returns {Promise<boolean>}
+ */
+const isFolder = (vault, relPath) => fs.lstat(path.join(vault.path, relPath)).then(s => s.isDirectory(), () => false);
+
+/**
+ * The refusal a file tool gives when it is asked to act on a folder. `verb` is the operation
+ * ('delete' or 'move') that the caller has to apply to the folder's files one at a time instead.
+ * @param {string} relPath - Vault-relative path of the folder.
+ * @param {'delete'|'move'} verb
+ * @returns {string}
+ */
+const FOLDER_REFUSAL = (relPath, verb) => `'${relPath}' is a folder; ${verb} its files one at a time`;
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1']);
 
@@ -1478,6 +1672,15 @@ async function route(req, res, url, sid) {
     if (EXPECTS_CONTINUE.test(req.headers.expect ?? '')) res.writeContinue();
   }
 
+  // A client that names a protocol version the server does not speak is told so (a request with
+  // no such header is accepted; the specification says to assume 2025-03-26 then). A header sent
+  // twice, or as a comma-separated list, is accepted when every version in it is spoken (lib/protocol.mjs).
+  if (!protocolHeaderAcceptable(req.headers['mcp-protocol-version'])) {
+    return refuseBody(req, res, 400, { 'Content-Type': 'application/json' }, {
+      error: `unsupported MCP-Protocol-Version: ${logSafe(req.headers['mcp-protocol-version'])}`,
+    });
+  }
+
   // ── DELETE on the MCP endpoint — the client ends its session ────────────────────────
   if (req.method === 'DELETE') {
     if (!sid || !SESSIONS.has(sid)) {
@@ -1565,6 +1768,13 @@ async function route(req, res, url, sid) {
   try { msg = JSON.parse(body); } catch {
     res.writeHead(400); return res.end('invalid json');
   }
+  // One JSON-RPC message per request. Batches (an array) are refused: 2025-03-26 allowed them and
+  // 2025-06-18 removed them, and this server never implemented them. Anything that is not an object
+  // (null, a number, a string) is not a message.
+  if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: send one JSON-RPC message per request; batches are not supported' } }));
+  }
 
   // Clamp msg.id to valid JSON-RPC types (string | number | null) before echoing in responses.
   const msgId = (typeof msg.id === 'string' || typeof msg.id === 'number' || msg.id === null)
@@ -1574,7 +1784,8 @@ async function route(req, res, url, sid) {
   const toolName = msg.method === 'tools/call' ? ` (${logSafe(msg.params?.name ?? '?')})` : '';
   log(`  → ${logSafe(msg.method ?? '?')}${toolName} sid=${sid.slice(0, 8) || 'none'}`);
 
-  // initialize → new session, no forwarding needed
+  // initialize → new session, no forwarding needed. The answer names the protocol version chosen
+  // for this client (negotiateProtocolVersion) and carries SERVER_CAPS.
   if (msg.method === 'initialize') {
     const newSid = randomUUID();
     if (!addSession(newSid, principal?.user)) {
@@ -1585,7 +1796,7 @@ async function route(req, res, url, sid) {
     return sendSse(res, 200, newSid, [{
       jsonrpc: '2.0',
       id: msgId,
-      result: SERVER_CAPS,
+      result: { protocolVersion: negotiateProtocolVersion(msg.params?.protocolVersion), ...SERVER_CAPS },
     }]);
   }
 
@@ -1616,6 +1827,7 @@ async function route(req, res, url, sid) {
   if (msg.method === 'prompts/list') {
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { prompts: [] } }]);
   }
+  // tools/list: a read-only user is shown only the tools it may call. Each tool carries its title (see TOOLS).
   if (msg.method === 'tools/list') {
     const visible = principal ? TOOLS.filter(t => toolAllowed(principal.role, t.name)) : TOOLS;
     return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { tools: visible } }]);
@@ -1847,7 +2059,7 @@ async function route(req, res, url, sid) {
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     // read-note reads any file as text, so a non-markdown file under denyBinaryPaths
-    // (an SVG, CSV, text-layer PDF...) must be refused here as well as in read-binary-file.
+    // (an SVG, CSV, text-layer PDF...) must be refused here as well as in read-file.
     if (!isNoteFile(relPath) && isBinaryReadDenied(vault.denyBinaryPaths, relPath)) {
       return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
     }
@@ -1983,6 +2195,7 @@ async function route(req, res, url, sid) {
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (await isFolder(vault, relPath)) return toolErr(res, sid, msgId, FOLDER_REFUSAL(relPath, 'delete'));
     const absPath = path.join(vault.path, relPath);
     try {
       if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
@@ -2004,12 +2217,13 @@ async function route(req, res, url, sid) {
     if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
+    if (await isFolder(vault, srcRel)) return toolErr(res, sid, msgId, FOLDER_REFUSAL(srcRel, 'move'));
     // move-note does a plain rename and accepts any file, so it must not be a route for
     // taking a protected non-markdown file out of protection; markdown notes are unaffected.
     if (!isNoteFile(srcRel)) {
       const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
       if (escapes) return toolErr(res, sid, msgId, escapes);
-      // A note is not protected, and read-binary-file would return a renamed file as one.
+      // A note is not protected, and read-file would return a renamed file as one.
       if (isNoteFile(dstRel) && isBinaryReadDenied(vault.denyBinaryPaths, srcRel)) {
         return toolErr(res, sid, msgId, `Reading is restricted for '${srcRel}' and the destination is a note`);
       }
@@ -2023,13 +2237,12 @@ async function route(req, res, url, sid) {
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'create-binary-file') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'create-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (typeof args.content !== 'string') return toolErr(res, sid, msgId, 'content must be a base64-encoded string');
     const b64Body = args.content.replace(/\s/g, '');
@@ -2045,20 +2258,23 @@ async function route(req, res, url, sid) {
     }
     try {
       const buffer = Buffer.from(args.content, 'base64');
-      await libWriteBinaryFile(absPath, buffer);
+      // A note is text that the note tools parse, so only valid UTF-8 is accepted for one.
+      const unwritable = noteBytesError(relPath, buffer);
+      if (unwritable) return toolErr(res, sid, msgId, unwritable);
+      await libWriteBinaryFile(absPath, buffer, { exclusive: true });
       return toolOk(res, sid, msgId, `Created: ${relPath}`);
     } catch (err) {
+      if (err.code === 'EEXIST') return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'fetch-binary-file') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'fetch-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use create-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
     if (!args.url) return toolErr(res, sid, msgId, 'url is required');
     // Number(), not parseInt() — parseInt silently truncates a decimal or trailing
@@ -2080,14 +2296,21 @@ async function route(req, res, url, sid) {
     }
     try {
       const buffer = await fetchToBuffer(args.url, { maxBytes, timeoutMs });
-      await libWriteBinaryFile(absPath, buffer);
+      const unwritable = noteBytesError(relPath, buffer);
+      if (unwritable) return toolErr(res, sid, msgId, unwritable);
+      await libWriteBinaryFile(absPath, buffer, { exclusive: true });
       return toolOk(res, sid, msgId, `Created: ${relPath} (${buffer.length} bytes)`);
     } catch (err) {
+      if (err.code === 'EEXIST') return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'upload-binary-file') {
+  // Both tools reserve a one-time URL here. replace-file also checks, now, that the vault
+  // file is the one the caller read (expectedMtime and expectedSha256), and placeReplace checks
+  // both again when the new file arrives. A new file identical to the current one is refused.
+  if (msg.method === 'tools/call' && (msg.params?.name === 'upload-file' || msg.params?.name === 'replace-file')) {
+    const replacing = msg.params.name === 'replace-file';
     if (UPLOADS_UNAVAILABLE) return toolErr(res, sid, msgId, `Uploads are not available: ${UPLOADS_UNAVAILABLE}`);
     const args = msg.params.arguments ?? {};
     const vault = Object.hasOwn(VAULTS, args.vault) ? VAULTS[args.vault] : undefined;
@@ -2101,17 +2324,49 @@ async function route(req, res, url, sid) {
     if (typeof sha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
       return toolErr(res, sid, msgId, 'sha256 must be 64 hexadecimal characters: the SHA-256 of the file, from a tool such as sha256sum');
     }
+    const { expectedSha256, expectedMtime } = args;
+    if (replacing) {
+      if (typeof expectedSha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(expectedSha256)) {
+        return toolErr(res, sid, msgId, 'expectedSha256 must be 64 hexadecimal characters: the SHA-256 of the file in the vault, from read-file');
+      }
+      try { validateExpectedMtime(expectedMtime); } catch (err) { return toolErr(res, sid, msgId, err.message); }
+      if (expectedSha256.toLowerCase() === sha256.toLowerCase()) {
+        return toolErr(res, sid, msgId, `The new file is identical to the file in the vault (sha256 ${sha256.toLowerCase()}); nothing to replace`);
+      }
+    }
     try {
       const resolved = await resolveDestination(vault.path, relPath);
       if (!resolved.ok || _isDenied(vault.denyPaths, resolved.rel)) return toolErr(res, sid, msgId, 'Access denied');
-      await fs.access(path.join(vault.path, relPath));
-      return toolErr(res, sid, msgId, `File already exists: ${relPath}`);
+      if (replacing) {
+        // Judged on the file's own name and on where it really is, as read-file does: the
+        // hash check would otherwise let a caller test guesses at a file it may not read.
+        for (const rel of [relPath, resolved.rel]) {
+          if (!isNoteFile(rel) && isBinaryReadDenied(vault.denyBinaryPaths, rel)) return toolErr(res, sid, msgId, `Reading is restricted for '${relPath}'`);
+        }
+        const current = path.join(vault.path, resolved.rel);
+        let stat;
+        try { stat = await fs.stat(current); } catch (err) {
+          if (err.code === 'ENOENT') return toolErr(res, sid, msgId, `File does not exist: ${relPath}. To add a new file use upload-file`);
+          throw err;
+        }
+        if (!stat.isFile()) return toolErr(res, sid, msgId, `Not a regular file: ${relPath}`);
+        await assertUnmodified(current, expectedMtime);
+        if ((await hashFile(current)) !== expectedSha256.toLowerCase()) {
+          return toolErr(res, sid, msgId, `Precondition failed: the file has changed since it was read (sha256 differs). Read ${relPath} again with read-file and retry`);
+        }
+      } else {
+        await fs.access(path.join(vault.path, relPath));
+        return toolErr(res, sid, msgId, `File already exists: ${relPath}. To replace it use replace-file`);
+      }
     } catch (err) {
-      if (err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
+      if (replacing || err.code !== 'ENOENT') return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
     let slot;
     try {
-      slot = uploads.create({ vault: args.vault, relPath, size, sha256, address: clientAddress(req) || (UPLOAD_NETWORK_PREFIX === 0 ? 'unknown' : ''), user: principal?.user });
+      slot = uploads.create({
+        vault: args.vault, relPath, size, sha256, address: clientAddress(req) || (UPLOAD_NETWORK_PREFIX === 0 ? 'unknown' : ''), user: principal?.user,
+        ...(replacing ? { mode: 'replace', expectedSha256, expectedMtime } : {}),
+      });
     } catch (err) {
       if (err.code === 'TOO_MANY_SLOTS') {
         return toolErr(res, sid, msgId, 'Too many pending uploads. Wait for one to finish or expire, then try again');
@@ -2121,20 +2376,20 @@ async function route(req, res, url, sid) {
       }
       throw err;
     }
-    audit('upload-reserved', { ...auditContext(req, sid, principal), vault: args.vault, path: relPath, size });
+    audit('upload-reserved', { ...auditContext(req, sid, principal), vault: args.vault, path: relPath, size, ...(replacing ? { mode: 'replace' } : {}) });
     const url = `${BASE_URL.replace(/\/+$/, '')}${UPLOAD_PREFIX}${slot.token}`;
     return toolOk(res, sid, msgId, [
-      `Upload reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()}).`,
+      `${replacing ? 'Replacement' : 'Upload'} reserved: ${relPath} (${size} bytes, sha256 ${sha256.toLowerCase()})${replacing ? `; it replaces the version with sha256 ${expectedSha256.toLowerCase()}, which moves to .trash` : ''}.`,
       `URL: ${url}`,
       `Valid for ${UPLOAD_TTL_SECONDS} seconds, for one request only${UPLOAD_NETWORK_PREFIX === 0 ? '' : UPLOAD_NETWORK_PREFIX === 32 ? ', and only from the address that made this request' : ', and only from the network of the request that reserved it'}.`,
       'Send the file with:',
       `curl --fail-with-body -sS -T "<path-to-file>" "${url}"`,
       'Replace <path-to-file> with the local file. If the upload fails for any reason, request a new URL.',
-      'If the client refuses to run the command, call get-setup-status for the upload-binary-file skill and the permission rule that allows its script. For a small file, create-binary-file needs no curl.',
+      'If the client refuses to run the command, call get-setup-status for the upload-file skill and the permission rule that allows its script. For a small file, create-file needs no curl.',
     ].join('\n'));
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'read-binary-file') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'read-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
@@ -2162,7 +2417,8 @@ async function route(req, res, url, sid) {
       const stat = await fs.stat(realAbs);
       if (!stat.isFile()) return toolErr(res, sid, msgId, `Not a regular file: ${relPath}`);
       if (stat.size > READ_MAX_BYTES) {
-        return toolErr(res, sid, msgId, `File is ${stat.size} bytes, which exceeds the ${READ_MAX_BYTES}-byte read limit: ${relPath}`);
+        // The file cannot be returned, but the version it is can still be named, for replace-file.
+        return toolErr(res, sid, msgId, `File is ${stat.size} bytes, which exceeds the ${READ_MAX_BYTES}-byte read limit: ${relPath} (sha256 ${await hashFile(realAbs)}, Last-Modified ${formatMtime(stat)})`);
       }
       const buffer = await libReadBinaryFile(realAbs);
       // The file can grow between stat and read; the cap is enforced on what was actually read.
@@ -2174,20 +2430,24 @@ async function route(req, res, url, sid) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: { content: [
         { type: 'text', text: `${relPath} (${buffer.length} bytes, ${mimeType})` },
         { type: 'resource', resource: { uri, mimeType, blob: buffer.toString('base64') } },
+        // The version that was read, as replace-file takes it: expectedSha256 is the hash of
+        // the bytes, expectedMtime the Last-Modified from the stat taken just before the read.
+        { type: 'text', text: `sha256: ${createHash('sha256').update(buffer).digest('hex')}` },
+        { type: 'text', text: `Last-Modified: ${formatMtime(stat)}` },
       ] } }]);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'delete-binary-file') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'delete-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
     const relPath = normPath(args.folder, args.filename);
     if (!relPath) return toolErr(res, sid, msgId, 'filename is required');
-    if (isNoteFile(relPath)) return toolErr(res, sid, msgId, 'Use delete-note for .md files');
     if (_isDenied(vault.denyPaths, relPath)) return toolErr(res, sid, msgId, 'Access denied');
+    if (await isFolder(vault, relPath)) return toolErr(res, sid, msgId, FOLDER_REFUSAL(relPath, 'delete'));
     const absPath = path.join(vault.path, relPath);
     try {
       if (args.expectedMtime !== undefined) await assertUnmodified(absPath, args.expectedMtime);
@@ -2199,7 +2459,7 @@ async function route(req, res, url, sid) {
     }
   }
 
-  if (msg.method === 'tools/call' && msg.params?.name === 'move-binary-file') {
+  if (msg.method === 'tools/call' && msg.params?.name === 'move-file') {
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) return toolErr(res, sid, msgId, `Unknown vault: ${args.vault}`);
@@ -2207,15 +2467,24 @@ async function route(req, res, url, sid) {
     const dstRel = normPath(args.newFolder, args.newFilename);
     if (!srcRel) return toolErr(res, sid, msgId, 'filename is required');
     if (!dstRel) return toolErr(res, sid, msgId, 'newFilename is required');
-    if (isNoteFile(srcRel) || isNoteFile(dstRel))
-      return toolErr(res, sid, msgId, 'Use move-note for .md files');
+    if (await isFolder(vault, srcRel)) return toolErr(res, sid, msgId, FOLDER_REFUSAL(srcRel, 'move'));
+    // A note moves as move-note moves it, and any other file has its embeds rewritten (see
+    // moveBinaryFile). A rename between the two would change what the file is, and what protects it,
+    // so it is refused.
+    const movingNote = isNoteFile(srcRel);
+    if (movingNote !== isNoteFile(dstRel)) {
+      return toolErr(res, sid, msgId, 'move-file does not turn a note (.md) into another type of file or the reverse: use move-note to rename it');
+    }
     if (_isDenied(vault.denyPaths, srcRel)) return toolErr(res, sid, msgId, 'Access denied: source is restricted');
     if (_isDenied(vault.denyPaths, dstRel)) return toolErr(res, sid, msgId, 'Access denied: destination is restricted');
-    const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
-    if (escapes) return toolErr(res, sid, msgId, escapes);
+    if (!movingNote) {
+      const escapes = checkBinaryMove(vault.denyBinaryPaths, srcRel, dstRel);
+      if (escapes) return toolErr(res, sid, msgId, escapes);
+    }
     try {
       if (args.expectedMtime !== undefined) await assertUnmodified(path.join(vault.path, srcRel), args.expectedMtime);
-      await libMoveBinaryFile(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
+      const move = movingNote ? libMoveNote : libMoveBinaryFile;
+      await move(vault.path, path.join(vault.path, srcRel), path.join(vault.path, dstRel), vault.denyPaths);
       return toolOk(res, sid, msgId, `Moved: ${srcRel} → ${dstRel}`);
     } catch (err) {
       return toolErr(res, sid, msgId, err.message.replaceAll(vault.path + '/', ''));
@@ -2581,7 +2850,32 @@ async function prepareStagingDir() {
 }
 await prepareStagingDir();
 
+// ── .trash purge ───────────────────────────────────────────────────────────
+
+const TRASH_PURGE_FIRST_RUN_MS = 1000;
+const TRASH_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+let trashPurgeRunning = false;
+
+/**
+ * Empties each vault's .trash of what has been there longer than the vault's trashRetentionDays
+ * (see purgeVaults). A run that starts while the last is still going is skipped.
+ * @returns {Promise<void>}
+ */
+async function purgeAllTrash() {
+  if (trashPurgeRunning) return;
+  trashPurgeRunning = true;
+  try {
+    await purgeVaults(VAULTS, { audit, log, logErr });
+  } finally {
+    trashPurgeRunning = false;
+  }
+}
+
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+  const runPurge = () => purgeAllTrash().catch(err => logErr(`trash purge failed: ${err.message}`));
+  setTimeout(runPurge, TRASH_PURGE_FIRST_RUN_MS).unref();
+  setInterval(runPurge, TRASH_PURGE_INTERVAL_MS).unref();
   audit('start', {
     version: SERVER_VERSION, listen: `${LISTEN_HOST}:${LISTEN_PORT}`,
     auth: AUTH ? 'on' : 'off', logfile: LOG_FILE ? 'yes' : 'no',

@@ -1,5 +1,5 @@
 /**
- * Integration tests for upload-binary-file and PUT /up/<token>.
+ * Integration tests for upload-file and PUT /up/<token>.
  * Spawns real server processes with their own vaults, staging folders and ports
  * (19750 and up), and uses real HTTP requests, so what is tested is what runs.
  */
@@ -119,7 +119,7 @@ async function callTool(srv, name, args, extraHeaders = {}) {
 
 /** Reserves an upload and returns the parsed result. */
 async function reserve(srv, { filename, folder, content, size, sha, headers } = {}) {
-  const result = await callTool(srv, 'upload-binary-file', {
+  const result = await callTool(srv, 'upload-file', {
     filename, ...(folder ? { folder } : {}),
     size: size === undefined ? content.length : size, sha256: sha === undefined ? sha256(content) : sha,
   }, headers);
@@ -192,12 +192,12 @@ const exists = (p) => fs.access(p).then(() => true, () => false);
 
 // ── the main server ─────────────────────────────────────────────────────────
 
-describe('upload-binary-file and PUT /up/<token>', () => {
+describe('upload-file and PUT /up/<token>', () => {
   let srv;
   before(async () => { srv = await startServer(); });
   after(async () => { await srv.stop(); });
 
-  describe('upload-binary-file (the tool)', () => {
+  describe('upload-file (the tool)', () => {
     const content = crypto.randomBytes(500);
 
     it('returns a URL of the form <base>/up/<random token>, a curl command and the terms', async () => {
@@ -211,10 +211,10 @@ describe('upload-binary-file and PUT /up/<token>', () => {
       assert.ok(text.includes('tool-1.bin'), text);
     });
 
-    it('points to get-setup-status and create-binary-file for a client that refuses the command', async () => {
+    it('points to get-setup-status and create-file for a client that refuses the command', async () => {
       const { text } = await reserve(srv, { filename: 'tool-1b.bin', content });
       assert.ok(text.includes('get-setup-status'), text);
-      assert.ok(text.includes('create-binary-file'), text);
+      assert.ok(text.includes('create-file'), text);
     });
 
     it('returns a different URL each time', async () => {
@@ -280,22 +280,22 @@ describe('upload-binary-file and PUT /up/<token>', () => {
     });
 
     it('requires a filename', async () => {
-      const result = await callTool(srv, 'upload-binary-file', { size: 10, sha256: 'a'.repeat(64) });
+      const result = await callTool(srv, 'upload-file', { size: 10, sha256: 'a'.repeat(64) });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('filename is required'));
     });
 
     it('returns isError for an unknown vault', async () => {
-      const result = await callTool(srv, 'upload-binary-file', { vault: 'no-such', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
+      const result = await callTool(srv, 'upload-file', { vault: 'no-such', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('Unknown vault'));
     });
 
-    it('lists upload-binary-file, with a description that explains the curl upload', async () => {
+    it('lists upload-file, with a description that explains the curl upload', async () => {
       const init = await mcpPost(srv.port, { jsonrpc: '2.0', id: '1', method: 'initialize', params: {} });
       const r = await mcpPost(srv.port, { jsonrpc: '2.0', id: '2', method: 'tools/list' }, init.headers['mcp-session-id']);
-      const tool = r.msgs[0].result.tools.find(t => t.name === 'upload-binary-file');
-      assert.ok(tool, 'upload-binary-file should be listed');
+      const tool = r.msgs[0].result.tools.find(t => t.name === 'upload-file');
+      assert.ok(tool, 'upload-file should be listed');
       assert.ok(tool.description.includes('curl'));
       assert.ok(tool.description.includes('sha256'));
       assert.ok(/one request/i.test(tool.description));
@@ -925,6 +925,14 @@ describe('upload expiry', () => {
     assert.equal(await exists(path.join(srv.vaultDir, 'expired.bin')), false);
   });
 
+});
+
+describe('upload within the lifetime', () => {
+  let srv;
+  // A lifetime well beyond the test, so a slow machine cannot expire the URL first.
+  before(async () => { srv = await startServer({ uploadTtlSeconds: 60 }); });
+  after(async () => { await srv.stop(); });
+
   it('a URL used within its lifetime works', async () => {
     const content = crypto.randomBytes(100);
     const { url } = await reserve(srv, { filename: 'in-time.bin', content });
@@ -1049,7 +1057,7 @@ describe('upload settings', () => {
     } finally { await r.stop(); }
   });
 
-  it('still serves the other tools when the default staging folder cannot be created, and says why on upload-binary-file', async () => {
+  it('still serves the other tools when the default staging folder cannot be created, and says why on upload-file', async () => {
     // A read-only container has no writable temporary directory; uploads are an optional
     // feature, so the server must start and only that tool must refuse.
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-ro-'));
@@ -1066,7 +1074,7 @@ describe('upload settings', () => {
         const sid = init.headers['mcp-session-id'];
         const up = await mcpPost(r.port, {
           jsonrpc: '2.0', id: 2, method: 'tools/call',
-          params: { name: 'upload-binary-file', arguments: { vault: 'v', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) } },
+          params: { name: 'upload-file', arguments: { vault: 'v', filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) } },
         }, sid);
         const result = up.msgs[0].result;
         assert.ok(result.isError);
@@ -1283,7 +1291,7 @@ describe('upload failures and placement', () => {
 
     for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
       it(`treats a vault named ${name} as unknown`, async () => {
-        const result = await callTool(srv, 'upload-binary-file', { vault: name, filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
+        const result = await callTool(srv, 'upload-file', { vault: name, filename: 'a.bin', size: 10, sha256: 'a'.repeat(64) });
         assert.ok(result.isError);
         assert.ok(result.content[0].text.includes('Unknown vault'), result.content[0].text);
       });
@@ -1314,7 +1322,7 @@ describe('upload addresses when the proxy header is malformed', () => {
 
 // ── a note (.md) destination: issue #55 ─────────────────────────────────────
 
-describe('upload-binary-file with a note (.md) destination', () => {
+describe('upload-file with a note (.md) destination', () => {
   let srv;
   before(async () => { srv = await startServer(); });
   after(async () => { await srv.stop(); });
@@ -1445,14 +1453,16 @@ describe('upload-binary-file with a note (.md) destination', () => {
     assert.equal(await exists(path.join(srv.vaultDir, 'short.md')), false);
   });
 
-  it('leaves create-binary-file and fetch-binary-file refusing .md', async () => {
-    const created = await callTool(srv, 'create-binary-file', { filename: 'cbf.md', content: Buffer.from('hi').toString('base64') });
-    assert.ok(created.isError);
-    assert.ok(created.content[0].text.includes('Use create-note'), created.content[0].text);
-    const fetched = await callTool(srv, 'fetch-binary-file', { filename: 'fbf.md', url: 'http://127.0.0.1:9/x' });
+  it('create-file and fetch-file take a .md destination too, and check it is UTF-8', async () => {
+    const created = await callTool(srv, 'create-file', { filename: 'cbf.md', content: Buffer.from('hi').toString('base64') });
+    assert.ok(!created.isError, JSON.stringify(created));
+    assert.equal(await fs.readFile(path.join(srv.vaultDir, 'cbf.md'), 'utf8'), 'hi');
+    const bad = await callTool(srv, 'create-file', { filename: 'cbf-bad.md', content: Buffer.from([0xff, 0xfe]).toString('base64') });
+    assert.ok(bad.isError && bad.content[0].text.includes('valid UTF-8'), bad.content[0].text);
+    assert.equal(await exists(path.join(srv.vaultDir, 'cbf-bad.md')), false);
+    const fetched = await callTool(srv, 'fetch-file', { filename: 'fbf.md', url: 'http://127.0.0.1:9/x' });
     assert.ok(fetched.isError);
-    assert.ok(fetched.content[0].text.includes('Use create-note'), fetched.content[0].text);
-    assert.equal(await exists(path.join(srv.vaultDir, 'cbf.md')), false);
+    assert.ok(!fetched.content[0].text.includes('Use create-note'), fetched.content[0].text);
     assert.equal(await exists(path.join(srv.vaultDir, 'fbf.md')), false);
   });
 
@@ -1463,7 +1473,7 @@ describe('upload-binary-file with a note (.md) destination', () => {
     });
     const sid = init.headers['mcp-session-id'];
     const list = await mcpPost(srv.port, { jsonrpc: '2.0', id: '2', method: 'tools/list' }, sid);
-    const tool = list.msgs[0].result.tools.find(t => t.name === 'upload-binary-file');
+    const tool = list.msgs[0].result.tools.find(t => t.name === 'upload-file');
     assert.match(tool.description, /note/i);
     assert.match(tool.description, /create-note/);
   });

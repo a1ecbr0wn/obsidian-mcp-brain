@@ -10,36 +10,41 @@ Every tool except `list-vaults` and `get-setup-status` takes a `vault` argument
 naming which configured vault the call applies to. Use `list-vaults` to see the
 names.
 
-| Tool | Description |
-| --- | --- |
-| `list-notes` | List the notes in the vault, or scoped to a folder, or other files with `extension` (such as `pdf`, or `*` for every file). Returns sorted vault-relative paths, each with a last-modified timestamp |
-| `list-tags` | List all unique tags (YAML frontmatter) used across vault notes, optionally scoped to a subdirectory |
-| `search-tags` | Find notes that have ALL of the specified tags |
-| `new-notes` | List notes created in the last 7 days, or since a provided timestamp |
-| `changed-notes` | List notes modified in the last 7 days, or since a provided timestamp |
-| `list-vaults` | List all configured vaults |
-| `get-setup-status` | List the companion skills and agents, the server version, and how to install them on each Claude surface |
-| `read-note` | Read a note's content and last-modified timestamp |
-| `create-note` | Create a new note. Fails if it already exists |
-| `edit-note` | Edit a note: append, prepend, replace, replace or delete the content under a heading, or toggle a checkbox |
-| `delete-note` | Delete a note, moving it to `.trash` by default |
-| `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
-| `create-binary-file` | Create a new binary file (for example an image) from base64-encoded content. Fails if it already exists |
-| `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client sends only a URL |
-| `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
-| `read-binary-file` | Return an existing binary file, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
-| `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
-| `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
-| `find-backlinks` | Find all notes that link to or embed a given note or binary file |
-| `resolve-wikilink` | Resolve a wikilink target string to the vault-relative file or files it points to |
-| `create-folder` | Create a new folder, and any missing parents, in the vault |
-| `search-vault` | Search vault notes by content, filename, or both |
-| `add-tags` | Add tags to notes in frontmatter and/or inline body content |
-| `remove-tags` | Remove tags from notes in frontmatter and/or inline body content |
-| `rename-tag` | Rename a tag throughout the entire vault, in frontmatter and inline |
-| `set-frontmatter-field` | Set a single frontmatter field (not `tags`) to a scalar value, creating it if missing |
-| `remove-frontmatter-field` | Remove a single frontmatter field (not `tags`) entirely |
-| `query-graph` | Ask a natural-language question against a vault's graphify knowledge graph |
+The first column is the tool's function name, which is what an agent calls and
+what permission rules (`mcp__<server>__<name>`) and the audit log use. The
+second is its display title, the phrase a client can show a person instead.
+
+| Tool | Title | Description |
+| --- | --- | --- |
+| `list-notes` | List notes | List the notes in the vault, or scoped to a folder, or other files with `extension` (such as `pdf`, or `*` for every file). Returns sorted vault-relative paths, each with a last-modified timestamp |
+| `list-tags` | List tags | List all unique tags (YAML frontmatter) used across vault notes, optionally scoped to a subdirectory |
+| `search-tags` | Search tags | Find notes that have ALL of the specified tags |
+| `new-notes` | Recently created notes | List notes created in the last 7 days, or since a provided timestamp |
+| `changed-notes` | Recently changed notes | List notes modified in the last 7 days, or since a provided timestamp |
+| `list-vaults` | List vaults | List all configured vaults |
+| `get-setup-status` | Get setup status | List the companion skills and agents, the server version, and how to install them on each Claude surface |
+| `read-note` | Read note | Read a note's content and last-modified timestamp |
+| `create-note` | Create note | Create a new note. Fails if it already exists |
+| `edit-note` | Edit note | Edit a note: append, prepend, replace, replace or delete the content under a heading, or toggle a checkbox |
+| `delete-note` | Delete note | Delete a note, moving it to `.trash` by default (under a name that carries the time; see [Emptying `.trash`](configuration#emptying-trash)) |
+| `move-note` | Move note | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
+| `create-file` | Create file | Create a new file of any type (an image, a PDF, a `.md` note) from base64-encoded content. Fails if it already exists |
+| `fetch-file` | Fetch file | Create a new file of any type by downloading a URL server-side, so the client sends only a URL |
+| `upload-file` | Upload file | Reserve a one-time upload URL for a file of a declared size and SHA-256. The agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `replace-file` | Replace file | Reserve a one-time upload URL that replaces a file already in the vault, but only if it is still the version named by its SHA-256 and mtime. The old version moves to `.trash` |
+| `read-file` | Read file | Return an existing file of any type, such as a PDF, to the client as an embedded base64 resource, so the agent can read it |
+| `move-file` | Move file | Move or rename a file of any type, rewriting the wikilinks (for a note) or embeds (for any other file) that point at the old path |
+| `delete-file` | Delete file | Delete a file of any type, a `.md` note included, moving it to `.trash` by default (under a name that carries the time) |
+| `find-backlinks` | Find backlinks | Find all notes that link to or embed a given note or file |
+| `resolve-wikilink` | Resolve wikilink | Resolve a wikilink target string to the vault-relative file or files it points to |
+| `create-folder` | Create folder | Create a new folder, and any missing parents, in the vault |
+| `search-vault` | Search vault | Search vault notes by content, filename, or both |
+| `add-tags` | Add tags | Add tags to notes in frontmatter and/or inline body content |
+| `remove-tags` | Remove tags | Remove tags from notes in frontmatter and/or inline body content |
+| `rename-tag` | Rename tag | Rename a tag throughout the entire vault, in frontmatter and inline |
+| `set-frontmatter-field` | Set frontmatter field | Set a single frontmatter field (not `tags`) to a scalar value, creating it if missing |
+| `remove-frontmatter-field` | Remove frontmatter field | Remove a single frontmatter field (not `tags`) entirely |
+| `query-graph` | Query graph | Ask a natural-language question against a vault's graphify knowledge graph |
 
 ### `edit-note` operations
 
@@ -103,14 +108,39 @@ lines as they were:
   rewritten is written in the note's ending throughout.
 - `search-vault` returns a matching line without its line ending.
 
-`create-note`, `edit-note` `replace` and `create-binary-file` write exactly what
+`create-note`, `edit-note` `replace` and `create-file` write exactly what
 they are sent, because the caller supplies the whole file.
+
+### The file tools and notes
+
+`create-file`, `fetch-file`, `upload-file`, `replace-file`, `read-file`,
+`move-file` and `delete-file` take a file of any type, a `.md` note included.
+(They used to be called `*-binary-file` and refused notes, except for the
+upload, replace and read tools.) The note tools (`create-note`, `read-note`,
+`edit-note`, `delete-note`, `move-note`) stay, because a note also needs text,
+sections and a `Last-Modified:` line; use them for text you write yourself.
+
+- `create-file` and `fetch-file` write the bytes they are given to a `.md`
+  destination only if they are valid UTF-8, otherwise they fail and write
+  nothing; `upload-file` and `replace-file` do the same.
+- `delete-file` on a note does what `delete-note` does.
+- `move-file` on a note does what `move-note` does, including rewriting the
+  wikilinks that point at it. It does not rename a note to another file type or
+  the reverse; use `move-note` for that.
+- `create-file` and `fetch-file` never replace anything: they fail if the path
+  already holds a file or a link, even when two calls arrive at once.
+- `move-file`, `move-note`, `delete-file` and `delete-note` refuse a folder, so
+  files cannot be carried out from under the deny rules; move or delete the
+  files one at a time.
+- [`denyPaths`](configuration#path-deny-list) applies to every file.
+  [`denyBinaryPaths`](configuration#binary-read-protection-denybinarypaths)
+  protects files that are not notes, and never a note.
 
 ### Listing files other than notes
 
 `list-notes` lists notes by default. Give it `extension` to list any other kind
-of file, so an agent can find the PDFs and images that `read-binary-file`,
-`upload-binary-file` and the other binary-file tools work on.
+of file, so an agent can find the PDFs and images that `read-file`,
+`upload-file` and the other file tools work on.
 
 | `extension` | Lists |
 | --- | --- |
@@ -193,8 +223,8 @@ edit-note  -> { operation: "replace", content: "...", expectedMtime: "2026-09-20
 ```
 
 It applies to `edit-note` (all operations), `delete-note`, `move-note`,
-`set-frontmatter-field`, `remove-frontmatter-field`, `move-binary-file` and
-`delete-binary-file`; for the two move tools and `delete-binary-file` it is
+`set-frontmatter-field`, `remove-frontmatter-field`, `move-file` and
+`delete-file`; for the two move tools and `delete-file` it is
 checked against the source file. `add-tags` and `remove-tags` work on a
 `files[]` array, so for them `expectedMtime` is an object mapping each
 vault-relative path to its expected timestamp, and it must include every file in
@@ -202,19 +232,19 @@ the batch (a file missing from the map fails the call). Every file is checked
 before any file is written, so the batch either applies completely or not at
 all.
 
-It doesn't apply to `create-note`, `create-binary-file` or `fetch-binary-file`,
+It doesn't apply to `create-note`, `create-file` or `fetch-file`,
 which already fail if the destination exists, or to `rename-tag`, which sweeps
 the whole vault.
 
-### `fetch-binary-file`
+### `fetch-file`
 
-`create-binary-file` needs the client to send the file as base64, which is
+`create-file` needs the client to send the file as base64, which is
 costly through an LLM client because the bytes are read in and written out
-again. `fetch-binary-file` has the server download a URL itself and write the
+again. `fetch-file` has the server download a URL itself and write the
 result, so the client sends only the URL:
 
 ```text
-fetch-binary-file -> { filename: "photo.jpg", folder: "attachments", url: "https://example.com/photo.jpg" }
+fetch-file -> { filename: "photo.jpg", folder: "attachments", url: "https://example.com/photo.jpg" }
 ```
 
 The parameters are `filename`, `folder` (optional), `url`, and the optional
@@ -222,7 +252,7 @@ The parameters are `filename`, `folder` (optional), `url`, and the optional
 default to the config file's `fetchMaxBytes` and `fetchTimeoutMs`. The
 `filename` must not end in `.md`; use `create-note` for notes. It fails if the
 destination already exists. Because the server makes the request itself, the URL
-is checked carefully first. See [Security](security#fetch-binary-file).
+is checked carefully first. See [Security](security#fetch-file).
 
 ### `get-setup-status`
 
@@ -235,28 +265,109 @@ may call it.
 The server does not know what a client has installed or which surface it runs
 on. The agent compares the list with its own skills and agents, and a skill's
 `metadata.version` with the server version, and installs or suggests an update.
-The result also says what to do without the skills: `read-binary-file` shows
-only images on a chat surface, and `upload-binary-file` needs a shell and
+The result also says what to do without the skills: `read-file` shows
+only images on a chat surface, and `upload-file` needs a shell and
 `curl`, which Claude Code can refuse until the user allows the skill's script
 with a permission rule. See [Agent skills and
 agents](connect#agent-skills-and-agents).
 
-### `read-binary-file`
+### `replace-file`
 
-The other binary tools can create, move and delete a file but not hand its
-contents to the agent. `read-binary-file` does that: it returns the file as two
-content blocks, a short text line
-(`attachments/report.pdf (48213 bytes, application/pdf)`) followed by an MCP
-embedded `resource` carrying the file's bytes as base64, its `mimeType`, and a
-`file:///` URI built from the vault-relative path.
+`upload-file` never overwrites. `replace-file` is the same upload
+with the opposite rule: the destination must already exist, and the caller must
+say which version of it is being replaced, so a file someone else changed in the
+meantime is never overwritten by mistake.
+
+The flow:
+
+1. The agent reads the file in the vault with `read-file`. The result
+   ends with a `sha256:` and a `Last-Modified:` line, which are the file's
+   current SHA-256 and mtime. (A file over `readMaxBytes` is refused, but the
+   refusal gives both values.)
+2. It works out the new file's size and SHA-256 with a tool, as for an upload.
+3. It calls the tool:
+
+   ```text
+   replace-file -> { filename: "report.pdf", folder: "attachments", size: 912340, sha256: "<new file>", expectedSha256: "<file in the vault>", expectedMtime: "2026-05-01T09:30:00.123Z" }
+   ```
+
+4. The result is a one-time URL and a `curl` command, exactly as for an upload.
+5. The server checks the received bytes against the declared size and hash. If
+   both match, and the file in the vault is still the one named, it moves the
+   old version to `.trash` and puts the new one in its place. It answers `200`
+   with `{"path", "bytes", "sha256", "replaced": true, "previousSha256",
+   "trashedAs"}`.
+
+The rules, beyond those of [`upload-file`](#upload-file) (one
+request, short-lived, the same limits, address and note rules):
+
+- **Both version checks are required.** `expectedSha256` and `expectedMtime`
+  must both match the file in the vault. They are checked when the URL is
+  reserved, and again when the file arrives, on the very file that is about to
+  be swapped out. If it changed in between, nothing is replaced and the answer is
+  `409`. A refusal says that the file has changed and to read it again, and does
+  not give its hash.
+- **The file must exist** and be a regular file. A symbolic link is followed and
+  the file it points at is replaced; a link that leads out of the vault, or into
+  a denied folder, is refused.
+- **The old version is kept for a while.** It goes to `.trash` under a name that
+  carries the time, such as `report_1760812345678.pdf`, as with a
+  `delete-file` that is not permanent, and the reply's `trashedAs` says
+  which. `move-file` can put it back. The server deletes it for good
+  after [`trashRetentionDays`](configuration#emptying-trash) (30 by default).
+  The new file keeps the old file's permissions (but not setuid, setgid or
+  sticky bits, and not its owner).
+- **No half-written file.** The new file is written beside the destination under
+  a hidden name, checked again, and then renamed over it, so the destination
+  holds a complete file the whole time.
+- **A new file identical to the current one is refused** (nothing to replace).
+- **A file under [`denyBinaryPaths`](configuration#binary-read-protection-denybinarypaths)
+  cannot be replaced**, because the hash check would let a caller test guesses at
+  a file it is not allowed to read. A `.md` is not covered by that setting, and
+  is accepted only if it is valid UTF-8, as for an upload.
+
+The checks guard against an edit made since the agent read the file, which is
+the realistic case. Just before the swap the server also checks that the
+destination is still the file it moved to `.trash`, so a second replacement that
+got in first is refused. A program that writes to the old file in place during
+the short time it takes to hash it cannot be stopped without locking the file;
+the server notices afterwards, and the reply then carries a `warning` saying that
+the copy in `.trash` may hold newer content than `previousSha256`.
+
+While the new file is being copied, a hidden temporary file (`.upload-<hex>.part`)
+exists beside the destination; it is removed afterwards, but one left by a
+process that was killed is not cleaned up automatically.
+
+What `curl` receives is the same as for an upload, except that a successful
+replacement is `200` (not `201`) and `409` means that the file changed or no
+longer exists.
+
+The repository includes an agent skill,
+[`skills/replace-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/replace-file),
+with a script, `scripts/replace-file.sh`: `prepare <file>` (prints the new
+file's name, size and SHA-256) and `send <file> <url> <old sha256>` (uploads, then
+compares the server's reply with the local file and with the version that was
+expected). Install it as described for the [upload
+skill](#upload-file); see [Security](security#replace-file).
+
+### `read-file`
+
+The other file tools can create, move and delete a file but not hand its
+contents to the agent. `read-file` does that: it returns the file as a
+short text line (`attachments/report.pdf (48213 bytes, application/pdf)`),
+an MCP embedded `resource` carrying the file's bytes as base64, its `mimeType`,
+and a `file:///` URI built from the vault-relative path, and then a `sha256:` line
+and a `Last-Modified:` line that name the version that was read, which
+[`replace-file`](#replace-file) takes as `expectedSha256` and
+`expectedMtime`.
 
 ```text
-read-binary-file -> { filename: "report.pdf", folder: "attachments" }
+read-file -> { filename: "report.pdf", folder: "attachments" }
 ```
 
 The parameters are `filename` and `folder` (optional). A `.md` note is returned
 too, as its raw bytes with the type `text/markdown`, so a note can be read back
-after `upload-binary-file`, or read whole when it is longer than `read-note`
+after `upload-file`, or read whole when it is longer than `read-note`
 returns. `read-note` is still better for a note: it returns text, can read one
 section, and adds the `Last-Modified:` line. `denyPaths` applies to a note read
 this way, and `denyBinaryPaths` does not, as for `read-note`. The file's size is
@@ -286,7 +397,7 @@ must not be covered by
 [`denyBinaryPaths`](configuration#binary-read-protection-denybinarypaths), which
 refuses with `Reading is restricted for '<path>'` while leaving the file visible
 to the other tools. To stop a protected file being read from somewhere else,
-`move-binary-file` (and `move-note`, for a file that isn't a `.md` file) refuses
+`move-file` (and `move-note`, for a file that isn't a `.md` file) refuses
 to move it to a path that is not protected. Moving it within the protected area,
 or moving an unprotected file in, is allowed. Symbolic links are resolved before
 the checks, and only regular files are returned.
@@ -296,15 +407,15 @@ other binary files](connect#reading-pdfs-and-other-binary-files). Claude Code
 reads any file this way. Claude Desktop chat shows images but silently drops a
 PDF and rejects other types, so use a code mode chat there. The repository
 includes an agent skill,
-[`skills/read-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-binary-file),
+[`skills/read-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/read-file),
 that checks this before reading and tells the user what to do.
 
-### `upload-binary-file`
+### `upload-file`
 
-`create-binary-file` needs the model to write the whole file out as base64. That
+`create-file` needs the model to write the whole file out as base64. That
 is impractical beyond a few tens of kilobytes (an 810 KB PDF is about a million
 tokens, more than one response can hold) and gives no way to tell whether the
-file arrived intact. `upload-binary-file` gives the agent a one-time URL to send
+file arrived intact. `upload-file` gives the agent a one-time URL to send
 the file to directly, so the file's bytes never pass through the model.
 
 The flow:
@@ -314,7 +425,7 @@ The flow:
 2. It calls the tool:
 
    ```text
-   upload-binary-file -> { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hexadecimal characters>" }
+   upload-file -> { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hexadecimal characters>" }
    ```
 
 3. The result holds a URL of the form `https://server:4001/up/<random token>`,
@@ -342,7 +453,8 @@ The rules:
   `trustedProxies`; see
   [Configuration](configuration#uploads-and-reverse-proxies).
 - **Short-lived.** A URL lasts `uploadTtlSeconds` (300 by default).
-- **The destination.** The destination must not already exist, and it must pass
+- **The destination.** The destination must not already exist (to replace a
+  file use [`replace-file`](#replace-file)), and it must pass
   the [`denyPaths`](configuration#path-deny-list) check, both when the URL is
   reserved and again when the file is placed, after following any symbolic
   links, so a link that leads out of the vault, or into a denied folder, is
@@ -379,7 +491,7 @@ readable.
 
 This needs an agent with a shell on a machine that can reach the server's
 address, such as Claude Code. A client without a shell, or whose network can't
-reach the server, can't use it, and falls back to `create-binary-file` for small
+reach the server, can't use it, and falls back to `create-file` for small
 files. A client whose tool call and upload leave from different networks, such as
 Claude Code through the claude.ai connector, Claude Desktop chat or claude.ai,
 can upload: the address is not checked unless `uploadNetworkPrefix` is set.
@@ -392,14 +504,14 @@ with a number below 32 it says "is not in the same /21 network as" instead). The
 answer to the client is deliberately shorter. The URL is never logged.
 
 The repository includes an agent skill,
-[`skills/upload-binary-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-binary-file),
+[`skills/upload-file`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills/upload-file),
 that does steps 1 and 4 for the agent. Its script,
-`scripts/upload-binary-file.sh`, has `prepare <file>` (prints the file name,
+`scripts/upload-file.sh`, has `prepare <file>` (prints the file name,
 size and SHA-256) and `send <file> <url>` (uploads, then compares the server's
 reply with the local file and never prints the token). It needs `curl` and one
 of `sha256sum`, `shasum` or `openssl`. The npm package contains only the server,
 so copy the skill folder into your agent's skills directory (for Claude Code,
 `~/.claude/skills/`) to use it, or install the plugin; see [Agent skills and
 agents](connect#agent-skills-and-agents). The tool works without the skill. See
-[Security](security#upload-binary-file) for what the URL does and doesn't
+[Security](security#upload-file) for what the URL does and doesn't
 protect.

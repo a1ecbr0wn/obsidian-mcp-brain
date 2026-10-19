@@ -9,6 +9,12 @@ import assert from 'node:assert/strict';
 import { COMPANIONS, SETUP_INSTRUCTIONS, RELEASES_URL, REPOSITORY, setupStatusText } from '../lib/companions.mjs';
 import { TOOL_ROLES, toolAllowed } from '../lib/auth.mjs';
 
+describe('COMPANIONS tools', () => {
+  it('only name tools the server has', () => {
+    for (const c of COMPANIONS) for (const tool of c.tools) assert.ok(tool in TOOL_ROLES, `${c.name} names ${tool}`);
+  });
+});
+
 describe('COMPANIONS', () => {
   it('is frozen, and each entry has a type, a name, a purpose and the tools it helps', () => {
     assert.ok(Object.isFrozen(COMPANIONS));
@@ -36,8 +42,8 @@ describe('SETUP_INSTRUCTIONS', () => {
   });
 
   it('names the tools that need the skills', () => {
-    assert.ok(SETUP_INSTRUCTIONS.includes('read-binary-file'));
-    assert.ok(SETUP_INSTRUCTIONS.includes('upload-binary-file'));
+    assert.ok(SETUP_INSTRUCTIONS.includes('read-file'));
+    assert.ok(SETUP_INSTRUCTIONS.includes('upload-file'));
   });
 });
 
@@ -69,7 +75,7 @@ describe('setupStatusText', () => {
 
   it('says what to do without the skills, including the permission rule', () => {
     assert.ok(text.includes('permissions.allow'));
-    assert.ok(text.includes('create-binary-file'));
+    assert.ok(text.includes('create-file'));
   });
 
   it('names no deployment address', () => {

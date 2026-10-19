@@ -187,22 +187,23 @@ export function checkAccess(denyPaths, toolName, args) {
       break;
     }
 
-    case 'create-binary-file':
-    case 'fetch-binary-file':
-    case 'upload-binary-file':
-    case 'read-binary-file': {
+    case 'create-file':
+    case 'fetch-file':
+    case 'upload-file':
+    case 'replace-file':
+    case 'read-file': {
       const p = normPath(args.folder, args.filename);
       if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
       break;
     }
 
-    case 'delete-binary-file': {
+    case 'delete-file': {
       const p = normPath(args.folder, args.filename);
       if (isDenied(denyPaths, p)) return `Access denied: '${p}' is restricted`;
       break;
     }
 
-    case 'move-binary-file': {
+    case 'move-file': {
       const src = normPath(args.folder, args.filename);
       const dst = normPath(args.newFolder, args.newFilename);
       if (isDenied(denyPaths, src)) return `Access denied: source '${src}' is restricted`;
