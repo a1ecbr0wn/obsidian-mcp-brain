@@ -402,6 +402,9 @@ describe('resource server mode', () => {
       const list = await call(srv, viewer, viewerSid, 'list-notes');
       assert.ok(list.content[0].text.includes('hello.md'));
       assert.ok(!list.isError);
+      const files = await call(srv, viewer, viewerSid, 'list-files');
+      assert.ok(files.content[0].text.includes('hello.md'));
+      assert.ok(!files.isError);
       const note = await call(srv, viewer, viewerSid, 'read-note', { filename: 'hello.md' });
       assert.ok(note.content[0].text.includes('# Hello'));
     });

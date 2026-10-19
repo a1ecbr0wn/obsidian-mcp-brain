@@ -493,7 +493,7 @@ describe('upload-file access', () => {
   });
 });
 
-// ── extension filter (list-notes) ───────────────────────────────────────────
+// ── extension filter (list-files) ───────────────────────────────────────────
 
 describe('extensionPatternError', () => {
   it('accepts plain extensions and wildcards', () => {

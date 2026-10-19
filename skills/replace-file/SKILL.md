@@ -61,7 +61,7 @@ Do steps 2 to 4 back to back. The URL expires after a few minutes and works once
 
 | The tool or helper reports | Meaning | What to do |
 | --- | --- | --- |
-| `File does not exist` | Nothing at that path to replace | Check the name with `list-notes` and its `extension` option, or use `upload-file` for a new file |
+| `File does not exist` | Nothing at that path to replace | Check the name with `list-files`, or use `upload-file` for a new file |
 | `Precondition failed`, or `409` saying the file has changed | The vault file is no longer the version you named, or it changed after you reserved | Run `read-file` again, tell the user the file changed, and ask before replacing the newer version |
 | `nothing to replace` | The new file is identical to the one in the vault | Nothing to do; tell the user |
 | `Reading is restricted` or `Access denied` | The path is protected | Tell the user; do not look for another route |

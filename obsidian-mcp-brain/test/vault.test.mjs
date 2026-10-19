@@ -18,6 +18,7 @@ import {
   deleteBinaryFile,
   moveBinaryFile,
   walkAllFiles,
+  listVaultFiles,
   findBacklinks,
   resolveWikilink,
 } from '../lib/vault.mjs';
@@ -410,6 +411,120 @@ describe('walkAllFiles', () => {
 
   it('handles non-existent directory gracefully', async () => {
     await assert.doesNotReject(() => walkAllFiles(path.join(vault, 'missing'), () => {}));
+  });
+});
+
+// ── listVaultFiles ────────────────────────────────────────────────────────────
+
+describe('listVaultFiles', () => {
+  before(async () => {
+    await setup();
+    await fs.writeFile(path.join(vault, 'food', 'photo.PNG'), Buffer.from([0x01, 0x02]));
+    await fs.writeFile(path.join(vault, 'food', 'run.sh'), '#!/bin/sh\n');
+    await fs.mkdir(path.join(vault, '.hid'));
+    await fs.writeFile(path.join(vault, '.hid', 'inner.md'), '# inner');
+    await fs.writeFile(path.join(vault, '.hid', 'inner.pdf'), '%PDF');
+  });
+  after(teardown);
+
+  const rels = (list) => list.map(f => f.rel);
+
+  it('returns the vault-relative path and the stat of each match, sorted by path', async () => {
+    const list = await listVaultFiles(vault, null, '*', []);
+    assert.deepEqual(rels(list), [
+      'food/pasta.md', 'food/photo.PNG', 'food/run.sh', 'food/sauce.md', 'inbox.md', 'private/journal.md',
+    ]);
+    const png = list.find(f => f.rel === 'food/photo.PNG');
+    assert.equal(png.stat.size, 2);
+    assert.ok(png.stat.mtime instanceof Date);
+  });
+
+  it('filters by extension pattern, ignoring case', async () => {
+    assert.deepEqual(rels(await listVaultFiles(vault, null, 'png', [])), ['food/photo.PNG']);
+    assert.deepEqual(rels(await listVaultFiles(vault, null, 'md', [])),
+      ['food/pasta.md', 'food/sauce.md', 'inbox.md', 'private/journal.md']);
+  });
+
+  it('scopes to a folder and leaves out denied paths', async () => {
+    assert.deepEqual(rels(await listVaultFiles(vault, 'food', '*', [])),
+      ['food/pasta.md', 'food/photo.PNG', 'food/run.sh', 'food/sauce.md']);
+    const denied = await listVaultFiles(vault, null, 'md', ['private']);
+    assert.ok(!rels(denied).some(r => r.startsWith('private/')));
+  });
+
+  it('lists only notes when the scope is a hidden folder', async () => {
+    assert.deepEqual(rels(await listVaultFiles(vault, '.hid', '*', [])), ['.hid/inner.md']);
+    assert.deepEqual(rels(await listVaultFiles(vault, '.hid', 'pdf', [])), []);
+  });
+
+  it('returns nothing for a folder that does not exist', async () => {
+    assert.deepEqual(await listVaultFiles(vault, 'missing', '*', []), []);
+  });
+
+  it('leaves out a file that disappears while the list is made', async () => {
+    await fs.writeFile(path.join(vault, 'food', 'gone.tmp'), 'x');
+    const original = fs.lstat;
+    let removed = false;
+    fs.lstat = async (p, ...rest) => {
+      if (!removed && String(p).endsWith('gone.tmp')) {
+        removed = true;
+        await fs.rm(p);
+      }
+      return original.call(fs, p, ...rest);
+    };
+    try {
+      const list = await listVaultFiles(vault, 'food', 'tmp', []);
+      assert.deepEqual(rels(list), []);
+      assert.ok(removed, 'the file was removed between the walk and the stat');
+    } finally {
+      fs.lstat = original;
+    }
+  });
+
+  it('leaves out a file that is swapped for a symlink while the list is made', async () => {
+    await fs.writeFile(path.join(vault, 'food', 'swap.tmp'), 'x');
+    const original = fs.lstat;
+    let swapped = false;
+    fs.lstat = async (p, ...rest) => {
+      if (!swapped && String(p).endsWith('swap.tmp')) {
+        swapped = true;
+        await fs.rm(p);
+        await fs.symlink(path.join(vault, 'inbox.md'), p);
+      }
+      return original.call(fs, p, ...rest);
+    };
+    try {
+      const list = await listVaultFiles(vault, 'food', 'tmp', []);
+      assert.deepEqual(rels(list), []);
+      assert.ok(swapped, 'the file was swapped between the walk and the stat');
+    } finally {
+      fs.lstat = original;
+    }
+  });
+
+  describe('a scope that is, or passes through, a symlink', () => {
+    let outside;
+    before(async () => {
+      outside = await fs.mkdtemp(path.join(tmpdir(), 'vault-outside-'));
+      await fs.writeFile(path.join(outside, 'leak.md'), '# leak');
+      await fs.symlink(outside, path.join(vault, 'lnk-out'));
+      await fs.symlink(path.join(vault, 'private'), path.join(vault, 'lnk-private'));
+      await fs.symlink(outside, path.join(vault, 'food', 'lnk-mid'));
+    });
+    after(() => fs.rm(outside, { recursive: true, force: true }));
+
+    it('lists nothing for a link to a folder outside the vault', async () => {
+      assert.deepEqual(await listVaultFiles(vault, 'lnk-out', '*', []), []);
+    });
+
+    it('lists nothing for a link to a denied folder inside the vault', async () => {
+      assert.deepEqual(await listVaultFiles(vault, 'lnk-private', '*', ['private']), []);
+    });
+
+    it('lists nothing when an intermediate segment is a link', async () => {
+      assert.deepEqual(await listVaultFiles(vault, 'food/lnk-mid', '*', []), []);
+      assert.deepEqual(await listVaultFiles(vault, 'lnk-out/anything', '*', []), []);
+    });
   });
 });
 

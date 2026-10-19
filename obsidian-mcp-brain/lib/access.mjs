@@ -115,7 +115,7 @@ export function checkBinaryMove(compiled, srcPath, dstPath) {
   return null;
 }
 
-// ── extension filter: the `extension` argument of list-notes ────────────────
+// ── extension filter: the `extension` argument of list-files ────────────────
 //
 // The same wildcards as denyBinaryPaths ('*' any run of characters, '?' one character),
 // applied to the text after the last dot of a file name, and matched without regard to case
@@ -146,9 +146,9 @@ export function extensionPatternError(pattern) {
 }
 
 /**
- * True if the file's extension (the text after its last dot, empty if it has none) matches
- * the pattern, ignoring case. A name with no extension matches only patterns that match the
- * empty string, which is `*`.
+ * True if the file's extension (the text after its last dot, ignoring case) matches the pattern.
+ * A name with no extension has an empty one: a name with no dot, or whose only dot is its first
+ * character (such as `.md`). It matches only patterns that match the empty string, which is `*`.
  * @param {string} pattern - A pattern that passed extensionPatternError.
  * @param {string} fileName - A file name or vault-relative path.
  * @returns {boolean}

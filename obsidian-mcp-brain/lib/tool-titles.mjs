@@ -7,6 +7,7 @@
 /** Tool name to display title. */
 export const TOOL_TITLES = Object.freeze({
   'list-notes': 'List notes',
+  'list-files': 'List files',
   'list-tags': 'List tags',
   'search-tags': 'Search tags',
   'new-notes': 'Recently created notes',

@@ -30,6 +30,7 @@ const AUTH_FIELDS = new Set(['issuer', 'jwksUri', 'audience', 'userClaim', 'user
  */
 export const TOOL_ROLES = Object.freeze({
   'list-notes': 'read',
+  'list-files': 'read',
   'list-tags': 'read',
   'search-tags': 'read',
   'new-notes': 'read',
