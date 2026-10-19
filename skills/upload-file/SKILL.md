@@ -2,7 +2,7 @@
 name: upload-file
 description: Put a local file (a PDF, image or other binary) into an Obsidian vault through the obsidian-mcp-brain server's upload-file tool, without base64-encoding it. Use whenever the user asks to add, save, file or upload a local file to the vault, and the file is more than a few KB or the server offers upload-file.
 metadata:
-  version: "1.5.0"
+  version: "1.5.1"
 ---
 
 # Upload a local file to the vault
