@@ -61,13 +61,13 @@ except `CONFIG_PATH`, which says where to find it.
 | `listenPort`             | No       | `3002`                                                             | Local port the server listens on                                                                                                                                                                              |
 | `listenHost`             | No       | `127.0.0.1`                                                        | Address the server binds to. Leave it as loopback unless the server runs in a [container](install/install-docker), where `0.0.0.0` is needed for the published port to reach it                               |
 | `denyPaths`              | No       | `[]`                                                               | Vault-relative paths to block, applied to every vault                                                                                                                                                         |
-| `denyBinaryPaths`        | No       | `[]`                                                               | Vault-relative files or folders, with wildcards, whose binary files `read-binary-file` refuses to return. See [below](#binary-read-protection-denybinarypaths)                                                |
+| `denyBinaryPaths`        | No       | `[]`                                                               | Vault-relative files or folders, with wildcards, whose binary files `read-file` refuses to return. See [below](#binary-read-protection-denybinarypaths)                                                       |
 | `graphifyQueryTimeoutMs` | No       | `60000`                                                            | Timeout for a `graphify query` subprocess, in milliseconds                                                                                                                                                    |
-| `fetchMaxBytes`          | No       | `10485760`                                                         | Default maximum response size for `fetch-binary-file`, in bytes; overridable per call                                                                                                                         |
-| `fetchTimeoutMs`         | No       | `30000`                                                            | Default request timeout for `fetch-binary-file`, in milliseconds; overridable per call                                                                                                                        |
-| `readMaxBytes`           | No       | `10485760`                                                         | Largest file `read-binary-file` will return, in bytes, measured on disk                                                                                                                                       |
+| `fetchMaxBytes`          | No       | `10485760`                                                         | Default maximum response size for `fetch-file`, in bytes; overridable per call                                                                                                                                |
+| `fetchTimeoutMs`         | No       | `30000`                                                            | Default request timeout for `fetch-file`, in milliseconds; overridable per call                                                                                                                               |
+| `readMaxBytes`           | No       | `10485760`                                                         | Largest file `read-file` will return, in bytes, measured on disk                                                                                                                                              |
 | `readNoteMaxChars`       | No       | `50000`                                                            | Longest text `read-note` returns in one go, in characters. A longer note or section is refused with a pointer to `outline` and `heading`                                                                      |
-| `uploadMaxBytes`         | No       | `52428800`                                                         | Largest file `upload-binary-file` will reserve an upload for, in bytes                                                                                                                                        |
+| `uploadMaxBytes`         | No       | `52428800`                                                         | Largest file `upload-file` will reserve an upload for, in bytes                                                                                                                                               |
 | `uploadTtlSeconds`       | No       | `300`                                                              | How long an upload URL lasts, in seconds                                                                                                                                                                      |
 | `uploadStallSeconds`     | No       | `30`                                                               | How long an upload may send nothing before it is cut off, in seconds. Raise it if clients on very slow links are cut off                                                                                      |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temporary folder | Absolute path where uploads are held while being received. Must not be inside a vault, and must belong to the server's user. Created if missing                                                               |
@@ -113,8 +113,8 @@ happens before the tool reads or writes any file.
 
 - **Refused when the path you give is denied:** `read-note`, `create-note`,
   `edit-note`, `delete-note`, `move-note` (source and destination),
-  `create-binary-file`, `fetch-binary-file`, `read-binary-file`,
-  `delete-binary-file`, `move-binary-file` (source and destination),
+  `create-file`, `fetch-file`, `read-file`,
+  `delete-file`, `move-file` (source and destination),
   `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`,
   `set-frontmatter-field`, `remove-frontmatter-field`, `create-folder`, and
   `search-vault` when a `path` scope is given.
@@ -136,7 +136,7 @@ substitute for controlling who can reach the server; see [Security](security).
 ### Binary read protection (`denyBinaryPaths`)
 
 `denyPaths` removes a path from every tool. `denyBinaryPaths` is narrower: it
-stops the agent reading a binary file's _contents_ with `read-binary-file`,
+stops the agent reading a binary file's _contents_ with `read-file`,
 while leaving the file in place and visible. The agent can still create, move
 and delete such files, and `find-backlinks` still sees them. Use it for files
 you want the agent to manage but not read, such as scanned documents.
@@ -167,7 +167,7 @@ list is added to it. A refused read returns
 `Reading is restricted for '<path>'`.
 
 Protection only works if a protected file can't be relocated, so
-`move-binary-file` refuses to move a protected file to a path that is not
+`move-file` refuses to move a protected file to a path that is not
 protected, and the destination is judged by its final path. With `**/*.pdf` set,
 renaming `scan.pdf` to `scan.txt` is refused as well. Moving a file between two
 protected locations, or moving an unprotected file into a protected one, is
@@ -176,18 +176,18 @@ allowed.
 The protection also closes the other routes to a protected file's content:
 
 - **`.trash`** is protected automatically whenever any `denyBinaryPaths` are
-  set, in that vault. A non-permanent `delete-binary-file` moves a file into
+  set, in that vault. A non-permanent `delete-file` moves a file into
   `.trash`, so without this a protected file could be deleted and then read, or
   moved out, from there. The side effect is that no file in `.trash` other than
-  a `.md` note can be read with `read-binary-file` while the feature is on.
+  a `.md` note can be read with `read-file` while the feature is on.
 - **`read-note`** refuses a protected file that is not a `.md` file, since it
   would otherwise return an SVG, CSV or text-layer PDF as text. Markdown notes
   are never affected.
-- **`move-note`** applies the same move rule as `move-binary-file` to a source
+- **`move-note`** applies the same move rule as `move-file` to a source
   that is not a `.md` file, so it can't be used to relocate a protected file. It
   also refuses to rename a protected file to a `.md` name, because a note is
-  not protected and `read-binary-file` would then return it.
-- **`read-binary-file`** resolves symbolic links before checking. A link is
+  not protected and `read-file` would then return it.
+- **`read-file`** resolves symbolic links before checking. A link is
   judged by where it points: a link to a protected file is refused, and a link
   to a file outside the vault is refused outright. It returns a `.md` file
   whatever the patterns say, as `read-note` does (`denyPaths` still applies),
@@ -199,7 +199,7 @@ and don't resolve symbolic links. See [Security](security).
 
 ### Uploads and reverse proxies
 
-[`upload-binary-file`](tools#upload-binary-file) hands out one-time upload URLs.
+[`upload-file`](tools#upload-file) hands out one-time upload URLs.
 Several settings shape how they behave.
 
 **`mcpBaseUrl`** is the address clients use to reach the server: scheme, host
@@ -264,7 +264,7 @@ yours that others can read or write is tightened to owner-only, and a note is
 logged. A symbolic link at the default location is refused, since you never put
 one there. If the default folder cannot be created at all, as in a container
 with a read-only filesystem and no writable `/tmp`, the server still starts: it
-logs that uploads are disabled, and only `upload-binary-file` refuses, saying
+logs that uploads are disabled, and only `upload-file` refuses, saying
 why. A folder you configure yourself that cannot be used stops the server,
 because you asked for it. If you configure a folder that is a link, it is
 resolved once at startup and the real folder is used from then on, so
@@ -310,7 +310,7 @@ Docker. If a request arrives with `X-Forwarded-For` from a connection that isn't
 trusted, the server logs a hint once, which usually means this setting is
 missing. If a trusted proxy sends a header the server can't read (an entry that
 isn't an address, or one with a port), the caller can't be determined. With
-`uploadNetworkPrefix` above 0, `upload-binary-file` then refuses to reserve a
+`uploadNetworkPrefix` above 0, `upload-file` then refuses to reserve a
 URL, and an upload to an existing one is refused. With the default (`0`) no
 address is needed: the upload goes ahead and the audit log records the address
 as `unknown`.
@@ -319,7 +319,7 @@ The address check is off by default, and when it is on it is only a second line
 of defence. Callers behind the same NAT share an address, so the real protection
 is the random token, which works once, briefly, for one destination, with a file
 that must match the declared hash. See
-[Security](security#upload-binary-file).
+[Security](security#upload-file).
 
 ### Sessions
 
@@ -349,11 +349,11 @@ as any other request does.
 ### Emptying `.trash`
 
 The server moves what it deletes to the vault's `.trash` folder: `delete-note`,
-`delete-binary-file`, and the old version of a file that `replace-binary-file`
+`delete-file`, and the old version of a file that `replace-file`
 replaces. Each file is named `<name>_<epoch milliseconds><extension>`, such as
 `report_1760812345678.pdf`, so the name says when it was trashed and files of
 the same name never collide (a very long name is shortened to fit). A file can
-be restored with `move-binary-file` or `move-note`.
+be restored with `move-file` or `move-note`.
 
 **`trashRetentionDays`** is how long a file may stay there before the server
 deletes it for good: a whole number of days, 30 by default, and `0` to keep
@@ -465,7 +465,7 @@ can't add a field or a line. The events are:
 | `tool` | Every tool call, including reads | `tool`, and the arguments listed below |
 | `tool-result` | The call has ended | `tool`, the same arguments, `outcome` (`ok`, `error`, or `aborted` when the client went away before the answer), `duration` in milliseconds |
 | `denied` | The call is refused by the read-only role, `denyPaths` or `denyBinaryPaths`, in place of `tool-result` | `tool`, the same arguments, `reason` |
-| `upload-reserved` | `upload-binary-file` reserves a URL | `vault`, `path`, `size` |
+| `upload-reserved` | `upload-file` reserves a URL | `vault`, `path`, `size` |
 | `upload-placed` | An upload has been checked and placed | `vault`, `path`, `bytes`, `sha256`; `user` is who reserved it |
 
 `user` is the signed-in user, or `-` when authentication is off. `addr` is the
@@ -562,9 +562,9 @@ Notes:
   server's log then shows `wrong audience` or no request at all.
 - **`readOnlyUsers`** see and may call only the read tools: `list-notes`,
   `list-tags`, `search-tags`, `new-notes`, `changed-notes`, `list-vaults`,
-  `get-setup-status`, `read-note`, `read-binary-file`, `find-backlinks`,
+  `get-setup-status`, `read-note`, `read-file`, `find-backlinks`,
   `resolve-wikilink` and `search-vault`. Every tool that changes the vault,
-  including `upload-binary-file` and `fetch-binary-file`, is refused with
+  including `upload-file` and `fetch-file`, is refused with
   `This account is read-only`, and so is `query-graph`, because it ignores
   `denyPaths`.
 - **A session belongs to the user who made it.** A request for that session with

@@ -1,9 +1,8 @@
 #!/bin/sh
-# Helper for the obsidian-mcp-brain `replace-binary-file` tool.
+# Helper for the obsidian-mcp-brain `upload-file` tool.
 #
-#   replace-binary-file.sh prepare <file>                      print filename=, size= and sha256= of the NEW file
-#   replace-binary-file.sh send <file> <url> <old-sha256>      PUT the new file to the one-time URL the tool
-#                                                              returned; <old-sha256> is the expectedSha256 you gave
+#   upload-file.sh prepare <file>        print filename=, size= and sha256= for the tool call
+#   upload-file.sh send <file> <url>     PUT the file to the one-time URL the tool returned
 #
 # Needs curl (for send) and one SHA-256 tool: sha256sum, shasum, or openssl.
 # Exit status: 0 success, 1 failure, 2 wrong usage. The token in the URL is never printed.
@@ -13,14 +12,14 @@ set -u
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  replace-binary-file.sh prepare <file>
-  replace-binary-file.sh send <file> <url> <sha256 of the version being replaced>
+  upload-file.sh prepare <file>
+  upload-file.sh send <file> <url>
 EOF
   exit 2
 }
 
 die() {
-  printf 'replace-binary-file: %s\n' "$*" >&2
+  printf 'upload-file: %s\n' "$*" >&2
   exit 1
 }
 
@@ -88,19 +87,13 @@ cmd_prepare() {
 }
 
 cmd_send() {
-  [ $# -eq 3 ] || usage
+  [ $# -eq 2 ] || usage
   file=$1
   url=$2
-  old_hash=$3
-  case "$old_hash" in
-    *[!0-9a-fA-F]* | '') die 'the third argument must be the SHA-256 of the version being replaced (64 hexadecimal characters)' ;;
-  esac
-  [ "${#old_hash}" -eq 64 ] || die 'the third argument must be the SHA-256 of the version being replaced (64 hexadecimal characters)'
-  old_hash=$(printf '%s' "$old_hash" | tr 'A-F' 'a-f')
   check_file "$file"
   case "$url" in
     http://*/up/* | https://*/up/*) ;;
-    *) die 'the URL must be the one returned by replace-binary-file (http(s)://.../up/<token>)' ;;
+    *) die 'the URL must be the one returned by upload-file (http(s)://.../up/<token>)' ;;
   esac
   command -v curl >/dev/null 2>&1 || die 'curl is required'
   choose_hasher
@@ -130,19 +123,14 @@ cmd_send() {
       ;;
   esac
 
-  printf '%s' "$reply" | grep -q '"replaced":[ ]*true' || die 'the server did not say that the file was replaced'
   got_path=$(json_field path "$reply")
-  got_old=$(json_field previousSha256 "$reply")
-  got_trash=$(json_field trashedAs "$reply")
   got_bytes=$(json_field bytes "$reply")
   got_hash=$(json_field sha256 "$reply")
 
   [ "$got_bytes" = "$want_size" ] || die "the server reports $got_bytes bytes but the local file is $want_size bytes"
   [ "$got_hash" = "$want_hash" ] || die "the server's sha256 does not match the local file's (server $got_hash, local $want_hash)"
 
-  [ "$got_old" = "$old_hash" ] || die "the server replaced a different version (it reports $got_old, you expected $old_hash)"
-
-  printf 'replaced %s (%s bytes, sha256 %s), verified against the local file; the old version (sha256 %s) is in %s\n' "$got_path" "$got_bytes" "$got_hash" "$got_old" "$got_trash"
+  printf 'uploaded %s (%s bytes, sha256 %s), verified against the local file\n' "$got_path" "$got_bytes" "$got_hash"
 }
 
 [ $# -ge 1 ] || usage

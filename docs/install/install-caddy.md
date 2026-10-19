@@ -87,7 +87,7 @@ curl https://your-hostname/.well-known/oauth-authorization-server
 # 2. an MCP call: connect a client, and run list-vaults
 
 # 3. an upload: ask the agent to put a file of several MB in the vault, or use the
-#    upload-binary-file skill's script on a file over 1 MiB
+#    upload-file skill's script on a file over 1 MiB
 ```
 
 If step 3 fails, see [Putting HTTPS in front of the

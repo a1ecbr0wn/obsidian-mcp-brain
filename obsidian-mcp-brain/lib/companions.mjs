@@ -24,29 +24,29 @@ export const RELEASES_URL = `https://github.com/${REPOSITORY}/releases/latest`;
 export const COMPANIONS = Object.freeze([
   Object.freeze({
     type: 'skill',
-    name: 'read-binary-file',
-    purpose: 'Read a PDF, image or other non-note file from an Obsidian vault through the obsidian-mcp-brain server\'s read-binary-file tool.',
-    tools: Object.freeze(['read-binary-file']),
+    name: 'read-file',
+    purpose: 'Read a PDF, image or other non-note file from an Obsidian vault through the obsidian-mcp-brain server\'s read-file tool.',
+    tools: Object.freeze(['read-file']),
   }),
   Object.freeze({
     type: 'skill',
-    name: 'upload-binary-file',
-    purpose: 'Put a local file (a PDF, image or other binary) into an Obsidian vault through the obsidian-mcp-brain server\'s upload-binary-file tool, without base64-encoding it.',
-    tools: Object.freeze(['upload-binary-file']),
+    name: 'upload-file',
+    purpose: 'Put a local file (a PDF, image or other binary) into an Obsidian vault through the obsidian-mcp-brain server\'s upload-file tool, without base64-encoding it.',
+    tools: Object.freeze(['upload-file']),
   }),
   Object.freeze({
     type: 'skill',
-    name: 'replace-binary-file',
-    purpose: 'Replace a file that is already in an Obsidian vault (a PDF, image or other binary) with a new version from the local disk, through the obsidian-mcp-brain server\'s replace-binary-file tool, without base64-encoding it.',
-    tools: Object.freeze(['replace-binary-file']),
+    name: 'replace-file',
+    purpose: 'Replace a file that is already in an Obsidian vault (a PDF, image or other binary) with a new version from the local disk, through the obsidian-mcp-brain server\'s replace-file tool, without base64-encoding it.',
+    tools: Object.freeze(['replace-file']),
   }),
 ]);
 
 /** Text sent in the `initialize` result. The same for every client, and under 1,000 characters. */
 export const SETUP_INSTRUCTIONS = [
   'This server has companion skills and agents (a plugin) that make some of its tools work better:',
-  'read-binary-file is dropped by chat surfaces without its skill, and upload-binary-file and replace-binary-file need their skill\'s script.',
-  'Before the first use of read-binary-file, upload-binary-file or replace-binary-file, call get-setup-status once to see what to install and how.',
+  'read-file is dropped by chat surfaces without its skill, and upload-file and replace-file need their skill\'s script.',
+  'Before the first use of read-file, upload-file or replace-file, call get-setup-status once to see what to install and how.',
   'Skip it if those skills are already in your skill list.',
   'The result also gives the server version: if an installed companion skill\'s metadata.version is older, tell the user a plugin update is available.',
 ].join(' ');
@@ -94,9 +94,9 @@ export function setupStatusText(serverVersion) {
   lines.push(
     '',
     'Without them:',
-    '- read-binary-file: a chat surface shows only images from the result. Tell the user to use a Claude Code or Cowork session for a PDF or other file instead of retrying.',
-    '- upload-binary-file: it needs a shell and curl. If Claude Code refuses the command, the user can allow it with a permission rule in permissions.allow of ~/.claude/settings.json, Bash(sh <path of the skill\'s upload-binary-file.sh> *), written the way the command appears when it is refused (/permissions lists the rules). For a small file, create-binary-file needs no curl.',
-    '- replace-binary-file: it needs a shell and curl, like upload-binary-file, and the same permission rule written for the skill\'s replace-binary-file.sh. There is no way to replace a file without them: tell the user.',
+    '- read-file: a chat surface shows only images from the result. Tell the user to use a Claude Code or Cowork session for a PDF or other file instead of retrying.',
+    '- upload-file: it needs a shell and curl. If Claude Code refuses the command, the user can allow it with a permission rule in permissions.allow of ~/.claude/settings.json, Bash(sh <path of the skill\'s upload-file.sh> *), written the way the command appears when it is refused (/permissions lists the rules). For a small file, create-file needs no curl.',
+    '- replace-file: it needs a shell and curl, like upload-file, and the same permission rule written for the skill\'s replace-file.sh. There is no way to replace a file without them: tell the user.',
   );
   return lines.join('\n');
 }

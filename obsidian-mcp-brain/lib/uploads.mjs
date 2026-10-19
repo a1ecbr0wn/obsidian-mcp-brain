@@ -1,6 +1,7 @@
-// Pure helpers for upload-binary-file and replace-binary-file: the one-time upload slots, working out who a caller is,
-// the staging folder, checking a received file (its UTF-8 validity), and resolving a destination
-// inside the vault. Nothing here touches the HTTP server, so it is unit-testable.
+// Helpers for the file-writing tools: the one-time upload slots for upload-file and replace-file, working
+// out who a caller is, the staging folder, checking a received file (its hash and its UTF-8 validity), the
+// UTF-8 check on bytes held in memory (create-file and fetch-file), and resolving a destination inside the
+// vault. Nothing here touches the HTTP server, so it is unit-testable.
 
 import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -341,6 +342,21 @@ export async function sweepStaging(dir) {
  */
 export function stagingFileName() {
   return `upload-${crypto.randomBytes(8).toString('hex')}.part`;
+}
+
+/**
+ * Whether bytes held in memory are valid UTF-8 (strictly decoded; a byte-order mark and a NUL
+ * byte are valid, an empty buffer is valid).
+ * @param {Buffer} buffer
+ * @returns {boolean}
+ */
+export function isValidUtf8Buffer(buffer) {
+  try {
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

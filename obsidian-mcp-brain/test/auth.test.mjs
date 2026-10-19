@@ -144,7 +144,7 @@ describe('tool roles', () => {
   });
 
   it('query-graph and every tool that changes the vault are not read tools', () => {
-    for (const name of ['query-graph', 'create-note', 'edit-note', 'upload-binary-file', 'replace-binary-file', 'fetch-binary-file', 'move-note', 'delete-binary-file']) {
+    for (const name of ['query-graph', 'create-note', 'edit-note', 'upload-file', 'replace-file', 'fetch-file', 'move-note', 'delete-file']) {
       assert.equal(toolAllowed('readonly', name), false, name);
     }
   });

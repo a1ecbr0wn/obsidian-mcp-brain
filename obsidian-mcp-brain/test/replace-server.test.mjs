@@ -1,6 +1,6 @@
 /**
- * Integration tests for replace-binary-file and PUT /up/<token> in replace mode, and for the
- * sha256 and Last-Modified lines of read-binary-file that feed it.
+ * Integration tests for replace-file and PUT /up/<token> in replace mode, and for the
+ * sha256 and Last-Modified lines of read-file that feed it.
  * Spawns a real server with its own vault and staging folder (ports 20500 and up).
  */
 
@@ -106,7 +106,7 @@ function put(urlStr, body, headers = {}) {
   });
 }
 
-/** The version of a vault file that a caller read: what replace-binary-file takes. */
+/** The version of a vault file that a caller read: what replace-file takes. */
 async function versionOf(file) {
   const stat = await fs.stat(file);
   return { expectedSha256: sha256(await fs.readFile(file)), expectedMtime: stat.mtime.toISOString() };
@@ -114,7 +114,7 @@ async function versionOf(file) {
 
 /** Reserves a replacement; returns the tool result, its text and the URL. */
 async function reserveReplace(srv, { filename, folder, content, size, sha, expect }) {
-  const result = await callTool(srv, 'replace-binary-file', {
+  const result = await callTool(srv, 'replace-file', {
     filename, ...(folder ? { folder } : {}),
     size: size ?? content.length, sha256: sha ?? sha256(content),
     ...expect,
@@ -127,7 +127,7 @@ async function reserveReplace(srv, { filename, folder, content, size, sha, expec
 const stagingFiles = async (srv) => (await fs.readdir(srv.uploadDir)).filter(f => f.startsWith('upload-'));
 const trashFiles = async (srv) => fs.readdir(path.join(srv.vaultDir, '.trash')).catch(() => []);
 
-describe('replace-binary-file', () => {
+describe('replace-file', () => {
   let srv;
   before(async () => { srv = await startServer(); });
   after(async () => { await srv.stop(); });
@@ -146,7 +146,7 @@ describe('replace-binary-file', () => {
     it('is listed with every version check required', async () => {
       const init = await mcpPost(srv.port, { jsonrpc: '2.0', id: '1', method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
       const list = await mcpPost(srv.port, { jsonrpc: '2.0', id: '2', method: 'tools/list' }, init.headers['mcp-session-id']);
-      const tool = list.msgs[0].result.tools.find(t => t.name === 'replace-binary-file');
+      const tool = list.msgs[0].result.tools.find(t => t.name === 'replace-file');
       assert.ok(tool);
       assert.deepEqual([...tool.inputSchema.required].sort(), ['expectedMtime', 'expectedSha256', 'filename', 'sha256', 'size', 'vault']);
     });
@@ -162,11 +162,11 @@ describe('replace-binary-file', () => {
       assert.ok(text.includes('.trash'), text);
     });
 
-    it('refuses a file that is not in the vault, and says to use upload-binary-file', async () => {
+    it('refuses a file that is not in the vault, and says to use upload-file', async () => {
       const content = crypto.randomBytes(10);
       const { result, text } = await reserveReplace(srv, { filename: 'nothing.bin', content, expect: { expectedSha256: sha256(Buffer.from('x')), expectedMtime: '2026-01-01T00:00:00.000Z' } });
       assert.equal(result.isError, true);
-      assert.ok(text.includes('File does not exist') && text.includes('upload-binary-file'), text);
+      assert.ok(text.includes('File does not exist') && text.includes('upload-file'), text);
     });
 
     it('refuses a hash that is not the current file, without saying what the file is', async () => {
@@ -175,7 +175,7 @@ describe('replace-binary-file', () => {
       const content = crypto.randomBytes(50);
       const { result, text } = await reserveReplace(srv, { filename: 'a.bin', folder: 'r-hash', content, expect: { ...expect, expectedSha256: wrong } });
       assert.equal(result.isError, true);
-      assert.ok(text.includes('changed since it was read') && text.includes('read-binary-file'), text);
+      assert.ok(text.includes('changed since it was read') && text.includes('read-file'), text);
       assert.ok(!text.includes(expect.expectedSha256), 'the current hash must not be given away');
     });
 
@@ -225,12 +225,12 @@ describe('replace-binary-file', () => {
       assert.ok(c.text.includes('Not a regular file'), c.text);
     });
 
-    it('upload-binary-file points at replace-binary-file when the file exists', async () => {
+    it('upload-file points at replace-file when the file exists', async () => {
       await seed('r-hint/a.bin', crypto.randomBytes(10));
       const content = crypto.randomBytes(10);
-      const result = await callTool(srv, 'upload-binary-file', { filename: 'a.bin', folder: 'r-hint', size: 10, sha256: sha256(content) });
+      const result = await callTool(srv, 'upload-file', { filename: 'a.bin', folder: 'r-hint', size: 10, sha256: sha256(content) });
       assert.equal(result.isError, true);
-      assert.ok(result.content[0].text.includes('replace-binary-file'), result.content[0].text);
+      assert.ok(result.content[0].text.includes('replace-file'), result.content[0].text);
     });
   });
 
@@ -364,11 +364,11 @@ describe('replace-binary-file', () => {
     });
   });
 
-  describe('read-binary-file gives the version to replace', () => {
+  describe('read-file gives the version to replace', () => {
     it('adds the sha256 and Last-Modified of the file read', async () => {
       const bytes = crypto.randomBytes(120);
       const { file } = await seed('rb/a.bin', bytes);
-      const result = await callTool(srv, 'read-binary-file', { filename: 'a.bin', folder: 'rb' });
+      const result = await callTool(srv, 'read-file', { filename: 'a.bin', folder: 'rb' });
       assert.ok(!result.isError, JSON.stringify(result));
       const texts = result.content.filter(c => c.type === 'text').map(c => c.text);
       assert.ok(texts.includes(`sha256: ${sha256(bytes)}`), texts.join('|'));
@@ -376,9 +376,9 @@ describe('replace-binary-file', () => {
       assert.equal(result.content[0].text, `rb/a.bin (120 bytes, application/octet-stream)`);
     });
 
-    it('the values it gives are accepted by replace-binary-file', async () => {
+    it('the values it gives are accepted by replace-file', async () => {
       const { file } = await seed('rb2/a.bin', crypto.randomBytes(80));
-      const read = await callTool(srv, 'read-binary-file', { filename: 'a.bin', folder: 'rb2' });
+      const read = await callTool(srv, 'read-file', { filename: 'a.bin', folder: 'rb2' });
       const texts = read.content.filter(c => c.type === 'text').map(c => c.text);
       const expectedSha256 = texts.find(t => t.startsWith('sha256: ')).slice(8);
       const expectedMtime = texts.find(t => t.startsWith('Last-Modified: ')).slice(15);
@@ -404,7 +404,7 @@ describe('replace-binary-file', () => {
   });
 });
 
-describe('replace-binary-file and read-binary-file with a file over the read limit', () => {
+describe('replace-file and read-file with a file over the read limit', () => {
   let srv;
   before(async () => { srv = await startServer({ readMaxBytes: 1000 }); });
   after(async () => { await srv.stop(); });
@@ -413,7 +413,7 @@ describe('replace-binary-file and read-binary-file with a file over the read lim
     const bytes = crypto.randomBytes(2000);
     const file = path.join(srv.vaultDir, 'big.bin');
     await fs.writeFile(file, bytes);
-    const read = await callTool(srv, 'read-binary-file', { filename: 'big.bin' });
+    const read = await callTool(srv, 'read-file', { filename: 'big.bin' });
     assert.equal(read.isError, true);
     const text = read.content[0].text;
     assert.ok(text.includes('exceeds the 1000-byte read limit'), text);
@@ -427,7 +427,7 @@ describe('replace-binary-file and read-binary-file with a file over the read lim
   });
 });
 
-describe('replace-binary-file edge cases', () => {
+describe('replace-file edge cases', () => {
   let srv;
   before(async () => { srv = await startServer(); });
   after(async () => { await srv.stop(); });

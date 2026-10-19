@@ -237,27 +237,27 @@ describe('companion skills and agents', () => {
     assert.ok(text.includes('/home/claude'));
   });
 
-  it('upload-binary-file points to the setup tool and the permission rule, and offers create-binary-file', async () => {
-    const d = (await toolsList()).find(t => t.name === 'upload-binary-file').description;
+  it('upload-file points to the setup tool and the permission rule, and offers create-file', async () => {
+    const d = (await toolsList()).find(t => t.name === 'upload-file').description;
     assert.ok(d.includes('get-setup-status'));
     assert.ok(d.includes('permissions.allow'));
-    assert.ok(d.includes('create-binary-file'));
+    assert.ok(d.includes('create-file'));
   });
 
-  it('read-binary-file points to the setup tool and names its skill', async () => {
-    const d = (await toolsList()).find(t => t.name === 'read-binary-file').description;
+  it('read-file points to the setup tool and names its skill', async () => {
+    const d = (await toolsList()).find(t => t.name === 'read-file').description;
     assert.ok(d.includes('get-setup-status'));
-    assert.ok(d.includes('read-binary-file skill'));
+    assert.ok(d.includes('read-file skill'));
   });
 
-  it('create-binary-file points to upload-binary-file for a large file', async () => {
-    const d = (await toolsList()).find(t => t.name === 'create-binary-file').description;
-    assert.ok(d.includes('upload-binary-file'));
+  it('create-file points to upload-file for a large file', async () => {
+    const d = (await toolsList()).find(t => t.name === 'create-file').description;
+    assert.ok(d.includes('upload-file'));
     assert.ok(d.includes('get-setup-status'));
   });
 
   it('the tool texts point to the setup tool and do not repeat the install steps', async () => {
-    for (const name of ['upload-binary-file', 'replace-binary-file', 'read-binary-file', 'create-binary-file']) {
+    for (const name of ['upload-file', 'replace-file', 'read-file', 'create-file']) {
       const d = (await toolsList()).find(t => t.name === name).description;
       assert.ok(!d.includes('/plugin marketplace add'), name);
       assert.ok(!d.includes('Upload plugin'), name);
@@ -1264,12 +1264,12 @@ describe('move-note', () => {
   });
 });
 
-// ── create-binary-file ────────────────────────────────────────────────────
+// ── create-file ────────────────────────────────────────────────────
 
-describe('create-binary-file', () => {
+describe('create-file', () => {
   it('creates a new binary file from base64 content', async () => {
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
-    const result = await callTool('create-binary-file', {
+    const result = await callTool('create-file', {
       filename: 'create-bin-1.png', content: bytes.toString('base64'),
     });
     assert.ok(!result.isError);
@@ -1280,7 +1280,7 @@ describe('create-binary-file', () => {
 
   it('creates binary files in subdirectories', async () => {
     const bytes = Buffer.from([0x01, 0x02, 0x03]);
-    const result = await callTool('create-binary-file', {
+    const result = await callTool('create-file', {
       folder: 'attachments', filename: 'deep.png', content: bytes.toString('base64'),
     });
     assert.ok(!result.isError);
@@ -1292,7 +1292,7 @@ describe('create-binary-file', () => {
     const abs = path.join(vaultDir, 'create-bin-exists.png');
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, Buffer.from([0xaa]));
-    const result = await callTool('create-binary-file', {
+    const result = await callTool('create-file', {
       filename: 'create-bin-exists.png', content: Buffer.from([0xbb]).toString('base64'),
     });
     assert.ok(result.isError);
@@ -1303,29 +1303,46 @@ describe('create-binary-file', () => {
   });
 
   it('returns isError when file is in denied path', async () => {
-    const result = await callTool('create-binary-file', {
+    const result = await callTool('create-file', {
       folder: DENY_DIR, filename: 'blocked.png', content: Buffer.from([0x01]).toString('base64'),
     });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Access denied'));
   });
 
-  it('returns isError for a .md filename', async () => {
-    const result = await callTool('create-binary-file', {
-      filename: 'not-binary.md', content: Buffer.from([0x01]).toString('base64'),
-    });
+  it('creates a .md note from valid UTF-8 bytes, exactly as given', async () => {
+    const text = '---\ntitle: Café ☕\n---\n\n# 日本語\n';
+    const result = await callTool('create-file', { filename: 'created-as-file.md', content: Buffer.from(text, 'utf8').toString('base64') });
+    assert.ok(!result.isError, JSON.stringify(result));
+    assert.equal(await fs.readFile(path.join(vaultDir, 'created-as-file.md'), 'utf8'), text);
+    const read = await callTool('read-note', { filename: 'created-as-file.md' });
+    assert.equal(read.content[0].text, text);
+  });
+
+  it('refuses a .md note that is not valid UTF-8, and writes nothing', async () => {
+    const result = await callTool('create-file', { filename: 'bad-utf8.md', content: Buffer.from([0x23, 0x20, 0xff, 0xfe]).toString('base64') });
     assert.ok(result.isError);
-    assert.ok(result.content[0].text.includes('create-note'));
+    assert.ok(result.content[0].text.includes('valid UTF-8'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'bad-utf8.md')));
+  });
+
+  it('refuses a .md note in a denied folder, and one that already exists', async () => {
+    const denied = await callTool('create-file', { folder: DENY_DIR, filename: 'n.md', content: Buffer.from('x').toString('base64') });
+    assert.ok(denied.isError && denied.content[0].text.includes('Access denied'));
+    await writeVaultNote('exists-as-file.md', 'old');
+    const again = await callTool('create-file', { filename: 'exists-as-file.md', content: Buffer.from('new').toString('base64') });
+    assert.ok(again.isError && again.content[0].text.includes('already exists'));
+    assert.equal(await fs.readFile(path.join(vaultDir, 'exists-as-file.md'), 'utf8'), 'old');
   });
 
   it('returns isError when content is not a string', async () => {
-    const result = await callTool('create-binary-file', { filename: 'bad-content.png', content: 12345 });
+    const result = await callTool('create-file', { filename: 'bad-content.png', content: 12345 });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('base64-encoded string'));
   });
 
   it('returns isError for malformed base64 content', async () => {
-    const result = await callTool('create-binary-file', {
+    const result = await callTool('create-file', {
       filename: 'malformed.png', content: 'not valid base64!!! @#$',
     });
     assert.ok(result.isError);
@@ -1334,7 +1351,7 @@ describe('create-binary-file', () => {
   });
 });
 
-// ── fetch-binary-file ────────────────────────────────────────────────────
+// ── fetch-file ────────────────────────────────────────────────────
 // Full network-fetch coverage (success, redirects, oversize, timeout) lives in
 // test/fetch.test.mjs with mocked node:http/https and dns.lookup, since a real local
 // test server is necessarily loopback — which this tool must legitimately refuse to
@@ -1344,7 +1361,7 @@ describe('create-binary-file', () => {
 // pre-network validation paths (missing url, denied/colliding destination, bad param
 // values).
 
-describe('fetch-binary-file', () => {
+describe('fetch-file', () => {
   let probeServer, probePort, probeHits;
 
   before(async () => {
@@ -1359,7 +1376,7 @@ describe('fetch-binary-file', () => {
   });
 
   it('returns isError for a URL that resolves to a private/loopback address, and makes no request', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'ssrf-blocked.png', url: `http://127.0.0.1:${probePort}/image.png` });
+    const result = await callTool('fetch-file', { filename: 'ssrf-blocked.png', url: `http://127.0.0.1:${probePort}/image.png` });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('disallowed address'));
     assert.equal(probeHits, 0, 'the server must never actually issue the request');
@@ -1367,71 +1384,73 @@ describe('fetch-binary-file', () => {
   });
 
   it('returns isError for a non-http(s) URL scheme', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'bad-scheme.png', url: 'ftp://127.0.0.1/x' });
+    const result = await callTool('fetch-file', { filename: 'bad-scheme.png', url: 'ftp://127.0.0.1/x' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('scheme'));
   });
 
   it('returns isError when url is missing', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'no-url.png' });
+    const result = await callTool('fetch-file', { filename: 'no-url.png' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('url is required'));
   });
 
-  it('returns isError for a .md filename', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'not-binary.md', url: `http://127.0.0.1:${probePort}/x` });
+  it('takes a .md filename as far as the download: the private address is what stops it', async () => {
+    const result = await callTool('fetch-file', { filename: 'fetched-note.md', url: `http://127.0.0.1:${probePort}/x` });
     assert.ok(result.isError);
-    assert.ok(result.content[0].text.includes('create-note'));
+    assert.ok(result.content[0].text.includes('disallowed address'), result.content[0].text);
+    assert.ok(!result.content[0].text.includes('create-note'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'fetched-note.md')));
   });
 
   it('returns isError when the destination already exists, without making a request', async () => {
     await writeVaultNote('fetch-existing.png', 'already here');
-    const result = await callTool('fetch-binary-file', { filename: 'fetch-existing.png', url: `http://127.0.0.1:${probePort}/x` });
+    const result = await callTool('fetch-file', { filename: 'fetch-existing.png', url: `http://127.0.0.1:${probePort}/x` });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('already exists'));
     assert.equal(probeHits, 0);
   });
 
   it('returns isError when destination is in a denied path, without making a request', async () => {
-    const result = await callTool('fetch-binary-file', { folder: DENY_DIR, filename: 'fetch-denied.png', url: `http://127.0.0.1:${probePort}/x` });
+    const result = await callTool('fetch-file', { folder: DENY_DIR, filename: 'fetch-denied.png', url: `http://127.0.0.1:${probePort}/x` });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Access denied'));
     assert.equal(probeHits, 0);
   });
 
   it('returns isError for a non-positive-integer maxBytes override', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'bad-maxbytes.png', url: `http://127.0.0.1:${probePort}/x`, maxBytes: -1 });
+    const result = await callTool('fetch-file', { filename: 'bad-maxbytes.png', url: `http://127.0.0.1:${probePort}/x`, maxBytes: -1 });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('maxBytes'));
   });
 
   it('returns isError for a non-positive-integer timeoutMs override', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'bad-timeout.png', url: `http://127.0.0.1:${probePort}/x`, timeoutMs: 0 });
+    const result = await callTool('fetch-file', { filename: 'bad-timeout.png', url: `http://127.0.0.1:${probePort}/x`, timeoutMs: 0 });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('timeoutMs'));
   });
 
   it('returns isError for a decimal maxBytes rather than silently truncating it', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'decimal-maxbytes.png', url: `http://127.0.0.1:${probePort}/x`, maxBytes: 1.5 });
+    const result = await callTool('fetch-file', { filename: 'decimal-maxbytes.png', url: `http://127.0.0.1:${probePort}/x`, maxBytes: 1.5 });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('maxBytes'));
   });
 
   it('returns isError for a non-numeric-string timeoutMs rather than silently truncating it', async () => {
-    const result = await callTool('fetch-binary-file', { filename: 'garbage-timeout.png', url: `http://127.0.0.1:${probePort}/x`, timeoutMs: '100abc' });
+    const result = await callTool('fetch-file', { filename: 'garbage-timeout.png', url: `http://127.0.0.1:${probePort}/x`, timeoutMs: '100abc' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('timeoutMs'));
   });
 });
 
-// ── delete-binary-file ────────────────────────────────────────────────────
+// ── delete-file ────────────────────────────────────────────────────
 
-describe('delete-binary-file', () => {
+describe('delete-file', () => {
   it('moves binary file to .trash by default', async () => {
     const abs = path.join(vaultDir, 'deletable-bin/to-trash.png');
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, Buffer.from([0x01]));
-    const result = await callTool('delete-binary-file', { folder: 'deletable-bin', filename: 'to-trash.png' });
+    const result = await callTool('delete-file', { folder: 'deletable-bin', filename: 'to-trash.png' });
     assert.ok(!result.isError);
     assert.ok(result.content[0].text.includes('trash'));
     await assert.rejects(fs.access(abs));
@@ -1443,7 +1462,7 @@ describe('delete-binary-file', () => {
     const abs = path.join(vaultDir, 'deletable-bin/permanent.png');
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, Buffer.from([0x01]));
-    const result = await callTool('delete-binary-file', { folder: 'deletable-bin', filename: 'permanent.png', permanent: true });
+    const result = await callTool('delete-file', { folder: 'deletable-bin', filename: 'permanent.png', permanent: true });
     assert.ok(!result.isError);
     assert.ok(result.content[0].text.includes('Deleted'));
     await assert.rejects(fs.access(abs));
@@ -1453,31 +1472,47 @@ describe('delete-binary-file', () => {
     const abs = path.join(vaultDir, `${DENY_DIR}/delete-blocked.png`);
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, Buffer.from([0x01]));
-    const result = await callTool('delete-binary-file', { folder: DENY_DIR, filename: 'delete-blocked.png' });
+    const result = await callTool('delete-file', { folder: DENY_DIR, filename: 'delete-blocked.png' });
     assert.ok(result.isError);
   });
 
   it('returns isError for missing file', async () => {
-    const result = await callTool('delete-binary-file', { filename: 'ghost.png' });
+    const result = await callTool('delete-file', { filename: 'ghost.png' });
     assert.ok(result.isError);
   });
 
-  it('returns isError for a .md filename', async () => {
-    await writeVaultNote('not-binary-del.md', 'content');
-    const result = await callTool('delete-binary-file', { filename: 'not-binary-del.md' });
-    assert.ok(result.isError);
-    assert.ok(result.content[0].text.includes('delete-note'));
+  it('deletes a .md note as delete-note does: to .trash under a timestamped name, or for good', async () => {
+    await writeVaultNote('del-as-file.md', 'content');
+    const trashed = await callTool('delete-file', { filename: 'del-as-file.md' });
+    assert.ok(!trashed.isError, JSON.stringify(trashed));
+    await assert.rejects(fs.access(path.join(vaultDir, 'del-as-file.md')));
+    const names = await fs.readdir(path.join(vaultDir, '.trash'));
+    assert.ok(names.some(n => /^del-as-file_\d{13}\.md$/.test(n)), names.join(','));
+    await writeVaultNote('del-as-file-perm.md', 'content');
+    const gone = await callTool('delete-file', { filename: 'del-as-file-perm.md', permanent: true });
+    assert.ok(gone.content[0].text.includes('Deleted'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'del-as-file-perm.md')));
+  });
+
+  it('refuses a .md note in a denied folder, and honours expectedMtime', async () => {
+    await writeVaultNote(`${DENY_DIR}/secret.md`, 'x');
+    const denied = await callTool('delete-file', { folder: DENY_DIR, filename: 'secret.md' });
+    assert.ok(denied.isError && denied.content[0].text.includes('Access denied'));
+    await writeVaultNote('del-mtime.md', 'x');
+    const stale = await callTool('delete-file', { filename: 'del-mtime.md', expectedMtime: '2020-01-01T00:00:00.000Z' });
+    assert.ok(stale.isError && stale.content[0].text.includes('Precondition failed'));
+    await fs.access(path.join(vaultDir, 'del-mtime.md'));
   });
 });
 
-// ── move-binary-file ──────────────────────────────────────────────────────
+// ── move-file ──────────────────────────────────────────────────────
 
-describe('move-binary-file', () => {
+describe('move-file', () => {
   it('moves a binary file to a new location', async () => {
     const src = path.join(vaultDir, 'moveable-bin/source.png');
     await fs.mkdir(path.dirname(src), { recursive: true });
     await fs.writeFile(src, Buffer.from([0x01]));
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'moveable-bin', filename: 'source.png',
       newFolder: 'moved-bin', newFilename: 'destination.png',
     });
@@ -1492,7 +1527,7 @@ describe('move-binary-file', () => {
     await fs.mkdir(path.dirname(src), { recursive: true });
     await fs.writeFile(src, Buffer.from([0x01]));
     await writeVaultNote('embed-ref/linker.md', 'See ![[original.png]] for details.');
-    await callTool('move-binary-file', {
+    await callTool('move-file', {
       folder: 'embed-src', filename: 'original.png',
       newFolder: 'embed-dst', newFilename: 'renamed.png',
     });
@@ -1507,7 +1542,7 @@ describe('move-binary-file', () => {
     await fs.mkdir(path.dirname(a), { recursive: true });
     await fs.writeFile(a, Buffer.from([0x01]));
     await fs.writeFile(b, Buffer.from([0x02]));
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'collision-bin', filename: 'a.png',
       newFolder: 'collision-bin', newFilename: 'b.png',
     });
@@ -1519,7 +1554,7 @@ describe('move-binary-file', () => {
     const src = path.join(vaultDir, `${DENY_DIR}/move-src.png`);
     await fs.mkdir(path.dirname(src), { recursive: true });
     await fs.writeFile(src, Buffer.from([0x01]));
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: DENY_DIR, filename: 'move-src.png',
       newFolder: 'inbox', newFilename: 'move-src.png',
     });
@@ -1530,7 +1565,7 @@ describe('move-binary-file', () => {
   it('returns isError when destination is in denied path', async () => {
     const src = path.join(vaultDir, 'move-allowed-src.png');
     await fs.writeFile(src, Buffer.from([0x01]));
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       filename: 'move-allowed-src.png',
       newFolder: DENY_DIR, newFilename: 'move-allowed-src.png',
     });
@@ -1538,20 +1573,110 @@ describe('move-binary-file', () => {
     assert.ok(result.content[0].text.includes('Access denied'));
   });
 
-  it('returns isError for a .md destination filename', async () => {
-    const src = path.join(vaultDir, 'move-md-src.png');
-    await fs.writeFile(src, Buffer.from([0x01]));
-    const result = await callTool('move-binary-file', {
-      filename: 'move-md-src.png', newFilename: 'destination.md',
-    });
+  it('moves a .md note and rewrites the wikilinks that point at it, as move-note does', async () => {
+    await writeVaultNote('mvf-src/target.md', '# Target\n');
+    await writeVaultNote('mvf-ref/linker.md', 'See [[target]] and [[mvf-src/target]].');
+    const result = await callTool('move-file', { folder: 'mvf-src', filename: 'target.md', newFolder: 'mvf-dst', newFilename: 'target.md' });
+    assert.ok(!result.isError, JSON.stringify(result));
+    await assert.rejects(fs.access(path.join(vaultDir, 'mvf-src/target.md')));
+    assert.equal(await fs.readFile(path.join(vaultDir, 'mvf-dst/target.md'), 'utf8'), '# Target\n');
+    const linker = await fs.readFile(path.join(vaultDir, 'mvf-ref/linker.md'), 'utf8');
+    assert.equal(linker, 'See [[mvf-dst/target]] and [[mvf-dst/target]].', 'both links follow the note, as with move-note');
+  });
+
+  it('moves a note out of a denyBinaryPaths folder freely, since a note is never protected', async () => {
+    await writeVaultNote('protected-bin/free.md', '# free\n');
+    const result = await callTool('move-file', { folder: 'protected-bin', filename: 'free.md', newFolder: 'mvf-open', newFilename: 'free.md' });
+    assert.ok(!result.isError, JSON.stringify(result));
+    await fs.access(path.join(vaultDir, 'mvf-open/free.md'));
+  });
+
+  it('refuses to turn a protected file into a note, and leaves it where it is', async () => {
+    await fs.mkdir(path.join(vaultDir, 'protected-bin'), { recursive: true });
+    await fs.writeFile(path.join(vaultDir, 'protected-bin/secret.pdf'), Buffer.from('%PDF-secret'));
+    const result = await callTool('move-file', { folder: 'protected-bin', filename: 'secret.pdf', newFolder: 'protected-bin', newFilename: 'secret.md' });
     assert.ok(result.isError);
-    assert.ok(result.content[0].text.includes('move-note'));
+    await fs.access(path.join(vaultDir, 'protected-bin/secret.pdf'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'protected-bin/secret.md')));
+  });
+
+  it('leaves an existing note unchanged when a move onto it is refused', async () => {
+    await writeVaultNote('mvf-keep/a.md', 'moving');
+    await writeVaultNote('mvf-keep/b.md', 'the one that must survive');
+    const result = await callTool('move-file', { folder: 'mvf-keep', filename: 'a.md', newFolder: 'mvf-keep', newFilename: 'b.md' });
+    assert.ok(result.isError);
+    assert.equal(await fs.readFile(path.join(vaultDir, 'mvf-keep/b.md'), 'utf8'), 'the one that must survive');
+    assert.equal(await fs.readFile(path.join(vaultDir, 'mvf-keep/a.md'), 'utf8'), 'moving');
+  });
+
+  it('refuses to turn a note into another file type, or the reverse, and moves nothing', async () => {
+    await writeVaultNote('mvf-mixed/note.md', 'text');
+    await fs.writeFile(path.join(vaultDir, 'mvf-mixed/pic.png'), Buffer.from([1]));
+    const toPng = await callTool('move-file', { folder: 'mvf-mixed', filename: 'note.md', newFolder: 'mvf-mixed', newFilename: 'note.png' });
+    assert.ok(toPng.isError && toPng.content[0].text.includes('move-note'));
+    const toMd = await callTool('move-file', { folder: 'mvf-mixed', filename: 'pic.png', newFolder: 'mvf-mixed', newFilename: 'pic.md' });
+    assert.ok(toMd.isError && toMd.content[0].text.includes('move-note'));
+    await fs.access(path.join(vaultDir, 'mvf-mixed/note.md'));
+    await fs.access(path.join(vaultDir, 'mvf-mixed/pic.png'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'mvf-mixed/note.png')));
+    await assert.rejects(fs.access(path.join(vaultDir, 'mvf-mixed/pic.md')));
+  });
+
+  it('refuses a .md note into or out of a denied folder, and one over an existing note', async () => {
+    await writeVaultNote('mvf-deny/n.md', 'x');
+    const into = await callTool('move-file', { folder: 'mvf-deny', filename: 'n.md', newFolder: DENY_DIR, newFilename: 'n.md' });
+    assert.ok(into.isError && into.content[0].text.includes('Access denied'));
+    await writeVaultNote(`${DENY_DIR}/m.md`, 'x');
+    const out = await callTool('move-file', { folder: DENY_DIR, filename: 'm.md', newFolder: 'mvf-deny', newFilename: 'm.md' });
+    assert.ok(out.isError && out.content[0].text.includes('Access denied'));
+    await writeVaultNote('mvf-deny/o.md', 'other');
+    const over = await callTool('move-file', { folder: 'mvf-deny', filename: 'n.md', newFolder: 'mvf-deny', newFilename: 'o.md' });
+    assert.ok(over.isError && over.content[0].text.toLowerCase().includes('exist'));
+  });
+});
+
+describe('the file tools refuse a folder', () => {
+  it('move-file, move-note, delete-file and delete-note refuse a folder, which would carry files out from under the deny rules', async () => {
+    await fs.mkdir(path.join(vaultDir, 'a-folder'), { recursive: true });
+    await fs.writeFile(path.join(vaultDir, 'a-folder/inside.pdf'), Buffer.from([1]));
+    const calls = [
+      ['move-file', { filename: 'a-folder', newFilename: 'moved-folder' }],
+      ['move-note', { filename: 'a-folder', newFilename: 'moved-folder' }],
+      ['delete-file', { filename: 'a-folder' }],
+      ['delete-note', { filename: 'a-folder', permanent: true }],
+    ];
+    for (const [name, args] of calls) {
+      const result = await callTool(name, args);
+      assert.ok(result.isError, name);
+      assert.match(result.content[0].text, /is a folder/, name);
+    }
+    await fs.access(path.join(vaultDir, 'a-folder/inside.pdf'));
+    await assert.rejects(fs.access(path.join(vaultDir, 'moved-folder')));
+  });
+});
+
+describe('create-file never replaces what is already there', () => {
+  it('refuses a dangling link at the destination without writing through it', async () => {
+    const target = path.join(vaultDir, 'cf-target-never-created.png');
+    await fs.symlink(target, path.join(vaultDir, 'cf-dangling.png'));
+    const result = await callTool('create-file', { filename: 'cf-dangling.png', content: Buffer.from('x').toString('base64') });
+    assert.ok(result.isError);
+    assert.ok(result.content[0].text.includes('already exists'), result.content[0].text);
+    await assert.rejects(fs.access(target));
+  });
+
+  it('lets exactly one of two simultaneous calls create the file', async () => {
+    const results = await Promise.all(['one', 'two'].map(text =>
+      callTool('create-file', { filename: 'cf-race.md', content: Buffer.from(`# ${text}\n`).toString('base64') })));
+    assert.equal(results.filter(r => !r.isError).length, 1, JSON.stringify(results));
+    const winner = (await fs.readFile(path.join(vaultDir, 'cf-race.md'), 'utf8'));
+    assert.ok(winner === '# one\n' || winner === '# two\n');
   });
 });
 
 // ── find-backlinks ────────────────────────────────────────────────────────
 
-describe('read-binary-file', () => {
+describe('read-file', () => {
   const PDF_BYTES = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from([0x00, 0xff, 0x80, 0x0a, 0x25, 0x25]), Buffer.from('\n%%EOF')]);
 
   async function writeBin(rel, bytes) {
@@ -1562,7 +1687,7 @@ describe('read-binary-file', () => {
 
   it('returns a text block then an embedded resource carrying the exact bytes, then the version read', async () => {
     await writeBin('read-bin/report.pdf', PDF_BYTES);
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'report.pdf' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'report.pdf' });
     assert.ok(!result.isError, JSON.stringify(result));
     assert.equal(result.content.length, 4);
     assert.equal(result.content[2].text, `sha256: ${crypto.createHash('sha256').update(PDF_BYTES).digest('hex')}`);
@@ -1577,34 +1702,34 @@ describe('read-binary-file', () => {
 
   it('URI-encodes each path segment', async () => {
     await writeBin('read-bin/my folder/my file.pdf', PDF_BYTES);
-    const result = await callTool('read-binary-file', { folder: 'read-bin/my folder', filename: 'my file.pdf' });
+    const result = await callTool('read-file', { folder: 'read-bin/my folder', filename: 'my file.pdf' });
     assert.ok(!result.isError);
     assert.equal(result.content[1].resource.uri, 'file:///read-bin/my%20folder/my%20file.pdf');
   });
 
   it('reads a file at the vault root', async () => {
     await writeBin('root-read.png', Buffer.from([0x89, 0x50]));
-    const result = await callTool('read-binary-file', { filename: 'root-read.png' });
+    const result = await callTool('read-file', { filename: 'root-read.png' });
     assert.ok(!result.isError);
     assert.equal(result.content[1].resource.mimeType, 'image/png');
   });
 
   it('labels an unknown extension application/octet-stream', async () => {
     await writeBin('read-bin/data.xyz', Buffer.from([1, 2, 3]));
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'data.xyz' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'data.xyz' });
     assert.ok(!result.isError);
     assert.equal(result.content[1].resource.mimeType, 'application/octet-stream');
   });
 
   it('reads a file of exactly readMaxBytes', async () => {
     await writeBin('read-bin/exact.bin', Buffer.alloc(4096, 7));
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'exact.bin' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'exact.bin' });
     assert.ok(!result.isError, JSON.stringify(result));
   });
 
   it('refuses a file over readMaxBytes without returning any content', async () => {
     await writeBin('read-bin/big.bin', Buffer.alloc(4097, 7));
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'big.bin' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'big.bin' });
     assert.ok(result.isError);
     assert.equal(result.content.length, 1);
     assert.match(result.content[0].text, /exceeds|limit/i);
@@ -1614,7 +1739,7 @@ describe('read-binary-file', () => {
   it('returns a .md file with its exact bytes and text/markdown', async () => {
     const bytes = Buffer.from('---\r\ntitle: T\r\n---\r\n# hi\r\n\u00e9\n', 'utf8');
     await writeBin('read-bin/note.md', bytes);
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'note.md' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'note.md' });
     assert.ok(!result.isError, JSON.stringify(result));
     assert.match(result.content[0].text, new RegExp(`read-bin/note\\.md \\(${bytes.length} bytes, text/markdown\\)`));
     const res = result.content[1].resource;
@@ -1624,23 +1749,23 @@ describe('read-binary-file', () => {
 
   it('returns a .md file whatever the case of its extension', async () => {
     await writeBin('read-bin/Upper.MD', Buffer.from('# up'));
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'Upper.MD' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'Upper.MD' });
     assert.ok(!result.isError, JSON.stringify(result));
     assert.equal(result.content[1].resource.mimeType, 'text/markdown');
   });
 
   it('still refuses a .md file under denyPaths', async () => {
     await writeVaultNote(`${DENY_DIR}/hidden-note.md`, '# secret');
-    const result = await callTool('read-binary-file', { folder: DENY_DIR, filename: 'hidden-note.md' });
+    const result = await callTool('read-file', { folder: DENY_DIR, filename: 'hidden-note.md' });
     assert.equal(result.isError, true);
     assert.ok(result.content[0].text.includes('Access denied'));
   });
 
   it('does not apply denyBinaryPaths to a .md file, as for read-note', async () => {
     await writeBin('protected-bin/open-note.md', Buffer.from('# open'));
-    const result = await callTool('read-binary-file', { folder: 'protected-bin', filename: 'open-note.md' });
+    const result = await callTool('read-file', { folder: 'protected-bin', filename: 'open-note.md' });
     assert.ok(!result.isError, JSON.stringify(result));
-    const other = await callTool('read-binary-file', { folder: 'protected-bin', filename: 'closed.pdf' });
+    const other = await callTool('read-file', { folder: 'protected-bin', filename: 'closed.pdf' });
     assert.equal(other.isError, true, 'a PDF in the same folder is still protected');
   });
 
@@ -1648,18 +1773,18 @@ describe('read-binary-file', () => {
     await writeBin('protected-bin/target-for-md-link.pdf', PDF_BYTES);
     await fs.mkdir(path.join(vaultDir, 'link-dir'), { recursive: true });
     await fs.symlink(path.join(vaultDir, 'protected-bin/target-for-md-link.pdf'), path.join(vaultDir, 'link-dir/looks-like-a-note.md'));
-    const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'looks-like-a-note.md' });
+    const result = await callTool('read-file', { folder: 'link-dir', filename: 'looks-like-a-note.md' });
     assert.equal(result.isError, true);
     assert.ok(result.content[0].text.includes('Reading is restricted'), result.content[0].text);
   });
 
-  it('move-note will not turn a protected file into a note, which read-binary-file would then return', async () => {
+  it('move-note will not turn a protected file into a note, which read-file would then return', async () => {
     await writeBin('protected-bin/renamed.pdf', PDF_BYTES);
     const moved = await callTool('move-note', { folder: 'protected-bin', filename: 'renamed.pdf', newFolder: 'protected-bin', newFilename: 'renamed.md' });
     assert.equal(moved.isError, true);
     assert.match(moved.content[0].text, /Reading is restricted/);
     assert.deepEqual(await fs.readFile(path.join(vaultDir, 'protected-bin/renamed.pdf')), PDF_BYTES, 'the file is where it was');
-    const read = await callTool('read-binary-file', { folder: 'protected-bin', filename: 'renamed.pdf' });
+    const read = await callTool('read-file', { folder: 'protected-bin', filename: 'renamed.pdf' });
     assert.equal(read.isError, true, 'and still protected');
   });
 
@@ -1673,24 +1798,24 @@ describe('read-binary-file', () => {
     await writeVaultNote('read-bin/trash-note-zq.md', '# bin me');
     await writeBin('protected-bin/trash-pdf-zq.pdf', PDF_BYTES);
     assert.ok(!(await callTool('delete-note', { folder: 'read-bin', filename: 'trash-note-zq.md' })).isError);
-    assert.ok(!(await callTool('delete-binary-file', { folder: 'protected-bin', filename: 'trash-pdf-zq.pdf' })).isError);
+    assert.ok(!(await callTool('delete-file', { folder: 'protected-bin', filename: 'trash-pdf-zq.pdf' })).isError);
     const entries = await fs.readdir(path.join(vaultDir, '.trash'));
-    const note = await callTool('read-binary-file', { folder: '.trash', filename: entries.find(f => f.startsWith('trash-note-zq')) });
+    const note = await callTool('read-file', { folder: '.trash', filename: entries.find(f => f.startsWith('trash-note-zq')) });
     assert.ok(!note.isError, JSON.stringify(note));
-    const pdf = await callTool('read-binary-file', { folder: '.trash', filename: entries.find(f => f.startsWith('trash-pdf-zq')) });
+    const pdf = await callTool('read-file', { folder: '.trash', filename: entries.find(f => f.startsWith('trash-pdf-zq')) });
     assert.equal(pdf.isError, true);
     assert.match(pdf.content[0].text, /Reading is restricted/);
   });
 
   it('refuses a .md file over the read limit', async () => {
     await writeBin('read-bin/big-note.md', Buffer.alloc(5000, 0x61));
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'big-note.md' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'big-note.md' });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /exceeds|limit/i);
   });
 
   it('requires a filename', async () => {
-    const result = await callTool('read-binary-file', {});
+    const result = await callTool('read-file', {});
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('filename is required'));
   });
@@ -1699,21 +1824,21 @@ describe('read-binary-file', () => {
     const sid = await initSession();
     const r = await post({
       jsonrpc: '2.0', id: '2', method: 'tools/call',
-      params: { name: 'read-binary-file', arguments: { vault: 'no-such-vault', filename: 'a.pdf' } },
+      params: { name: 'read-file', arguments: { vault: 'no-such-vault', filename: 'a.pdf' } },
     }, sid);
     assert.ok(r.msgs[0].result.isError);
     assert.ok(r.msgs[0].result.content[0].text.includes('Unknown vault'));
   });
 
   it('reports a missing file with a vault-relative message only', async () => {
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'absent.pdf' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'absent.pdf' });
     assert.ok(result.isError);
     assert.ok(!result.content[0].text.includes(vaultDir), result.content[0].text);
   });
 
   it('refuses a path under denyPaths and does not leak the content', async () => {
     await writeBin(`${DENY_DIR}/secret.pdf`, PDF_BYTES);
-    const result = await callTool('read-binary-file', { folder: DENY_DIR, filename: 'secret.pdf' });
+    const result = await callTool('read-file', { folder: DENY_DIR, filename: 'secret.pdf' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Access denied'));
     assert.equal(result.content.length, 1);
@@ -1721,7 +1846,7 @@ describe('read-binary-file', () => {
 
   it('refuses a ..-traversal into a denied path', async () => {
     await writeBin(`${DENY_DIR}/secret2.pdf`, PDF_BYTES);
-    const result = await callTool('read-binary-file', { folder: `read-bin/../${DENY_DIR}`, filename: 'secret2.pdf' });
+    const result = await callTool('read-file', { folder: `read-bin/../${DENY_DIR}`, filename: 'secret2.pdf' });
     assert.ok(result.isError);
     assert.equal(result.content.length, 1);
   });
@@ -1729,7 +1854,7 @@ describe('read-binary-file', () => {
   describe('denyBinaryPaths', () => {
     it('refuses a file under a protected folder, saying reading is restricted', async () => {
       await writeBin('protected-bin/a.pdf', PDF_BYTES);
-      const result = await callTool('read-binary-file', { folder: 'protected-bin', filename: 'a.pdf' });
+      const result = await callTool('read-file', { folder: 'protected-bin', filename: 'a.pdf' });
       assert.ok(result.isError);
       assert.equal(result.content.length, 1);
       assert.equal(result.content[0].text, "Reading is restricted for 'protected-bin/a.pdf'");
@@ -1737,21 +1862,21 @@ describe('read-binary-file', () => {
 
     it('refuses a file nested below a protected folder', async () => {
       await writeBin('protected-bin/x/y/deep.pdf', PDF_BYTES);
-      const result = await callTool('read-binary-file', { folder: 'protected-bin/x/y', filename: 'deep.pdf' });
+      const result = await callTool('read-file', { folder: 'protected-bin/x/y', filename: 'deep.pdf' });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('Reading is restricted'));
     });
 
     it('refuses a file matching a wildcard entry anywhere in the vault', async () => {
       await writeBin('anywhere/at/all/plan.locked.pdf', PDF_BYTES);
-      const result = await callTool('read-binary-file', { folder: 'anywhere/at/all', filename: 'plan.locked.pdf' });
+      const result = await callTool('read-file', { folder: 'anywhere/at/all', filename: 'plan.locked.pdf' });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('Reading is restricted'));
     });
 
     it('refuses a ..-traversal into a protected folder', async () => {
       await writeBin('protected-bin/trav.pdf', PDF_BYTES);
-      const result = await callTool('read-binary-file', { folder: 'read-bin/../protected-bin', filename: 'trav.pdf' });
+      const result = await callTool('read-file', { folder: 'read-bin/../protected-bin', filename: 'trav.pdf' });
       assert.ok(result.isError);
       assert.equal(result.content.length, 1);
     });
@@ -1760,7 +1885,7 @@ describe('read-binary-file', () => {
       await writeBin('protected-bin-not/a.pdf', PDF_BYTES);
       await writeBin('anywhere/plan.pdf', PDF_BYTES);
       for (const [folder, filename] of [['protected-bin-not', 'a.pdf'], ['anywhere', 'plan.pdf']]) {
-        const result = await callTool('read-binary-file', { folder, filename });
+        const result = await callTool('read-file', { folder, filename });
         assert.ok(!result.isError, `${folder}/${filename}: ${JSON.stringify(result)}`);
       }
     });
@@ -1772,12 +1897,12 @@ describe('read-binary-file', () => {
       assert.ok(!backlinks.isError);
       assert.ok(backlinks.content[0].text.includes('protected-bin-linker.md'));
 
-      const created = await callTool('create-binary-file', {
+      const created = await callTool('create-file', {
         folder: 'protected-bin', filename: 'created.pdf', content: PDF_BYTES.toString('base64'),
       });
       assert.ok(!created.isError, JSON.stringify(created));
 
-      const deleted = await callTool('delete-binary-file', { folder: 'protected-bin', filename: 'created.pdf', permanent: true });
+      const deleted = await callTool('delete-file', { folder: 'protected-bin', filename: 'created.pdf', permanent: true });
       assert.ok(!deleted.isError, JSON.stringify(deleted));
     });
   });
@@ -1792,16 +1917,16 @@ describe('denyBinaryPaths cannot be sidestepped through other tools or paths', (
 
   it('a non-permanent delete leaves the file in .trash, where it is still unreadable and cannot be moved out', async () => {
     await writeBin('protected-bin/trash-me.pdf');
-    const del = await callTool('delete-binary-file', { folder: 'protected-bin', filename: 'trash-me.pdf' });
+    const del = await callTool('delete-file', { folder: 'protected-bin', filename: 'trash-me.pdf' });
     assert.ok(!del.isError, JSON.stringify(del));
     const trashed = (await fs.readdir(path.join(vaultDir, '.trash'))).find(f => f.startsWith('trash-me'));
     assert.ok(trashed, 'file should be in .trash');
 
-    const read = await callTool('read-binary-file', { folder: '.trash', filename: trashed });
+    const read = await callTool('read-file', { folder: '.trash', filename: trashed });
     assert.ok(read.isError);
     assert.ok(read.content[0].text.includes('Reading is restricted'));
 
-    const out = await callTool('move-binary-file', {
+    const out = await callTool('move-file', {
       folder: '.trash', filename: trashed, newFolder: 'inbox-open', newFilename: trashed,
     });
     assert.ok(out.isError);
@@ -1838,22 +1963,22 @@ describe('denyBinaryPaths cannot be sidestepped through other tools or paths', (
     assert.ok(!ok.isError, JSON.stringify(ok));
   });
 
-  it('read-binary-file follows a symlink to its real path before checking protection', async () => {
+  it('read-file follows a symlink to its real path before checking protection', async () => {
     await writeBin('protected-bin/target.pdf');
     await fs.mkdir(path.join(vaultDir, 'link-dir'), { recursive: true });
     await fs.symlink(path.join(vaultDir, 'protected-bin/target.pdf'), path.join(vaultDir, 'link-dir/alias.pdf'));
-    const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'alias.pdf' });
+    const result = await callTool('read-file', { folder: 'link-dir', filename: 'alias.pdf' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Reading is restricted'));
     assert.equal(result.content.length, 1);
   });
 
-  it('read-binary-file refuses a symlink to a file outside the vault', async () => {
+  it('read-file refuses a symlink to a file outside the vault', async () => {
     const outside = path.join(os.tmpdir(), `outside-${Date.now()}.pdf`);
     await fs.writeFile(outside, 'outside content');
     try {
       await fs.symlink(outside, path.join(vaultDir, 'link-dir/outside.pdf'));
-      const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'outside.pdf' });
+      const result = await callTool('read-file', { folder: 'link-dir', filename: 'outside.pdf' });
       assert.ok(result.isError);
       assert.ok(result.content[0].text.includes('outside the vault'));
       assert.equal(result.content.length, 1);
@@ -1862,22 +1987,42 @@ describe('denyBinaryPaths cannot be sidestepped through other tools or paths', (
     }
   });
 
-  it('read-binary-file follows a symlink that stays inside the vault and is unprotected', async () => {
+  it('read-file follows a symlink that stays inside the vault and is unprotected', async () => {
     await writeBin('read-bin/real-open.pdf');
     await fs.symlink(path.join(vaultDir, 'read-bin/real-open.pdf'), path.join(vaultDir, 'link-dir/open-alias.pdf'));
-    const result = await callTool('read-binary-file', { folder: 'link-dir', filename: 'open-alias.pdf' });
+    const result = await callTool('read-file', { folder: 'link-dir', filename: 'open-alias.pdf' });
     assert.ok(!result.isError, JSON.stringify(result));
   });
 
-  it('read-binary-file refuses a directory', async () => {
+  it('read-file refuses a directory', async () => {
     await fs.mkdir(path.join(vaultDir, 'read-bin/a-dir.pdf'), { recursive: true });
-    const result = await callTool('read-binary-file', { folder: 'read-bin', filename: 'a-dir.pdf' });
+    const result = await callTool('read-file', { folder: 'read-bin', filename: 'a-dir.pdf' });
     assert.ok(result.isError);
     assert.ok(result.content[0].text.includes('Not a regular file'));
   });
 });
 
-describe('move-binary-file with denyBinaryPaths', () => {
+describe('the tools that were called *-binary-file', () => {
+  it('no longer exist under the old names', async () => {
+    for (const name of ['create', 'fetch', 'upload', 'replace', 'read', 'move', 'delete']) {
+      const result = await callTool(`${name}-binary-file`, { filename: 'x.bin' });
+      assert.equal(result.isError, true, name);
+      assert.ok(result.content[0].text.includes('Unknown tool'), `${name}: ${result.content[0].text}`);
+    }
+  });
+
+  it('are all listed under their new names', async () => {
+    const sid = await initSession();
+    const listed = await post({ jsonrpc: '2.0', id: '2', method: 'tools/list' }, sid);
+    const names = listed.msgs[0].result.tools.map(t => t.name);
+    for (const name of ['create-file', 'fetch-file', 'upload-file', 'replace-file', 'read-file', 'move-file', 'delete-file']) {
+      assert.ok(names.includes(name), name);
+    }
+    assert.deepEqual(names.filter(n => n.includes('binary')), []);
+  });
+});
+
+describe('move-file with denyBinaryPaths', () => {
   async function writeBin(rel, bytes = Buffer.from([0x01, 0x02])) {
     const abs = path.join(vaultDir, rel);
     await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -1887,7 +2032,7 @@ describe('move-binary-file with denyBinaryPaths', () => {
   it('refuses to move a protected file to an unprotected folder, leaving file and embeds untouched', async () => {
     await writeBin('protected-bin/escape.pdf');
     await writeVaultNote('mv-prot/linker.md', 'See ![[protected-bin/escape.pdf]]');
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'protected-bin', filename: 'escape.pdf', newFolder: 'inbox-open', newFilename: 'escape.pdf',
     });
     assert.ok(result.isError);
@@ -1900,7 +2045,7 @@ describe('move-binary-file with denyBinaryPaths', () => {
 
   it('refuses an in-place rename that takes a file out of a wildcard entry', async () => {
     await writeBin('mv-prot/doc.locked.pdf');
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'mv-prot', filename: 'doc.locked.pdf', newFolder: 'mv-prot', newFilename: 'doc.pdf',
     });
     assert.ok(result.isError);
@@ -1910,7 +2055,7 @@ describe('move-binary-file with denyBinaryPaths', () => {
 
   it('refuses a ..-disguised escape', async () => {
     await writeBin('protected-bin/sneaky.pdf');
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'protected-bin', filename: 'sneaky.pdf', newFolder: 'protected-bin/../inbox-open', newFilename: 'sneaky.pdf',
     });
     assert.ok(result.isError);
@@ -1919,7 +2064,7 @@ describe('move-binary-file with denyBinaryPaths', () => {
 
   it('allows moving within the protected area', async () => {
     await writeBin('protected-bin/inside.pdf');
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'protected-bin', filename: 'inside.pdf', newFolder: 'protected-bin/sub', newFilename: 'inside.pdf',
     });
     assert.ok(!result.isError, JSON.stringify(result));
@@ -1928,7 +2073,7 @@ describe('move-binary-file with denyBinaryPaths', () => {
 
   it('allows moving an unprotected file into the protected area', async () => {
     await writeBin('inbox-open/into.pdf');
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'inbox-open', filename: 'into.pdf', newFolder: 'protected-bin', newFilename: 'into.pdf',
     });
     assert.ok(!result.isError, JSON.stringify(result));
@@ -1937,7 +2082,7 @@ describe('move-binary-file with denyBinaryPaths', () => {
 
   it('allows moving between unprotected folders', async () => {
     await writeBin('inbox-open/free.pdf');
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'inbox-open', filename: 'free.pdf', newFolder: 'archive-open', newFilename: 'free.pdf',
     });
     assert.ok(!result.isError, JSON.stringify(result));
@@ -2465,10 +2610,10 @@ describe('write preconditions (expectedMtime)', () => {
     assert.ok(content.includes('priority: low'));
   });
 
-  it('delete-binary-file is refused when expectedMtime has drifted', async () => {
+  it('delete-file is refused when expectedMtime has drifted', async () => {
     const abs = path.join(vaultDir, 'editable/precond-bin-delete.png');
     await fs.writeFile(abs, Buffer.from([0x01]));
-    const result = await callTool('delete-binary-file', {
+    const result = await callTool('delete-file', {
       folder: 'editable', filename: 'precond-bin-delete.png',
       expectedMtime: '2026-01-01T00:00:00.000Z',
     });
@@ -2477,10 +2622,10 @@ describe('write preconditions (expectedMtime)', () => {
     await assert.doesNotReject(() => fs.access(abs));
   });
 
-  it('move-binary-file checks the precondition against the source file', async () => {
+  it('move-file checks the precondition against the source file', async () => {
     const src = path.join(vaultDir, 'editable/precond-bin-move-src.png');
     await fs.writeFile(src, Buffer.from([0x01]));
-    const result = await callTool('move-binary-file', {
+    const result = await callTool('move-file', {
       folder: 'editable', filename: 'precond-bin-move-src.png',
       newFolder: 'editable', newFilename: 'precond-bin-move-dst.png',
       expectedMtime: '2026-01-01T00:00:00.000Z',
@@ -2597,7 +2742,7 @@ describe('query-graph (graph built)', () => {
     await fs.writeFile(gConfigPath, JSON.stringify({
       listenPort: GPORT,
       mcpBaseUrl: GBASE_URL,
-      graphifyQueryTimeoutMs: 300,
+      graphifyQueryTimeoutMs: 1500, // long enough for a loaded machine to start the mock, short enough for the hang test
       vaults: { [gVaultName]: { path: gVaultDir } },
     }));
 
@@ -2788,7 +2933,7 @@ describe('multi-vault configuration', () => {
       await fs.mkdir(path.join(mBetaDir, dir), { recursive: true });
       await fs.writeFile(path.join(mBetaDir, dir, 'f.pdf'), 'x');
     }
-    const read = async (vault, folder) => mCallTool(vault, 'read-binary-file', { folder, filename: 'f.pdf' });
+    const read = async (vault, folder) => mCallTool(vault, 'read-file', { folder, filename: 'f.pdf' });
 
     // global entry protects both vaults
     assert.ok((await read('alpha', 'global-locked')).content[0].text.includes('Reading is restricted'));
@@ -2893,7 +3038,7 @@ describe('listenHost configuration', () => {
     });
   }
 
-  describe('read-binary-file settings', () => {
+  describe('read-file settings', () => {
     for (const bad of [0, -1, 'abc']) {
       it(`rejects readMaxBytes ${JSON.stringify(bad)} with a clear error`, async () => {
         const { proc, out, code } = await startWith({ readMaxBytes: bad });

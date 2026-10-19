@@ -1,5 +1,5 @@
 /**
- * Tests for the replace-binary-file skill's helper script (skills/replace-binary-file/scripts/replace-binary-file.sh).
+ * Tests for the replace-file skill's helper script (skills/replace-file/scripts/replace-file.sh).
  * `send` is run against a small local server that answers like the real PUT /up/<token> endpoint,
  * and once against a real server, so what is checked is the script's own behaviour: its output,
  * its exit status, what it checks in the reply, and that the upload token is never printed.
@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.join(__dirname, '..', '..', 'skills', 'replace-binary-file', 'scripts', 'replace-binary-file.sh');
+const SCRIPT = path.join(__dirname, '..', '..', 'skills', 'replace-file', 'scripts', 'replace-file.sh');
 const SERVER_ENTRY = path.join(__dirname, '..', 'obsidian-mcp-brain.mjs');
 const TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCde'; // 43 characters
 
@@ -65,7 +65,7 @@ function rpc(port, body, sid) {
   });
 }
 
-describe('replace-binary-file.sh prepare and send', () => {
+describe('replace-file.sh prepare and send', () => {
   let dir;
   let file;
   const content = crypto.randomBytes(5000);
@@ -150,7 +150,7 @@ describe('replace-binary-file.sh prepare and send', () => {
   });
 
   it('send shows the server\'s own explanation of a refusal, with the status', async () => {
-    const srv = await fakeServer(() => ({ status: 409, json: { error: 'the file has changed since it was read; read it again with read-binary-file and request a new URL' } }));
+    const srv = await fakeServer(() => ({ status: 409, json: { error: 'the file has changed since it was read; read it again with read-file and request a new URL' } }));
     try {
       const r = await run(['send', file, srv.url, OLD]);
       assert.equal(r.code, 1);
@@ -174,11 +174,11 @@ describe('replace-binary-file.sh prepare and send', () => {
   it('send refuses a URL that is not an upload URL', async () => {
     const r = await run(['send', file, 'http://127.0.0.1:1/other', OLD]);
     assert.equal(r.code, 1);
-    assert.match(r.all, /must be the one returned by replace-binary-file/);
+    assert.match(r.all, /must be the one returned by replace-file/);
   });
 });
 
-describe('replace-binary-file skill against a real server', () => {
+describe('replace-file skill against a real server', () => {
   let root;
   let proc;
   const port = 20560;
@@ -218,7 +218,7 @@ describe('replace-binary-file skill against a real server', () => {
     });
     const call = (id, name, args) => rpc(port, { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: { vault: 'v', ...args } } }, init.sid);
 
-    const read = (await call(2, 'read-binary-file', { folder: 'docs', filename: 'report.pdf' })).msg.result.content;
+    const read = (await call(2, 'read-file', { folder: 'docs', filename: 'report.pdf' })).msg.result.content;
     const texts = read.filter(c => c.type === 'text').map(c => c.text);
     const expectedSha256 = texts.find(t => t.startsWith('sha256: ')).slice(8);
     const expectedMtime = texts.find(t => t.startsWith('Last-Modified: ')).slice(15);
@@ -230,7 +230,7 @@ describe('replace-binary-file skill against a real server', () => {
     assert.equal(prep.code, 0, prep.all);
     const field = (name) => prep.stdout.match(new RegExp(`^${name}=(.*)$`, 'm'))[1];
 
-    const reserved = await call(3, 'replace-binary-file', {
+    const reserved = await call(3, 'replace-file', {
       folder: 'docs', filename: field('filename'), size: Number(field('size')), sha256: field('sha256'), expectedSha256, expectedMtime,
     });
     const text = reserved.msg.result.content[0].text;

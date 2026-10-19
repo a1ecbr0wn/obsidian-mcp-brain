@@ -1,4 +1,4 @@
-// Extension-to-MIME-type map for read-binary-file. Clients choose how to handle a
+// Extension-to-MIME-type map for read-file. Clients choose how to handle a
 // returned blob from its mimeType, so the common attachment types are named and
 // everything else is an opaque byte stream.
 import path from 'node:path';

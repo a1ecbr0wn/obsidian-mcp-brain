@@ -168,7 +168,7 @@ function put(urlStr, body, headers = {}) {
 }
 
 async function reserveUpload(srv, filename, content, headers = {}) {
-  const { result } = await callTool(srv, 'upload-binary-file', { filename, size: content.length, sha256: sha256(content) }, { headers });
+  const { result } = await callTool(srv, 'upload-file', { filename, size: content.length, sha256: sha256(content) }, { headers });
   const url = result.content[0].text.match(/https?:\/\/\S+\/up\/[A-Za-z0-9_-]{43}/)?.[0];
   assert.ok(url, result.content[0].text);
   return url;
@@ -272,11 +272,11 @@ describe('the audit log of a call refused by denyBinaryPaths', () => {
   });
   after(async () => { await srv.stop(); });
 
-  it('logs a protected file that read-binary-file refused as denied', async () => {
-    const { result, sid } = await callTool(srv, 'read-binary-file', { filename: 'locked.pdf' });
+  it('logs a protected file that read-file refused as denied', async () => {
+    const { result, sid } = await callTool(srv, 'read-file', { filename: 'locked.pdf' });
     assert.equal(result.isError, true);
     const line = await srv.find(l => l.includes('event=denied') && l.includes(`sid=${sid.slice(0, 8)}`));
-    assert.ok(line && line.includes('tool=read-binary-file') && line.includes('filename=locked.pdf'), srv.log());
+    assert.ok(line && line.includes('tool=read-file') && line.includes('filename=locked.pdf'), srv.log());
   });
 });
 
@@ -343,7 +343,7 @@ describe('the audit log of uploads', () => {
 
   it('does not log a reservation that was refused', async () => {
     const before = srv.audit().filter(l => l.includes('event=upload-reserved')).length;
-    await callTool(srv, 'upload-binary-file', { filename: 'x.bin', size: 0, sha256: 'bad' });
+    await callTool(srv, 'upload-file', { filename: 'x.bin', size: 0, sha256: 'bad' });
     assert.equal(srv.audit().filter(l => l.includes('event=upload-reserved')).length, before);
   });
 });

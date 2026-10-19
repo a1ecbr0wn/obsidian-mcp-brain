@@ -219,7 +219,7 @@ describe('what the delete tools put in .trash', () => {
     });
     try {
       assert.ok(!(await callTool(srv, 'delete-note', { filename: 'doc.md' })).isError);
-      assert.ok(!(await callTool(srv, 'delete-binary-file', { filename: 'pic.png' })).isError);
+      assert.ok(!(await callTool(srv, 'delete-file', { filename: 'pic.png' })).isError);
       const names = await fs.readdir(path.join(srv.vault, '.trash'));
       assert.ok(names.some(n => /^doc_\d{13}\.md$/.test(n)), names.join(','));
       assert.ok(names.some(n => /^pic_\d{13}\.png$/.test(n)), names.join(','));

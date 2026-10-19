@@ -47,7 +47,7 @@ put the server on a public address. What it does, and does not, give you:
   factor there is a way in.
 - **`PUT /up/<token>` is not behind a token.** The one-time upload URL is its
   own credential: 256 random bits, valid for one request, tied to a fixed size,
-  hash and destination (see [`upload-binary-file`](#upload-binary-file)). A
+  hash and destination (see [`upload-file`](#upload-file)). A
   proxy that exposes the server can publish `/up/` and `/mcp` separately.
 - **`query-graph`** answers without applying `denyPaths` (below). That matters
   more once the server is public: leave the tool to users you trust fully, or do
@@ -79,15 +79,15 @@ folders can reveal their content. Build the graph from a vault without that
 content, or don't use the tool.
 
 [`denyBinaryPaths`](configuration#binary-read-protection-denybinarypaths) is a
-narrower, read-only guard for binary files. It stops `read-binary-file`
-returning a protected file's bytes, and stops `move-binary-file` (and
+narrower, read-only guard for binary files. It stops `read-file`
+returning a protected file's bytes, and stops `move-file` (and
 `move-note`, for a non-markdown file) moving a protected file out of protection,
 so the agent can't relocate a file to read it. `.trash` is protected along with
 it, and `read-note` refuses a protected non-markdown file. It doesn't affect
 markdown notes, and it doesn't hide names: `list-notes` with `extension` still
 lists a protected file, and its modification time.
 
-Symbolic links are handled differently by different tools. `read-binary-file`
+Symbolic links are handled differently by different tools. `read-file`
 resolves a link and checks the real location: it refuses a link that points
 outside the vault, and applies `denyPaths` and `denyBinaryPaths` to the target.
 The other tools, including `read-note`, judge a path as the client gives it and
@@ -108,7 +108,7 @@ Other protections that apply to every request:
   [`expectedMtime`](tools#avoiding-overwrites-with-expectedmtime) precondition
   so an edit never silently overwrites a change made in between.
 
-### `fetch-binary-file`
+### `fetch-file`
 
 This tool makes the server perform an outbound request to a URL chosen by the
 caller. On any deployment, the host it runs on may be able to reach private
@@ -137,7 +137,7 @@ that as the main risk, the tool:
 - checks the destination path against the deny list and for collisions before
   making any network request, so a denied or occupied path never causes one.
 
-### `read-binary-file`
+### `read-file`
 
 This tool is read-only and makes no network request or subprocess call. It
 checks the path against `denyPaths` and `denyBinaryPaths` before any filesystem
@@ -149,7 +149,7 @@ so a client can't slow the server with a crafted path. The size limit matters
 because the whole file is base64-encoded into one response, which is a third
 larger than the file itself.
 
-### `upload-binary-file`
+### `upload-file`
 
 This tool reserves a one-time URL, and a file sent to it ends up in the vault,
 so the URL has to be hard to misuse. It is built like this:
@@ -169,7 +169,7 @@ so the URL has to be hard to misuse. It is built like this:
 - Symbolic links in the destination are followed before those checks, at both
   points. A link inside the vault that points outside it, or into a denied
   folder, is refused, so an upload can't be used to write outside the vault.
-  (`create-binary-file` does not do this.)
+  (`create-file` does not do this.)
 - The file is copied to a hidden temporary name beside its destination, its hash
   checked again, and then linked to its real name, so the real name never shows
   a half-written file and an existing file is never overwritten. It gets the
@@ -216,7 +216,7 @@ only to proxies you run, because the `X-Forwarded-For` header from anywhere else
 is ignored; if the server can be reached directly as well as through the proxy,
 a forged header would otherwise defeat the check.
 
-### `replace-binary-file`
+### `replace-file`
 
 This tool reserves the same kind of one-time URL, and everything above applies:
 the token, the single use, the fixed destination, size and hash, the `Origin`
@@ -243,7 +243,7 @@ it overwrites, so it has to be hard to use on the wrong file:
   check can't be used to find it out. (It does name the current mtime, which
   `list-notes` shows anyway.)
 - A file under `denyBinaryPaths` cannot be replaced, because the hash check would
-  be a way to test guesses at the content of a file that `read-binary-file`
+  be a way to test guesses at the content of a file that `read-file`
   refuses to show.
 - The audit log records the reservation (`upload-reserved` with `mode=replace`)
   and the replacement (`upload-placed` with `mode=replace` and `previous_sha256`).

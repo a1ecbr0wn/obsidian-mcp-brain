@@ -1,13 +1,13 @@
 ---
-name: read-binary-file
-description: Read a PDF, image or other non-note file from an Obsidian vault through the obsidian-mcp-brain server's read-binary-file tool. Use whenever the user asks to read, open, summarise or look at a PDF, image or other non-markdown file that is in the vault. It first checks which Claude surface it is running on, because Claude chat surfaces show only images and silently drop other file types.
+name: read-file
+description: Read a PDF, image or other non-note file from an Obsidian vault through the obsidian-mcp-brain server's read-file tool. Use whenever the user asks to read, open, summarise or look at a PDF, image or other non-markdown file that is in the vault. It first checks which Claude surface it is running on, because Claude chat surfaces show only images and silently drop other file types.
 metadata:
   version: "1.5.0"
 ---
 
 # Read a non-note file from the vault
 
-`read-binary-file` returns a file as an MCP embedded `resource` block (base64
+`read-file` returns a file as an MCP embedded `resource` block (base64
 bytes and a MIME type). What happens next depends on the client:
 
 - **Claude Code** (including the code mode of the Claude Desktop app) saves the
@@ -28,7 +28,7 @@ Look at where this skill file was loaded from and at the home directory:
 
 | This skill is found at | Surface | Reading a non-image file |
 | --- | --- | --- |
-| `~/.claude/skills/read-binary-file/`, or a folder under `~/.claude/plugins/` (an installed plugin), under a home that is not `claude` (`/home/<user>`, `/Users/<user>`) | Claude Code | Works. Go to step 2 |
+| `~/.claude/skills/read-file/`, or a folder under `~/.claude/plugins/` (an installed plugin), under a home that is not `claude` (`/home/<user>`, `/Users/<user>`) | Claude Code | Works. Go to step 2 |
 | `/mnt/skills/user/...` or `/mnt/skills/plugins/...`, or the home directory is `/home/claude` | Claude Desktop chat or claude.ai chat | Does not work (tested in Desktop chat, reported for claude.ai). Stop and tell the user (below) |
 | `/root/.claude/skills/synced/<bucket-id>/...` | Cowork | Not tested. Go to step 2 and rely on the check in step 3 |
 
@@ -47,13 +47,13 @@ When you stop, say this to the user, with the file name filled in:
 > there; the same MCP server works in it.
 
 Do not try to work around it by base64-encoding the file into a message, or by
-calling `read-binary-file` repeatedly.
+calling `read-file` repeatedly.
 
 ## Step 2: find and read the file
 
 1. If you do not know the path, call `list-notes` with `extension` (for example
    `pdf`) and, optionally, `path` to narrow it to a folder.
-2. Call `read-binary-file` with `vault`, `filename` and `folder`. A `.md` note
+2. Call `read-file` with `vault`, `filename` and `folder`. A `.md` note
    can be read too, but `read-note` is better for a note.
 3. In Claude Code, the result gives a saved path. Open it with your file-reading
    tool. A PDF with a text layer is read as text, and a scanned PDF is read from
@@ -62,7 +62,7 @@ calling `read-binary-file` repeatedly.
 ## Step 3: check the result
 
 - **A text line and a file you can open**: you are done. The `sha256:` and
-  `Last-Modified:` lines name the version you read; the `replace-binary-file`
+  `Last-Modified:` lines name the version you read; the `replace-file`
   skill needs them to replace the file.
 - **Only the text lines** (`<path> (<n> bytes, <mime type>)`, then `sha256:` and
   `Last-Modified:`) and no file or content, for a file that is not an image:

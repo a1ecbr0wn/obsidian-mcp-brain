@@ -14,6 +14,7 @@ import {
   searchFilename,
   readBinaryFile,
   writeBinaryFile,
+  noteBytesError,
   deleteBinaryFile,
   moveBinaryFile,
   walkAllFiles,
@@ -273,6 +274,39 @@ describe('writeBinaryFile', () => {
 });
 
 // ── deleteBinaryFile ──────────────────────────────────────────────────────────
+
+describe('noteBytesError', () => {
+  it('accepts any bytes for a file that is not a note', () => {
+    assert.equal(noteBytesError('a/pic.png', Buffer.from([0xff, 0xfe, 0x00])), null);
+  });
+
+  it('accepts valid UTF-8, an empty buffer and a byte-order mark for a note, whatever the case of the extension', () => {
+    assert.equal(noteBytesError('n.md', Buffer.from('# Café ☕ 日本語\n')), null);
+    assert.equal(noteBytesError('n.MD', Buffer.alloc(0)), null);
+    assert.equal(noteBytesError('n.md', Buffer.from([0xef, 0xbb, 0xbf, 0x61])), null);
+  });
+
+  it('refuses bytes that are not UTF-8 for a note', () => {
+    for (const bad of [[0xff, 0xfe], [0xc3], [0x61, 0xe2, 0x82], [0xed, 0xa0, 0x80]]) {
+      assert.equal(noteBytesError('n.md', Buffer.from(bad)), 'a note must be valid UTF-8 text', String(bad));
+    }
+  });
+});
+
+describe('writeBinaryFile with exclusive', () => {
+  before(setup);
+  after(teardown);
+
+  it('replaces a file by default and refuses to when exclusive', async () => {
+    const p = path.join(vault, 'wb', 'x.bin');
+    await writeBinaryFile(p, Buffer.from('one'));
+    await writeBinaryFile(p, Buffer.from('two'));
+    assert.equal(await fs.readFile(p, 'utf8'), 'two');
+    await assert.rejects(writeBinaryFile(p, Buffer.from('three'), { exclusive: true }), { code: 'EEXIST' });
+    assert.equal(await fs.readFile(p, 'utf8'), 'two');
+    await writeBinaryFile(path.join(vault, 'wb', 'new.bin'), Buffer.from('new'), { exclusive: true });
+  });
+});
 
 describe('deleteBinaryFile', () => {
   before(setup);

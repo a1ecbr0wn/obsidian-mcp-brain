@@ -272,13 +272,13 @@ except `CONFIG_PATH`, which says where to find it.
 | `listenPort`             | No       | `3002`                                                        | Local port the server listens on                                                                                                                                                      |
 | `listenHost`             | No       | `127.0.0.1`                                                   | Address the server binds to. Leave it as loopback unless the server runs in a container, where `0.0.0.0` is needed for the published port to reach it                                 |
 | `denyPaths`              | No       | `[]`                                                          | Vault-relative paths to block, applied to every vault. See below                                                                                                                      |
-| `denyBinaryPaths`        | No       | `[]`                                                          | Vault-relative files/folders, with wildcards, whose binary files `read-binary-file` refuses to return. See below                                                                      |
+| `denyBinaryPaths`        | No       | `[]`                                                          | Vault-relative files/folders, with wildcards, whose binary files `read-file` refuses to return. See below                                                                             |
 | `graphifyQueryTimeoutMs` | No       | `60000`                                                       | Timeout for a `graphify query` subprocess (milliseconds)                                                                                                                              |
-| `fetchMaxBytes`          | No       | `10485760`                                                    | Default max response size for `fetch-binary-file` (bytes); overridable per call                                                                                                       |
-| `fetchTimeoutMs`         | No       | `30000`                                                       | Default request timeout for `fetch-binary-file` (milliseconds); overridable per call                                                                                                  |
-| `readMaxBytes`           | No       | `10485760`                                                    | Largest file `read-binary-file` will return (bytes, measured on disk)                                                                                                                 |
+| `fetchMaxBytes`          | No       | `10485760`                                                    | Default max response size for `fetch-file` (bytes); overridable per call                                                                                                              |
+| `fetchTimeoutMs`         | No       | `30000`                                                       | Default request timeout for `fetch-file` (milliseconds); overridable per call                                                                                                         |
+| `readMaxBytes`           | No       | `10485760`                                                    | Largest file `read-file` will return (bytes, measured on disk)                                                                                                                        |
 | `readNoteMaxChars`       | No       | `50000`                                                       | Longest text `read-note` returns in one go (characters); longer notes are read by outline and heading                                                                                 |
-| `uploadMaxBytes`         | No       | `52428800`                                                    | Largest file `upload-binary-file` will reserve an upload for (bytes)                                                                                                                  |
+| `uploadMaxBytes`         | No       | `52428800`                                                    | Largest file `upload-file` will reserve an upload for (bytes)                                                                                                                         |
 | `uploadTtlSeconds`       | No       | `300`                                                         | How long an upload URL lasts (seconds)                                                                                                                                                |
 | `uploadStallSeconds`     | No       | `30`                                                          | How long an upload may send nothing before it is cut off (seconds)                                                                                                                    |
 | `uploadTempDir`          | No       | `obsidian-mcp-uploads-<user id>` under the system temp folder | Absolute path where uploads are held while received; must not be inside a vault and must belong to the server's user                                                                  |
@@ -320,8 +320,8 @@ requests receive a structured MCP error (`isError: true`) rather than a
 transport-level failure, so the client can report the reason clearly.
 
 Affected tools: `read-note`, `create-note`, `edit-note`, `delete-note`,
-`move-note` (source and destination), `create-binary-file`, `fetch-binary-file`,
-`read-binary-file`, `delete-binary-file`, `move-binary-file` (source and
+`move-note` (source and destination), `create-file`, `fetch-file`,
+`read-file`, `delete-file`, `move-file` (source and
 destination), `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`,
 `set-frontmatter-field`, `remove-frontmatter-field`, `create-folder`,
 `search-vault` (when a `path` scope is given).
@@ -362,13 +362,13 @@ edit-note  → { operation: "replace", content: "...", expectedMtime: "2026-09-2
 
 Applies to: `edit-note` (all operations), `delete-note`, `move-note` (checked
 against the source file), `set-frontmatter-field`, `remove-frontmatter-field`,
-`move-binary-file` and `delete-binary-file` (checked against the source file).
+`move-file` and `delete-file` (checked against the source file).
 For `add-tags`/`remove-tags`, which operate on a `files[]` array,
 `expectedMtime` is instead an object mapping each vault-relative path to its
 expected timestamp; every listed file's precondition is checked before any file
 in the batch is written, so the batch either applies wholly or not at all.
 
-Not applicable to `create-note`, `create-binary-file`, or `fetch-binary-file`,
+Not applicable to `create-note`, `create-file`, or `fetch-file`,
 which already fail if the destination exists, nor to `rename-tag`, which sweeps
 the whole vault rather than targeting one file.
 
@@ -400,13 +400,13 @@ Tools that change a note write the text they make in the note's own line ending
 (CRLF or LF, taken from its first line break) and leave the other lines as they
 were: `append`, `prepend`, `replace-section`, the tag and frontmatter tools, and
 the tag line `add-tags` puts in the body. `create-note`, `replace` and
-`create-binary-file` write what they are sent.
+`create-file` write what they are sent.
 
 #### Listing files other than notes
 
 `list-notes` lists notes by default. Give it `extension` to list any other kind
-of file, so an agent can find the PDFs and images that `read-binary-file`,
-`upload-binary-file` and the other binary-file tools work on.
+of file, so an agent can find the PDFs and images that `read-file`,
+`upload-file` and the other file tools work on.
 
 | `extension` | Lists |
 | --- | --- |
@@ -442,22 +442,22 @@ the blank lines that follow it. A heading from the outline can be passed
 straight to `edit-note`. See the [tools
 page](https://brain.a1ecbr0wn.com/tools#reading-part-of-a-note).
 
-### fetch-binary-file
+### fetch-file
 
-`create-binary-file` requires the client to send the file as base64 — expensive
+`create-file` requires the client to send the file as base64 — expensive
 through an LLM client, since base64 is read in and written out again on top of
-its already-larger-than-binary size. `fetch-binary-file` instead has the server
+its already-larger-than-binary size. `fetch-file` instead has the server
 download a URL itself and write the result, so the client only ever sends a URL
 string.
 
 ```text
-fetch-binary-file → { filename: "photo.jpg", folder: "attachments", url: "https://example.com/photo.jpg" }
+fetch-file → { filename: "photo.jpg", folder: "attachments", url: "https://example.com/photo.jpg" }
 ```
 
 Because the server performs the request itself, a caller-supplied URL is
 effectively asking this host to make an arbitrary outbound call — on any
 deployment, this host may be able to reach private network services that
-shouldn't be exposed to a remote MCP client. `fetch-binary-file` treats this as
+shouldn't be exposed to a remote MCP client. `fetch-file` treats this as
 its primary risk:
 
 - Only `http`/`https` URLs are accepted.
@@ -481,15 +481,15 @@ the config file's `fetchMaxBytes`/`fetchTimeoutMs`.
 
 ---
 
-### read-binary-file
+### read-file
 
-`read-binary-file` returns an existing binary file (a PDF, say) to the client as
+`read-file` returns an existing binary file (a PDF, say) to the client as
 two content blocks: a text line
 (`attachments/report.pdf (48213 bytes, application/pdf)`) and an MCP embedded
 `resource` carrying the base64 bytes and the file's `mimeType`.
 
 ```text
-read-binary-file → { filename: "report.pdf", folder: "attachments" }
+read-file → { filename: "report.pdf", folder: "attachments" }
 ```
 
 The server never parses a PDF, extracts text, renders pages or runs OCR, so it
@@ -499,21 +499,21 @@ images. In Claude Code the bytes are saved to a file and the agent opens that
 path with its `Read` tool (checked end to end for both kinds of PDF). Claude
 Desktop chat shows images but silently drops a PDF and rejects other types, so
 use a code mode chat there; other clients have not been checked. The
-`skills/read-binary-file` skill makes an agent check this first. A `.md`
+`skills/read-file` skill makes an agent check this first. A `.md`
 note is returned too, as its raw bytes (`text/markdown`), but `read-note` is
 better for a note. A file larger than
 `readMaxBytes` (10 MiB by default) is refused before it is read.
 
-### upload-binary-file
+### upload-file
 
-`create-binary-file` needs the model to write the whole file out as base64,
+`create-file` needs the model to write the whole file out as base64,
 which is impractical beyond a few tens of kilobytes (an 810 KB PDF is about a
 million tokens) and gives no way to check the file arrived intact.
-`upload-binary-file` reserves a one-time URL that the agent sends the file to
+`upload-file` reserves a one-time URL that the agent sends the file to
 directly, so its bytes never pass through the model:
 
 ```text
-upload-binary-file → { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hex characters>" }
+upload-file → { filename: "report.pdf", folder: "attachments", size: 810490, sha256: "<64 hex characters>" }
 curl --fail-with-body -sS -T report.pdf "https://server:4001/up/<random token>"
 ```
 
@@ -558,16 +558,16 @@ failure: `403` an `Origin` header (or a wrong address, when
 destination appeared meanwhile, `411` no `Content-Length`, `413` or `400` size
 mismatch, `422` hash mismatch, `503` too many uploads at once.
 
-### replace-binary-file
+### replace-file
 
-`upload-binary-file` never overwrites. `replace-binary-file` replaces a file that
+`upload-file` never overwrites. `replace-file` replaces a file that
 is already in the vault, with the same one-time URL and `curl` upload, but only
 if the file is still the version the caller read. Both `expectedSha256` and
 `expectedMtime` are required, and they come from the `sha256:` and
-`Last-Modified:` lines of `read-binary-file`:
+`Last-Modified:` lines of `read-file`:
 
 ```text
-replace-binary-file → { filename: "report.pdf", folder: "attachments", size: 912340, sha256: "<new file>", expectedSha256: "<file in the vault>", expectedMtime: "2026-05-01T09:30:00.123Z" }
+replace-file → { filename: "report.pdf", folder: "attachments", size: 912340, sha256: "<new file>", expectedSha256: "<file in the vault>", expectedMtime: "2026-05-01T09:30:00.123Z" }
 ```
 
 - The two values are checked when the URL is reserved and again when the file
@@ -578,13 +578,13 @@ replace-binary-file → { filename: "report.pdf", folder: "attachments", size: 9
 - The file must exist, a new file identical to it is refused, and a file under
   `denyBinaryPaths` cannot be replaced.
 - Everything else, including the limits and the address rules, is as for
-  `upload-binary-file`. The `replace-binary-file` skill does the hashing and the
+  `upload-file`. The `replace-file` skill does the hashing and the
   `curl` call.
 
 ### Binary read protection (`denyBinaryPaths`)
 
 `denyPaths` removes a path from every tool; `denyBinaryPaths` only stops the
-agent reading a binary file's *contents* with `read-binary-file`. The files stay
+agent reading a binary file's *contents* with `read-file`. The files stay
 visible: the agent can still create, move and delete them, and `find-backlinks`
 still sees them. Each entry is a vault-relative path with optional wildcards:
 
@@ -599,7 +599,7 @@ still sees them. Each entry is a vault-relative path with optional wildcards:
 
 As with `denyPaths`, the top-level list applies to every vault and a vault's own
 list is added on top. A refused read returns
-`Reading is restricted for '<path>'`. `move-binary-file` (and `move-note`, for a
+`Reading is restricted for '<path>'`. `move-file` (and `move-note`, for a
 non-`.md` file) refuses to move a protected file to a path that is not protected
 (judged by the destination's final path, so renaming `scan.pdf` to `scan.txt`
 under `**/*.pdf` is refused too); moving within the protected area, or moving an
@@ -608,7 +608,7 @@ unprotected file in, is allowed.
 To keep the protection from being sidestepped, `.trash` is protected
 automatically whenever any `denyBinaryPaths` are set (a non-permanent delete
 moves a file there), `read-note` refuses a protected non-`.md` file, and
-`read-binary-file` resolves symbolic links and checks the real location,
+`read-file` resolves symbolic links and checks the real location,
 refusing a link that points outside the vault. The other tools judge a path as
 given and don't resolve symlinks, so don't put symlinks to sensitive files in a
 served vault.
@@ -677,13 +677,16 @@ Restart Claude Desktop after saving.
 
 ## Agent skills and agents
 
-The repository includes three agent skills, `read-binary-file`,
-`upload-binary-file` and `replace-binary-file`, in
+The repository includes three agent skills, `read-file`,
+`upload-file` and `replace-file`, in
 [`skills/`](https://github.com/a1ecbr0wn/obsidian-mcp-brain/tree/main/skills).
 The tools work without them; the skills tell an agent how to use the tools well
 and what to say when a client can't show a file. The server tells a connected
 agent about them: the `get-setup-status` tool lists the skills and agents and
 how to install them, and a plugin can carry agents as well as skills.
+The tools used to be called `*-binary-file`; the old names no longer exist, so
+reinstall the plugin and rewrite any permission rule for `upload-binary-file.sh`
+as one for `upload-file.sh`.
 
 | Where you run Claude | How to get the skills |
 | --- | --- |
@@ -709,13 +712,13 @@ how to install them, and a plugin can carry agents as well as skills.
 | `edit-note` | Edit a note: append, prepend, replace, replace/delete the content under a heading, or toggle a checkbox |
 | `delete-note` | Delete a note, moving it to `.trash` by default |
 | `move-note` | Move or rename a note, rewriting all vault-wide wikilinks to the old path |
-| `create-binary-file` | Create a new binary file (e.g. an image) from base64-encoded content. Fails if it already exists |
-| `fetch-binary-file` | Create a new binary file by downloading a URL server-side, so the client only sends a URL, not the file content |
-| `upload-binary-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
-| `replace-binary-file` | Reserve a one-time upload URL that replaces a file already in the vault, only if it is still the version named by its SHA-256 and mtime; the old version moves to `.trash` |
-| `read-binary-file` | Return an existing binary file (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
-| `move-binary-file` | Move or rename a binary file, rewriting all vault-wide wikilink embeds pointing at the old path |
-| `delete-binary-file` | Delete a binary file, moving it to `.trash` by default |
+| `create-file` | Create a new file of any type (an image, a PDF, a `.md` note) from base64-encoded content. Fails if it already exists |
+| `fetch-file` | Create a new file of any type by downloading a URL server-side, so the client only sends a URL, not the file content |
+| `upload-file` | Reserve a one-time upload URL for a file of a declared size and SHA-256; the agent sends the file to it with `curl`, so its bytes never pass through the model |
+| `replace-file` | Reserve a one-time upload URL that replaces a file already in the vault, only if it is still the version named by its SHA-256 and mtime; the old version moves to `.trash` |
+| `read-file` | Return an existing file of any type (e.g. a PDF) to the client as an embedded base64 resource, so the agent can read it |
+| `move-file` | Move or rename a file of any type, rewriting the wikilinks (for a note) or embeds (for any other file) that point at the old path |
+| `delete-file` | Delete a file of any type, a `.md` note included, moving it to `.trash` by default |
 | `find-backlinks` | Find all notes that link to or embed a given note or binary file |
 | `resolve-wikilink` | Resolve a wikilink target string to the vault-relative file(s) it points to |
 | `create-folder` | Create a new folder (and any missing parents) in the vault |
@@ -731,8 +734,12 @@ how to install them, and a plugin can carry agents as well as skills.
 
 ## How obsidian-mcp-brain works
 
-The server implements the [MCP Streamable HTTP transport
-(2024-11-05)](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http):
+The server implements the [MCP Streamable HTTP transport](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http)
+and answers protocol versions 2025-06-18, 2025-03-26 and 2024-11-05: `initialize`
+returns the version the client asks for if the server speaks it, and the newest
+otherwise, and a request whose `MCP-Protocol-Version` header names another
+version is refused with `400`. A request carries one JSON-RPC message; a batch
+(an array) is refused with `400`.
 
 - **`POST /mcp`** — receives JSON-RPC requests from the client. `initialize`
   creates a session and returns server capabilities. Notifications return 202
@@ -740,7 +747,9 @@ The server implements the [MCP Streamable HTTP transport
   the response is returned as an inline SSE event.
 
 - **`GET /mcp`** — keeps a long-lived SSE stream open per session for
-  server-to-client notifications (e.g. `tools/list_changed`).
+  server-to-client notifications. The server declares no `listChanged`
+  capability and sends none today; the stream is kept so that clients which
+  open it (and shims that reconnect it) work.
 
 - **`DELETE /mcp`** — ends the session named by `Mcp-Session-Id` and its
   stream, and answers `204`. An unknown or missing session answers `404`. A
