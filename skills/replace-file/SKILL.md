@@ -2,7 +2,7 @@
 name: replace-file
 description: Replace a file that is already in an Obsidian vault (a PDF, image or other binary) with a new version from the local disk, through the obsidian-mcp-brain server's replace-file tool, without base64-encoding it. Use whenever the user asks to update, overwrite or replace a vault file with a local one, and the server offers replace-file.
 metadata:
-  version: "1.5.1"
+  version: "1.5.2"
 ---
 
 # Replace a vault file with a local one
