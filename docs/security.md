@@ -84,8 +84,11 @@ returning a protected file's bytes, and stops `move-file` (and
 `move-note`, for a non-markdown file) moving a protected file out of protection,
 so the agent can't relocate a file to read it. `.trash` is protected along with
 it, and `read-note` refuses a protected non-markdown file. It doesn't affect
-markdown notes, and it doesn't hide names: `list-notes` with `extension` still
-lists a protected file, and its modification time.
+markdown notes, and it doesn't hide names: `list-files` still lists a protected
+file, with its modification time and size. To find protected files, start with
+`list-files`.
+A `path` scope that is a symbolic link, or passes through one, is not followed:
+those tools list nothing for it.
 
 Symbolic links are handled differently by different tools. `read-file`
 resolves a link and checks the real location: it refuses a link that points
@@ -241,7 +244,7 @@ it overwrites, so it has to be hard to use on the wrong file:
   setuid, setgid or sticky bits.
 - A refusal at the reservation does not give the file's current hash, so the
   check can't be used to find it out. (It does name the current mtime, which
-  `list-notes` shows anyway.)
+  `list-notes` and `list-files` show anyway.)
 - A file under `denyBinaryPaths` cannot be replaced, because the hash check would
   be a way to test guesses at the content of a file that `read-file`
   refuses to show.

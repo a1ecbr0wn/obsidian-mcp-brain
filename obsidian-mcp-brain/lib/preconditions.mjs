@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 const ISO_MTIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /**
- * Formats a fs.Stats mtime the same way read-note and list-notes already do,
+ * Formats a fs.Stats mtime the same way read-note, list-notes and list-files already do,
  * so there is exactly one implementation a client's expectedMtime is compared against.
  */
 export function formatMtime(stat) {
@@ -14,14 +14,14 @@ export function formatMtime(stat) {
 }
 
 /**
- * Throws if expectedMtime isn't the exact ISO 8601 string read-note/list-notes emit
+ * Throws if expectedMtime isn't the exact ISO 8601 string read-note, list-notes and list-files emit
  * (a malformed value is rejected up front, before it's ever compared against a real
  * file, so the failure clearly names the bad input rather than surfacing as a
  * confusing mtime mismatch).
  */
 export function validateExpectedMtime(expectedMtime) {
   if (typeof expectedMtime !== 'string' || !ISO_MTIME_RE.test(expectedMtime)) {
-    throw new Error(`Invalid expectedMtime "${expectedMtime}": must be an ISO 8601 timestamp as returned by read-note/list-notes`);
+    throw new Error(`Invalid expectedMtime "${expectedMtime}": must be an ISO 8601 timestamp as returned by read-note, list-notes or list-files`);
   }
 }
 

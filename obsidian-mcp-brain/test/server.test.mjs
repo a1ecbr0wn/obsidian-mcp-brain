@@ -344,7 +344,7 @@ describe('list-notes', () => {
     assert.ok(r.msgs[0].result.isError);
   });
 
-  describe('extension filter', () => {
+  describe('notes only', () => {
     const DIR = 'ext-list';
     const paths = (result) => result.content[0].text.split('\n').filter(Boolean).map(l => l.split('\t')[0]).sort();
 
@@ -352,116 +352,269 @@ describe('list-notes', () => {
       await writeVaultNote(`${DIR}/note.md`, '# Note');
       await writeVaultNote(`${DIR}/UPPER.MD`, '# Upper');
       await writeVaultNote(`${DIR}/scan.pdf`, '%PDF-1.4');
-      await writeVaultNote(`${DIR}/SCAN2.PDF`, '%PDF-1.4');
-      await writeVaultNote(`${DIR}/photo.png`, 'png');
-      await writeVaultNote(`${DIR}/photo.jpg`, 'jpg');
       await writeVaultNote(`${DIR}/README`, 'no extension');
       await writeVaultNote(`${DIR}/sub/deep.pdf`, '%PDF-1.4');
-      await writeVaultNote(`${DIR}/.obsidian/workspace.json`, '{}');
-      await writeVaultNote(`${DIR}/.hidden.pdf`, '%PDF-1.4');
-      await writeVaultNote(`${DENY_DIR}/secret.pdf`, '%PDF-1.4');
-      await writeVaultNote('protected-bin/locked.pdf', '%PDF-1.4');
-      await fs.symlink(path.join(vaultDir, DIR, 'scan.pdf'), path.join(vaultDir, DIR, 'link.pdf'));
     });
 
-    it('defaults to md, so a call without extension is unchanged', async () => {
-      const without = await callTool('list-notes', { path: DIR });
-      const withMd = await callTool('list-notes', { path: DIR, extension: 'md' });
-      assert.deepEqual(paths(without), [`${DIR}/UPPER.MD`, `${DIR}/note.md`].sort());
-      assert.deepEqual(paths(withMd), paths(without));
+    it('lists the .md notes only, each with path and mtime', async () => {
+      const r = await callTool('list-notes', { path: DIR });
+      assert.deepEqual(paths(r), [`${DIR}/UPPER.MD`, `${DIR}/note.md`].sort());
+      for (const line of r.content[0].text.split('\n')) assert.equal(line.split('\t').length, 2);
     });
 
-    it('lists files of one extension, case-insensitively, with their mtime and full name', async () => {
-      const r = await callTool('list-notes', { path: DIR, extension: 'pdf' });
-      assert.ok(!r.isError);
-      assert.deepEqual(paths(r), [`${DIR}/SCAN2.PDF`, `${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`].sort());
-      for (const line of r.content[0].text.split('\n')) {
-        const [name, iso] = line.split('\t');
-        assert.ok(/\.pdf$/i.test(name));
-        assert.ok(!Number.isNaN(Date.parse(iso)), iso);
+    it('refuses an extension argument of any value, naming list-files', async () => {
+      for (const extension of ['md', 'pdf', '*', '', '.pdf', 'p*', 5, null, ['pdf']]) {
+        const r = await callTool('list-notes', { path: DIR, extension });
+        assert.ok(r.isError, JSON.stringify(extension));
+        assert.ok(r.content[0].text.includes('list-files'), r.content[0].text);
+        assert.ok(!/scan\.pdf|note\.md/.test(r.content[0].text), 'nothing is listed');
       }
     });
 
-    it('supports wildcards', async () => {
-      const r = await callTool('list-notes', { path: DIR, extension: 'p*' });
-      assert.deepEqual(paths(r), [
-        `${DIR}/SCAN2.PDF`, `${DIR}/photo.png`, `${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`,
-      ].sort());
-    });
-
-    it('lists every file with *, including one with no extension, but not hidden or linked files', async () => {
-      const r = await callTool('list-notes', { path: DIR, extension: '*' });
-      const got = paths(r);
-      assert.ok(got.includes(`${DIR}/README`));
-      assert.ok(got.includes(`${DIR}/photo.jpg`));
-      assert.ok(got.includes(`${DIR}/note.md`));
-      assert.ok(!got.some(p => p.includes('.obsidian')), 'hidden folder skipped');
-      assert.ok(!got.includes(`${DIR}/.hidden.pdf`), 'hidden file skipped');
-      assert.ok(!got.includes(`${DIR}/link.pdf`), 'symbolic link not listed');
-    });
-
-    it('scopes with path', async () => {
-      const r = await callTool('list-notes', { path: `${DIR}/sub`, extension: '*' });
-      assert.deepEqual(paths(r), [`${DIR}/sub/deep.pdf`]);
-    });
-
-    it('applies denyPaths to the scope and to each file', async () => {
-      const scoped = await callTool('list-notes', { path: DENY_DIR, extension: 'pdf' });
-      assert.ok(scoped.isError, 'denied scope refused');
-      const whole = await callTool('list-notes', { extension: 'pdf' });
-      assert.ok(!paths(whole).includes(`${DENY_DIR}/secret.pdf`), 'denied file left out');
-    });
-
-    it('does not hide a name that denyBinaryPaths protects', async () => {
+    it('refuses extension even when no path is given', async () => {
       const r = await callTool('list-notes', { extension: 'pdf' });
-      assert.ok(paths(r).includes('protected-bin/locked.pdf'));
+      assert.ok(r.isError);
+      assert.ok(r.content[0].text.includes('list-files'));
     });
 
-    it('says which extension matched nothing', async () => {
-      const r = await callTool('list-notes', { path: DIR, extension: 'zip' });
-      assert.ok(!r.isError);
-      assert.ok(r.content[0].text.includes('zip'), r.content[0].text);
+    it('judges the denied scope before the extension, so the refusal says nothing about either', async () => {
+      const r = await callTool('list-notes', { path: DENY_DIR, extension: 'pdf' });
+      assert.ok(r.isError);
+      assert.equal(r.content[0].text, 'Access denied');
     });
+
+    symlinkedScopeTests('list-notes');
 
     it('lists only notes when the scope is itself a hidden folder', async () => {
       await writeVaultNote('.hidden-scope/secret.pdf', '%PDF-1.4');
       await writeVaultNote('.hidden-scope/inside.md', '# Inside');
-      const r = await callTool('list-notes', { path: '.hidden-scope', extension: '*' });
+      const r = await callTool('list-notes', { path: '.hidden-scope' });
       assert.deepEqual(paths(r), ['.hidden-scope/inside.md']);
-      const pdf = await callTool('list-notes', { path: '.hidden-scope', extension: 'pdf' });
-      assert.ok(!paths(pdf).includes('.hidden-scope/secret.pdf'));
+    });
+
+    it('applies denyPaths to the scope and to each note', async () => {
+      await writeVaultNote(`${DENY_DIR}/secret-note.md`, '# Secret');
+      const scoped = await callTool('list-notes', { path: DENY_DIR });
+      assert.ok(scoped.isError, 'denied scope refused');
+      const whole = await callTool('list-notes', {});
+      assert.ok(!paths(whole).includes(`${DENY_DIR}/secret-note.md`), 'denied note left out');
     });
 
     it('refuses a denied scope however it is written', async () => {
       for (const p of [`../${DENY_DIR}`, `/${DENY_DIR}`, `ext-list/../${DENY_DIR}`, `${DENY_DIR}/`]) {
-        const r = await callTool('list-notes', { path: p, extension: '*' });
+        const r = await callTool('list-notes', { path: p });
         assert.ok(r.isError, p);
       }
     });
 
-    it('refuses an over-long pattern, surrounding spaces and a non-string', async () => {
-      for (const extension of ['a'.repeat(65), 'pdf ', 5, null, ['pdf']]) {
-        const r = await callTool('list-notes', { path: DIR, extension });
-        assert.ok(r.isError, JSON.stringify(extension));
-      }
-    });
-
-    it('refuses a pattern with a dot or a slash, and an empty one', async () => {
-      for (const extension of ['.pdf', '*.pdf', 'a/b', '']) {
-        const r = await callTool('list-notes', { path: DIR, extension });
-        assert.ok(r.isError, JSON.stringify(extension));
-        assert.ok(/extension/i.test(r.content[0].text));
-      }
-    });
-
-    it('states in the tool schema that it lists files and what extension does', async () => {
+    it('declares no extension parameter and does not offer other file types', async () => {
       const sid = await initSession();
       const r = await post({ jsonrpc: '2.0', id: '9', method: 'tools/list' }, sid);
       const tool = r.msgs[0].result.tools.find(t => t.name === 'list-notes');
-      assert.ok(tool.inputSchema.properties.extension, 'extension parameter declared');
-      assert.ok(/default/i.test(tool.inputSchema.properties.extension.description));
-      assert.ok(/\*/.test(tool.inputSchema.properties.extension.description));
+      assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ['path', 'vault']);
+      assert.ok(!/extension/i.test(tool.description), tool.description);
+      assert.ok(tool.description.includes('list-files'), 'points to list-files for other files');
     });
+  });
+});
+
+
+
+// A scope that is, or passes through, a symlink is not followed: not out of the vault, not into a
+// denied folder, and not through a link in the middle of the path.
+function symlinkedScopeTests(tool, args = {}) {
+  describe('symlinked scope', () => {
+    let outside;
+    before(async () => {
+      outside = await fs.mkdtemp(path.join(os.tmpdir(), 'lscope-outside-'));
+      await fs.writeFile(path.join(outside, 'leak.md'), '# leak');
+      await writeVaultNote(`${DENY_DIR}/inner.md`, '# denied');
+      await writeVaultNote('lscope-real/ok.md', '# ok');
+      await fs.symlink(outside, path.join(vaultDir, `${tool}-lnk-out`));
+      await fs.symlink(path.join(vaultDir, DENY_DIR), path.join(vaultDir, `${tool}-lnk-deny`));
+      await fs.symlink(outside, path.join(vaultDir, 'lscope-real', `${tool}-lnk-mid`));
+    });
+    after(() => fs.rm(outside, { recursive: true, force: true }));
+
+    for (const [label, scope] of [
+      ['a link to a folder outside the vault', `${tool}-lnk-out`],
+      ['a link to a denied folder inside the vault', `${tool}-lnk-deny`],
+      ['a path through a link', `lscope-real/${tool}-lnk-mid`],
+    ]) {
+      it(`lists nothing for ${label}`, async () => {
+        const r = await callTool(tool, { path: scope, ...args });
+        assert.ok(!/leak\.md|inner\.md/.test(r.content[0].text), r.content[0].text);
+        assert.ok(r.isError || /^No /.test(r.content[0].text), r.content[0].text);
+      });
+    }
+  });
+}
+
+// ── list-files ────────────────────────────────────────────────────────────
+
+describe('list-files', () => {
+  const DIR = 'lf-list';
+  const lines = (result) => result.content[0].text.split('\n').filter(Boolean).map(l => l.split('\t'));
+  const paths = (result) => lines(result).map(f => f[0]).sort();
+
+  before(async () => {
+    await writeVaultNote(`${DIR}/note.md`, '# Note');
+    await writeVaultNote(`${DIR}/UPPER.MD`, '# Upper');
+    await writeVaultNote(`${DIR}/scan.pdf`, '%PDF-1.4 scan');
+    await writeVaultNote(`${DIR}/photo.PNG`, 'png');
+    await writeVaultNote(`${DIR}/tool.sh`, '#!/bin/sh\necho hi\n');
+    await writeVaultNote(`${DIR}/README`, 'no extension');
+    await writeVaultNote(`${DIR}/sub/deep.pdf`, '%PDF-1.4 deep');
+    await writeVaultNote(`${DIR}/.obsidian/workspace.json`, '{}');
+    await writeVaultNote(`${DIR}/.hidden.pdf`, '%PDF-1.4');
+    await writeVaultNote(`${DENY_DIR}/secret.pdf`, '%PDF-1.4');
+    await writeVaultNote(`${DENY_DIR}/secret.md`, '# Secret');
+    await writeVaultNote('protected-bin/locked.pdf', '%PDF-1.4 locked');
+    await fs.symlink(path.join(vaultDir, DIR, 'scan.pdf'), path.join(vaultDir, DIR, 'link.pdf'));
+  });
+
+  symlinkedScopeTests('list-files');
+
+  it('lists every file type by default, not only notes', async () => {
+    const r = await callTool('list-files', { path: DIR });
+    assert.ok(!r.isError, JSON.stringify(r));
+    assert.deepEqual(paths(r), [
+      `${DIR}/README`, `${DIR}/UPPER.MD`, `${DIR}/note.md`, `${DIR}/photo.PNG`,
+      `${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`, `${DIR}/tool.sh`,
+    ].sort());
+  });
+
+  it('returns sorted lines of path, ISO 8601 mtime and size in bytes, and nothing else', async () => {
+    const r = await callTool('list-files', { path: DIR });
+    const rows = lines(r);
+    assert.deepEqual(rows.map(f => f[0]), [...rows.map(f => f[0])].sort());
+    for (const fields of rows) {
+      assert.equal(fields.length, 3, fields.join('|'));
+      const [name, iso, size] = fields;
+      const stat = await fs.stat(path.join(vaultDir, name));
+      assert.equal(iso, stat.mtime.toISOString());
+      assert.equal(size, String(stat.size));
+    }
+    const pdf = rows.find(f => f[0] === `${DIR}/scan.pdf`);
+    assert.equal(pdf[2], String(Buffer.byteLength('%PDF-1.4 scan')));
+  });
+
+  it('gives the same mtime for a file as list-notes does', async () => {
+    const files = lines(await callTool('list-files', { path: DIR })).find(f => f[0] === `${DIR}/note.md`);
+    const notes = lines(await callTool('list-notes', { path: DIR })).find(f => f[0] === `${DIR}/note.md`);
+    assert.equal(files[1], notes[1]);
+  });
+
+  it('filters by extension, case-insensitively, with wildcards', async () => {
+    assert.deepEqual(paths(await callTool('list-files', { path: DIR, extension: 'pdf' })),
+      [`${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`].sort());
+    assert.deepEqual(paths(await callTool('list-files', { path: DIR, extension: 'png' })), [`${DIR}/photo.PNG`]);
+    assert.deepEqual(paths(await callTool('list-files', { path: DIR, extension: 'p*' })),
+      [`${DIR}/photo.PNG`, `${DIR}/scan.pdf`, `${DIR}/sub/deep.pdf`].sort());
+    assert.deepEqual(paths(await callTool('list-files', { path: DIR, extension: 'sh' })), [`${DIR}/tool.sh`]);
+  });
+
+  it('lists every file for the explicit extension *, including one with no extension', async () => {
+    const got = paths(await callTool('list-files', { path: DIR, extension: '*' }));
+    assert.deepEqual(got, paths(await callTool('list-files', { path: DIR })));
+    assert.ok(got.includes(`${DIR}/README`));
+  });
+
+  it('scopes with path', async () => {
+    assert.deepEqual(paths(await callTool('list-files', { path: `${DIR}/sub` })), [`${DIR}/sub/deep.pdf`]);
+  });
+
+  it('does not list hidden names or symbolic links', async () => {
+    const got = paths(await callTool('list-files', { path: DIR }));
+    assert.ok(!got.some(p => p.includes('.obsidian')), 'hidden folder skipped');
+    assert.ok(!got.includes(`${DIR}/.hidden.pdf`), 'hidden file skipped');
+    assert.ok(!got.includes(`${DIR}/link.pdf`), 'symbolic link not listed');
+  });
+
+  it('applies denyPaths to the scope and to each file', async () => {
+    const scoped = await callTool('list-files', { path: DENY_DIR });
+    assert.ok(scoped.isError, 'denied scope refused');
+    const whole = paths(await callTool('list-files', {}));
+    assert.ok(!whole.some(p => p.startsWith(`${DENY_DIR}/`)), 'denied files left out');
+    assert.ok(whole.includes(`${DIR}/scan.pdf`));
+  });
+
+  it('refuses a denied scope however it is written', async () => {
+    for (const p of [`../${DENY_DIR}`, `/${DENY_DIR}`, `${DIR}/../${DENY_DIR}`, `${DENY_DIR}/`]) {
+      const r = await callTool('list-files', { path: p });
+      assert.ok(r.isError, p);
+    }
+  });
+
+  it('lists a file that denyBinaryPaths protects, with its size and mtime but nothing from inside it', async () => {
+    const r = await callTool('list-files', { extension: 'pdf' });
+    const row = lines(r).find(f => f[0] === 'protected-bin/locked.pdf');
+    assert.ok(row, 'protected name is listed, as list-notes lists it');
+    const stat = await fs.stat(path.join(vaultDir, 'protected-bin/locked.pdf'));
+    assert.equal(row.join('\t'),
+      `protected-bin/locked.pdf\t${stat.mtime.toISOString()}\t${Buffer.byteLength('%PDF-1.4 locked')}`);
+  });
+
+  it('lists only notes when the scope is itself a hidden folder', async () => {
+    await writeVaultNote('.lf-hidden-scope/secret.pdf', '%PDF-1.4');
+    await writeVaultNote('.lf-hidden-scope/inside.md', '# Inside');
+    const r = await callTool('list-files', { path: '.lf-hidden-scope' });
+    assert.deepEqual(paths(r), ['.lf-hidden-scope/inside.md']);
+  });
+
+  it('says which extension matched nothing, and that a folder holds no files', async () => {
+    const none = await callTool('list-files', { path: DIR, extension: 'zip' });
+    assert.ok(!none.isError);
+    assert.ok(none.content[0].text.includes('zip'), none.content[0].text);
+    await fs.mkdir(path.join(vaultDir, 'lf-empty'), { recursive: true });
+    const empty = await callTool('list-files', { path: 'lf-empty' });
+    assert.ok(!empty.isError);
+    assert.ok(/no files/i.test(empty.content[0].text), empty.content[0].text);
+  });
+
+  it('refuses a bad extension pattern', async () => {
+    for (const extension of ['a'.repeat(65), 'pdf ', 5, null, ['pdf'], '.pdf', '*.pdf', 'a/b', '']) {
+      const r = await callTool('list-files', { path: DIR, extension });
+      assert.ok(r.isError, JSON.stringify(extension));
+      assert.ok(/extension/i.test(r.content[0].text));
+    }
+  });
+
+  it('answers an unknown vault with an error', async () => {
+    const sid = await initSession();
+    const r = await post({
+      jsonrpc: '2.0', id: '2', method: 'tools/call',
+      params: { name: 'list-files', arguments: { vault: 'no-such-vault' } },
+    }, sid);
+    assert.ok(r.msgs[0].result.isError);
+  });
+
+  it('takes no way to ask for a hash, and says every file type is listed', async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '9', method: 'tools/list' }, sid);
+    const tool = r.msgs[0].result.tools.find(t => t.name === 'list-files');
+    assert.ok(tool, 'list-files is advertised');
+    assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ['extension', 'path', 'vault']);
+    assert.deepEqual(tool.inputSchema.required, ['vault']);
+    assert.ok(/every|any/i.test(tool.description));
+    assert.ok(!/sha-?256|hash|digest/i.test(tool.description + JSON.stringify(tool.inputSchema)));
+    assert.equal(tool.title, 'List files');
+  });
+
+  it('list-notes lists notes only, as path and mtime', async () => {
+    const r = await callTool('list-notes', { path: DIR });
+    assert.deepEqual(paths(r), [`${DIR}/UPPER.MD`, `${DIR}/note.md`].sort());
+    for (const fields of lines(r)) assert.equal(fields.length, 2, 'list-notes still has path and mtime only');
+  });
+
+  it('is what the other file tools point to for finding a file', async () => {
+    const sid = await initSession();
+    const r = await post({ jsonrpc: '2.0', id: '10', method: 'tools/list' }, sid);
+    for (const name of ['create-file', 'fetch-file', 'replace-file', 'read-file', 'move-file']) {
+      const tool = r.msgs[0].result.tools.find(t => t.name === name);
+      assert.ok(tool.description.includes('list-files'), `${name} should point to list-files`);
+      assert.ok(!/list-notes with extension/i.test(tool.description), `${name} still sends the agent to list-notes`);
+    }
   });
 });
 

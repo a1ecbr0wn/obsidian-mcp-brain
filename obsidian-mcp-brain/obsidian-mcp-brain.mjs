@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import util from 'node:util';
-import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError, matchesExtension } from './lib/access.mjs';
+import { normPath, isDenied as _isDenied, checkAccess as _checkAccess, compileBinaryPatterns, isBinaryReadDenied, checkBinaryMove, extensionPatternError } from './lib/access.mjs';
 import { mimeTypeFor } from './lib/mime.mjs';
 import { SETUP_INSTRUCTIONS, setupStatusText } from './lib/companions.mjs';
 import { parseAuthConfig, KeyStore, verifyAccessToken, extractToken, toolAllowed, AuthError } from './lib/auth.mjs';
@@ -53,7 +53,7 @@ import { withTitles } from './lib/tool-titles.mjs';
 import { negotiateProtocolVersion, protocolHeaderAcceptable } from './lib/protocol.mjs';
 import {
   isNoteFile,
-  walkAllFiles as libWalkAllFiles,
+  listVaultFiles as libListVaultFiles,
   walkVault as libWalkVault,
   readNote as libReadNote,
   writeNote as libWriteNote,
@@ -507,13 +507,25 @@ const SERVER_CAPS = {
 const TOOL_DEFINITIONS = [
   {
     name: 'list-notes',
-    description: 'List the files in the vault, or scoped to a folder. By default it lists the notes (.md files); give extension to list other files, such as the PDFs or images that read-file and the other file tools work on. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
+    description: 'List the notes (.md files) in the vault, or scoped to a folder. To list other files, such as scripts, PDFs or images, use list-files. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp.',
     inputSchema: {
       type: 'object',
       properties: {
         vault: { type: 'string', description: 'Vault name' },
         path:  { type: 'string', description: 'Optional vault-relative folder to scope the listing' },
-        extension: { type: 'string', description: 'Optional file extension to list, without a dot, ignoring case. Default: md (the notes). Wildcards: * matches any run of characters and ? one character, so pdf lists PDFs, p* lists pdf and png, and * lists every file whatever its extension.' },
+      },
+      required: ['vault'],
+    },
+  },
+  {
+    name: 'list-files',
+    description: 'List every file in the vault, or scoped to a folder, whatever its type: scripts, PDFs, images and other attachments as well as notes. This is the tool to find a file for read-file, replace-file, move-file or delete-file, or to check what is there before create-file, fetch-file or upload-file. Returns sorted vault-relative paths, each with a tab-separated ISO 8601 last-modified timestamp and the size in bytes. list-notes lists the notes only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string', description: 'Vault name' },
+        path:  { type: 'string', description: 'Optional vault-relative folder to scope the listing' },
+        extension: { type: 'string', description: 'Optional file extension to list, without a dot, ignoring case. Default: * (every file). Wildcards: * matches any run of characters and ? one character, so pdf lists PDFs, p* lists pdf and png, and sh lists shell scripts.' },
       },
       required: ['vault'],
     },
@@ -624,7 +636,7 @@ const TOOL_DEFINITIONS = [
         taskText:      { type: 'string', description: 'Exact checkbox text after the [ ]/[x] marker (toggle-checkbox only)' },
         checked:       { type: 'boolean', description: 'Explicit checkbox state (toggle-checkbox only); omit to flip the current state' },
         occurrence:    { type: 'integer', description: 'Disambiguates when heading/taskText matches more than once (1-based)' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the edit is refused if the note has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the edit is refused if the note has changed since' },
       },
       required: ['vault', 'filename', 'operation'],
     },
@@ -639,7 +651,7 @@ const TOOL_DEFINITIONS = [
         filename:      { type: 'string', description: 'Filename including .md extension' },
         folder:        { type: 'string', description: 'Optional vault-relative folder' },
         permanent:     { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the delete is refused if the note has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the delete is refused if the note has changed since' },
       },
       required: ['vault', 'filename'],
     },
@@ -655,14 +667,14 @@ const TOOL_DEFINITIONS = [
         folder:        { type: 'string', description: 'Optional source vault-relative folder' },
         newFilename:   { type: 'string', description: 'Destination filename including .md extension' },
         newFolder:     { type: 'string', description: 'Optional destination vault-relative folder' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the move is refused if the source note has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the move is refused if the source note has changed since' },
       },
       required: ['vault', 'filename', 'newFilename'],
     },
   },
   {
     name: 'create-file',
-    description: 'Create a new file of any type (an image, a PDF, a .md note) from base64-encoded content. A .md note must be valid UTF-8; to write text you have composed, create-note is simpler. Fails if the file already exists; list-notes with extension shows what is there. The whole file travels as base64 text in the call, so use it for small files only: for a large file use upload-file (get-setup-status says how to set it up).',
+    description: 'Create a new file of any type (an image, a PDF, a .md note) from base64-encoded content. A .md note must be valid UTF-8; to write text you have composed, create-note is simpler. Fails if the file already exists; list-files shows what is there. The whole file travels as base64 text in the call, so use it for small files only: for a large file use upload-file (get-setup-status says how to set it up).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -676,7 +688,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'fetch-file',
-    description: 'Create a new file of any type by downloading a URL server-side, so the client only needs to send a URL rather than the full file content. A .md note must be valid UTF-8. Fails if the file already exists. The URL must be http(s) and resolve to a public address.',
+    description: 'Create a new file of any type by downloading a URL server-side, so the client only needs to send a URL rather than the full file content. A .md note must be valid UTF-8. Fails if the file already exists; list-files shows what is there. The URL must be http(s) and resolve to a public address.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -698,7 +710,7 @@ const TOOL_DEFINITIONS = [
       + 'The URL works for ONE request only, for a few minutes, and only from the machine that called this tool; if the upload fails for any reason, call this tool again for a new URL. '
       + 'The server checks the received file against the declared size and hash and puts it in the vault only if both match, otherwise it discards it. '
       + 'A note (.md) can be uploaded too, if it is valid UTF-8: use this for a large or generated note that is already on disk, and create-note for text you have written yourself. '
-      + 'Fails if the destination already exists; list-notes with extension shows what is there. '
+      + 'Fails if the destination already exists; list-files shows what is there. '
       + 'If the upload-file skill is installed, use its upload-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
       + 'This needs a shell and curl. If the client refuses to run the command, the user can allow it for Claude Code with a permission rule, Bash(sh <path of the skill\'s upload-file.sh> *), in permissions.allow of ~/.claude/settings.json, written the way the command appears when it is refused. For a small file, create-file needs no curl.',
     inputSchema: {
@@ -720,7 +732,7 @@ const TOOL_DEFINITIONS = [
       + 'It also needs to know which version is being replaced: expectedSha256 and expectedMtime of the file in the vault, both from a prior read-file call (its sha256 and Last-Modified lines). '
       + 'The reservation is refused if the vault file does not match them, and the check is made again when the file arrives, so a file that someone changed in between is never overwritten; read it again and retry. '
       + 'The server checks the received file against the declared size and hash and, only if all of that matches, puts it in place and moves the old version to .trash, from where it can be restored. '
-      + 'The file must already exist (to add a new one use upload-file); a file under denyBinaryPaths cannot be replaced; a new file identical to the current one is refused. '
+      + 'The file must already exist (list-files finds it; to add a new one use upload-file); a file under denyBinaryPaths cannot be replaced; a new file identical to the current one is refused. '
       + 'The URL works for ONE request only, for a few minutes; if the upload fails for any reason, call this tool again for a new URL. '
       + 'If the replace-file skill is installed, use its replace-file.sh script, which does the hashing and the curl call for you; get-setup-status says how to install it. '
       + 'This needs a shell and curl.',
@@ -733,14 +745,14 @@ const TOOL_DEFINITIONS = [
         size:           { type: 'integer', description: 'Size of the NEW file in bytes (for example from `wc -c`)' },
         sha256:         { type: 'string', description: 'SHA-256 of the NEW file as 64 hexadecimal characters (for example from `sha256sum`)' },
         expectedSha256: { type: 'string', description: 'SHA-256 of the file in the vault that is being replaced, from read-file' },
-        expectedMtime:  { type: 'string', description: 'ISO 8601 mtime of the file in the vault that is being replaced, from the Last-Modified line of read-file or from list-notes' },
+        expectedMtime:  { type: 'string', description: 'ISO 8601 mtime of the file in the vault that is being replaced, from the Last-Modified line of read-file, or from list-notes or list-files' },
       },
       required: ['vault', 'filename', 'size', 'sha256', 'expectedSha256', 'expectedMtime'],
     },
   },
   {
     name: 'read-file',
-    description: 'Read a file of any type (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-notes with extension (for example pdf). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. The result also gives the file\'s sha256 and Last-Modified, which replace-file takes as expectedSha256 and expectedMtime (a file over the limit is refused, but the refusal gives both). Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
+    description: 'Read a file of any type (e.g. a PDF) from the vault and return it to the client as an embedded base64 resource. A .md note is returned too, as its raw bytes, but read-note is better for a note: it returns text and can read one section. To find a file, call list-files (give extension, for example pdf, to narrow the list). Claude Desktop chat shows only images from this result and silently drops a PDF or other non-image file (claude.ai chat is reported to do the same); Claude Code reads any file, so if only the text line comes back for a non-image file, tell the user to use a code mode chat instead of retrying. The result also gives the file\'s sha256 and Last-Modified, which replace-file takes as expectedSha256 and expectedMtime (a file over the limit is refused, but the refusal gives both). Fails if the file is larger than the configured limit or its path is read-protected. A large file (several MB) that has not been read recently can make the client report a timeout such as "The operation timed out" on the first call even though the server is still working and the next call is fast: if that happens, call the tool again, up to twice, and only then tell the user it failed. The read-file skill checks which surface you are on before reading; if it is not in your skill list, call get-setup-status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -753,7 +765,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'move-file',
-    description: 'Move or rename a file of any type. For a .md note it rewrites the wikilinks that point at it, as move-note does; for any other file it rewrites the embeds that point at it. A note cannot be renamed to another file type or the reverse: use move-note for that.',
+    description: 'Move or rename a file of any type. For a .md note it rewrites the wikilinks that point at it, as move-note does; for any other file it rewrites the embeds that point at it. A note cannot be renamed to another file type or the reverse: use move-note for that. list-files finds the file to move.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -762,7 +774,7 @@ const TOOL_DEFINITIONS = [
         folder:        { type: 'string', description: 'Optional source vault-relative folder' },
         newFilename:   { type: 'string', description: 'Destination filename including extension' },
         newFolder:     { type: 'string', description: 'Optional destination vault-relative folder' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the move is refused if the source file has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the move is refused if the source file has changed since' },
       },
       required: ['vault', 'filename', 'newFilename'],
     },
@@ -777,7 +789,7 @@ const TOOL_DEFINITIONS = [
         filename:      { type: 'string', description: 'Filename including extension' },
         folder:        { type: 'string', description: 'Optional vault-relative folder' },
         permanent:     { type: 'boolean', description: 'If true, permanently delete instead of trashing' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the delete is refused if the file has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the delete is refused if the file has changed since' },
       },
       required: ['vault', 'filename'],
     },
@@ -887,7 +899,7 @@ const TOOL_DEFINITIONS = [
         folder:        { type: 'string', description: 'Optional vault-relative folder' },
         field:         { type: 'string', description: 'Frontmatter key (any field except tags)' },
         value:         { description: 'Scalar value to set (string, number, or boolean)' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the write is refused if the note has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the write is refused if the note has changed since' },
       },
       required: ['vault', 'filename', 'field', 'value'],
     },
@@ -902,7 +914,7 @@ const TOOL_DEFINITIONS = [
         filename:      { type: 'string', description: 'Filename including .md extension' },
         folder:        { type: 'string', description: 'Optional vault-relative folder' },
         field:         { type: 'string', description: 'Frontmatter key (any field except tags)' },
-        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note/list-notes call; the write is refused if the note has changed since' },
+        expectedMtime: { type: 'string', description: 'Optional ISO 8601 mtime from a prior read-note, list-notes or list-files call; the write is refused if the note has changed since' },
       },
       required: ['vault', 'filename', 'field'],
     },
@@ -1564,6 +1576,21 @@ async function handleUpload(req, res, url) {
   }
 }
 
+// The two listing tools share one handler and one walk (listVaultFiles); they differ in what they
+// list, whether a line carries the size, and what an empty result says. Only list-files takes an
+// `extension`: list-notes always passes 'md' and refuses the argument with a message naming list-files.
+const noneWithExtension = (extension) => `No files with extension "${extension}" found`;
+const LISTING_TOOLS = Object.freeze({
+  'list-notes': {
+    defaultExtension: 'md', takesExtension: false, withSize: false, errorPrefix: 'Error listing notes',
+    none: () => 'No notes found',
+  },
+  'list-files': {
+    defaultExtension: '*', takesExtension: true, withSize: true, errorPrefix: 'Error listing files',
+    none: (extension) => (extension === '*' ? 'No files found' : noneWithExtension(extension)),
+  },
+});
+
 /**
  * Whether a vault-relative path is a folder (a link to one is not: it is moved or deleted as the
  * link). The file tools refuse a folder, because the deny rules are judged on the path of a file
@@ -1876,7 +1903,8 @@ async function route(req, res, url, sid) {
   }
 
   // ── native tool handlers ──────────────────────────────────────────
-  if (msg.method === 'tools/call' && msg.params?.name === 'list-notes') {
+  if (msg.method === 'tools/call' && typeof msg.params?.name === 'string' && Object.hasOwn(LISTING_TOOLS, msg.params.name)) {
+    const listing = LISTING_TOOLS[msg.params.name];
     const args = msg.params.arguments ?? {};
     const vault = VAULTS[args.vault];
     if (!vault) {
@@ -1890,39 +1918,29 @@ async function route(req, res, url, sid) {
         content: [{ type: 'text', text: 'Access denied' }], isError: true,
       } }]);
     }
-    const scopePath = relScope ? path.join(vault.path, relScope) : vault.path;
-    const extension = args.extension === undefined ? 'md' : args.extension;
+    if (!listing.takesExtension && Object.hasOwn(args, 'extension')) {
+      return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
+        content: [{ type: 'text', text: 'list-notes lists notes only and takes no extension; use list-files to list other file types' }], isError: true,
+      } }]);
+    }
+    const extension = args.extension === undefined ? listing.defaultExtension : args.extension;
     const extensionError = extensionPatternError(extension);
     if (extensionError) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
         content: [{ type: 'text', text: extensionError }], isError: true,
       } }]);
     }
-    // The walker skips hidden names inside a folder but cannot know the scope itself is one
-    // (.obsidian, .git, .trash). Scoping to such a folder has only ever listed its notes, so
-    // that stays the only thing listed there, whatever the extension.
-    const hiddenScope = relScope ? relScope.split('/').some(seg => seg.startsWith('.')) : false;
     try {
-      const notes = [];
-      await libWalkAllFiles(scopePath, async (filePath) => {
-        const rel = path.relative(vault.path, filePath);
-        if (hiddenScope && !isNoteFile(rel)) return;
-        if (!matchesExtension(extension, rel)) return;
-        if (_isDenied(vault.denyPaths, rel)) return;
-        notes.push(rel);
-      });
-      notes.sort();
-      const lines = [];
-      for (const rel of notes) {
-        const stat = await fs.stat(path.join(vault.path, rel));
-        lines.push(`${rel}\t${formatMtime(stat)}`);
-      }
+      const files = await libListVaultFiles(vault.path, relScope, extension, vault.denyPaths);
+      const lines = files.map(({ rel, stat }) => (
+        listing.withSize ? `${rel}\t${formatMtime(stat)}\t${stat.size}` : `${rel}\t${formatMtime(stat)}`
+      ));
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: lines.length ? lines.join('\n') : (extension === 'md' ? 'No notes found' : `No files with extension "${extension}" found`) }],
+        content: [{ type: 'text', text: lines.length ? lines.join('\n') : listing.none(extension) }],
       } }]);
     } catch (err) {
       return sendSse(res, 200, sid, [{ jsonrpc: '2.0', id: msgId, result: {
-        content: [{ type: 'text', text: `Error listing notes: ${err.message.replaceAll(vault.path + '/', '')}` }], isError: true,
+        content: [{ type: 'text', text: `${listing.errorPrefix}: ${err.message.replaceAll(vault.path + '/', '')}` }], isError: true,
       } }]);
     }
   }

@@ -118,9 +118,9 @@ happens before the tool reads or writes any file.
   `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`,
   `set-frontmatter-field`, `remove-frontmatter-field`, `create-folder`, and
   `search-vault` when a `path` scope is given.
-- **Filtered as they walk the vault:** `list-notes`, `list-tags`, `search-tags`,
-  `new-notes`, `changed-notes` and `rename-tag` leave denied files out of their
-  results.
+- **Filtered as they walk the vault:** `list-notes`, `list-files`, `list-tags`,
+  `search-tags`, `new-notes`, `changed-notes` and `rename-tag` leave denied files
+  out of their results.
 - **Not affected:** `list-vaults` never touches vault files, and `query-graph`
   does not consult the deny list at all.
 
@@ -561,8 +561,8 @@ Notes:
   client that cannot sign in is most often failing at one of them, and the
   server's log then shows `wrong audience` or no request at all.
 - **`readOnlyUsers`** see and may call only the read tools: `list-notes`,
-  `list-tags`, `search-tags`, `new-notes`, `changed-notes`, `list-vaults`,
-  `get-setup-status`, `read-note`, `read-file`, `find-backlinks`,
+  `list-files`, `list-tags`, `search-tags`, `new-notes`, `changed-notes`,
+  `list-vaults`, `get-setup-status`, `read-note`, `read-file`, `find-backlinks`,
   `resolve-wikilink` and `search-vault`. Every tool that changes the vault,
   including `upload-file` and `fetch-file`, is refused with
   `This account is read-only`, and so is `query-graph`, because it ignores

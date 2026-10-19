@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { rewriteLinks, extractReferences } from './wikilinks.mjs';
-import { isDenied } from './access.mjs';
+import { isDenied, matchesExtension } from './access.mjs';
 import { moveToTrash } from './trash.mjs';
 import { isValidUtf8Buffer } from './uploads.mjs';
 
@@ -50,6 +50,7 @@ export async function walkVault(dir, cb) {
  * Recursively walks vault directories, calling callback for every file regardless of
  * extension. Skips directories and files starting with '.' (e.g., .trash, .obsidian, .git).
  * Unlike walkVault, this visits binary files too — needed since a wikilink can resolve to one.
+ * Symbolic links are neither followed nor passed to cb.
  * @param {string} dir - Directory to walk
  * @param {Function} cb - Async callback receiving absolute path of each file
  */
@@ -69,6 +70,63 @@ export async function walkAllFiles(dir, cb) {
       await cb(full);
     }
   }
+}
+
+/**
+ * The files a listing tool shows: every file in the vault, or under `relScope`, whose extension
+ * matches the pattern and that `denyPaths` does not hide, sorted by path, each with its stat.
+ * This is the one place `list-notes` and `list-files` decide what is listed, so they cannot
+ * drift apart. Hidden names and symbolic links are never listed. A file that disappears between
+ * the walk and its stat, or is swapped for anything but a regular file (a link, say), is left out.
+ *
+ * A `relScope` that is a symbolic link, or has one among its segments, lists nothing, and so does
+ * one that does not exist: the walk would otherwise follow a link out of the vault or into a denied
+ * folder that the deny check (which sees only the path as written) cannot recognise.
+ *
+ * A `relScope` with a hidden segment (.obsidian, .git, .trash, or anything under one) lists only
+ * notes, whatever the extension, as list-notes always did. The walker skips hidden names below the
+ * scope but not the scope's own segments, so this rule is applied here.
+ * The caller checks `relScope` against denyPaths and `extension` with extensionPatternError.
+ * @param {string} vaultPath - Absolute path of the vault.
+ * @param {string|null} relScope - Vault-relative folder to list, or null for the whole vault.
+ * @param {string} extension - A pattern that passed extensionPatternError; `*` matches every file.
+ *   list-notes passes `md`, list-files passes the caller's pattern (default `*`).
+ * @param {string[]} denyPaths - The vault's denied paths.
+ * @returns {Promise<Array<{rel: string, stat: import('node:fs').Stats}>>}
+ */
+export async function listVaultFiles(vaultPath, relScope, extension, denyPaths) {
+  const scopePath = relScope ? path.join(vaultPath, relScope) : vaultPath;
+  if (relScope) {
+    let walked = vaultPath;
+    for (const seg of relScope.split('/').filter(Boolean)) {
+      walked = path.join(walked, seg);
+      try {
+        if ((await fs.lstat(walked)).isSymbolicLink()) return [];
+      } catch {
+        return []; // a missing segment: nothing to list
+      }
+    }
+  }
+  const hiddenScope = relScope ? relScope.split('/').some(seg => seg.startsWith('.')) : false;
+  const rels = [];
+  await walkAllFiles(scopePath, async (filePath) => {
+    const rel = path.relative(vaultPath, filePath);
+    if (hiddenScope && !isNoteFile(rel)) return;
+    if (!matchesExtension(extension, rel)) return;
+    if (isDenied(denyPaths, rel)) return;
+    rels.push(rel);
+  });
+  rels.sort();
+  const files = [];
+  for (const rel of rels) {
+    try {
+      const stat = await fs.lstat(path.join(vaultPath, rel));
+      if (stat.isFile()) files.push({ rel, stat });
+    } catch {
+      // gone since the walk: not part of the vault any more
+    }
+  }
+  return files;
 }
 
 /**

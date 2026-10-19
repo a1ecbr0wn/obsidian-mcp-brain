@@ -326,10 +326,10 @@ destination), `find-backlinks`, `resolve-wikilink`, `add-tags`, `remove-tags`,
 `set-frontmatter-field`, `remove-frontmatter-field`, `create-folder`,
 `search-vault` (when a `path` scope is given).
 
-`list-notes`, `list-tags`, `search-tags`, `new-notes`, `changed-notes`, and
-`rename-tag` are equally protected, just via a different mechanism: instead of a
-single check up front, they filter out denied files individually as they walk
-the vault.
+`list-notes`, `list-files`, `list-tags`, `search-tags`, `new-notes`,
+`changed-notes`, and `rename-tag` are equally protected, just via a different
+mechanism: instead of a single check up front, they filter out denied files
+individually as they walk the vault.
 
 `list-vaults` doesn't touch vault files at all — it just returns configured
 vault names — so it's the only tool genuinely unaffected by the deny list.
@@ -402,15 +402,18 @@ were: `append`, `prepend`, `replace-section`, the tag and frontmatter tools, and
 the tag line `add-tags` puts in the body. `create-note`, `replace` and
 `create-file` write what they are sent.
 
-#### Listing files other than notes
+#### Listing files
 
-`list-notes` lists notes by default. Give it `extension` to list any other kind
-of file, so an agent can find the PDFs and images that `read-file`,
-`upload-file` and the other file tools work on.
+`list-files` lists every kind of file, so an agent can find the scripts, PDFs and
+images that `read-file`, `replace-file`, `move-file` and the other file tools
+work on. Give it an `extension` to narrow the list. `list-notes` lists the
+notes (`.md` files) only and takes no `extension`: a call that passes one, with
+any value, is refused with a message that names `list-files`.
 
 | `extension` | Lists |
 | --- | --- |
-| *(omitted)* or `md` | The notes: files ending in `.md`, in any letter case |
+| *(omitted)* | Every file |
+| `md` | The notes: files ending in `.md`, in any letter case (`list-notes` lists these without being asked) |
 | `pdf` | Every PDF |
 | `p*` | `pdf`, `png` and anything else starting with `p` |
 | `*` | Every file, whatever its extension |
@@ -421,11 +424,15 @@ of file, so an agent can find the PDFs and images that `read-file`,
 - The extension is the text after the last dot, so `gz` finds `backup.tar.gz`. A
   file with no extension is listed only by `*`.
 - Each line is the vault-relative path, which includes the extension, then the
-  last-modified timestamp. `path` scopes the listing to a folder.
+  last-modified timestamp; `list-files` adds the size in bytes as a third field
+  (`list-notes` lines have the path and timestamp only).
+  Fields are separated by tabs. `path` scopes the listing to a folder. Neither
+  tool reads a file's content, so neither gives a hash: `read-file` does.
 - Hidden files and folders (names starting with a dot, such as `.obsidian` and
   `.trash`) and symbolic links are not listed. If `path` is itself a hidden
-  folder, only its notes are listed, whatever `extension` says.
-- `extension` is at most 64 characters and has no spaces at either end.
+  folder, only its notes are listed, whatever `extension` says (`list-files`).
+- `extension` (`list-files` only) is at most 64 characters and has no spaces
+  at either end.
 - `denyPaths` applies.
   [`denyBinaryPaths`](#binary-read-protection-denybinarypaths) does not hide
   names: it only stops a file's content being read.
@@ -700,7 +707,8 @@ as one for `upload-file.sh`.
 
 | Tool | Description |
 | --- | --- |
-| `list-notes` | List the notes in the vault, or scoped to a folder, or other files with `extension` (such as `pdf`, or `*` for every file). Returns sorted vault-relative paths, each with a last-modified timestamp |
+| `list-notes` | List the notes (`.md` files) in the vault, or scoped to a folder. For other files use `list-files`. Returns sorted vault-relative paths, each with a last-modified timestamp |
+| `list-files` | List every file in the vault, or scoped to a folder, whatever its type (scripts, PDFs, images, notes), optionally narrowed by `extension`. Returns sorted vault-relative paths, each with a last-modified timestamp and the size in bytes |
 | `list-tags` | List all unique tags (YAML frontmatter) used across vault notes, optionally scoped to a subdirectory |
 | `search-tags` | Find notes that have ALL of the specified tags |
 | `new-notes` | List notes created in the last 7 days, or since a provided timestamp |
