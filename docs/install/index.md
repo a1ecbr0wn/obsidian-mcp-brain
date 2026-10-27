@@ -11,17 +11,17 @@ The server needs Node.js 18 or later, or a container runtime if you'd rather use
 the Docker image. Either way, write a [config file](../configuration), then run
 it as a service and put HTTPS in front of it.
 
-- [Install from npm](install/install-npm)
-- [Run it in Docker](install/install-docker)
-- Linux - [Run as a systemd service](install/install-systemd)
-- macOS - [Run as a launchd agent](install/install-launchd)
-- [Expose it over HTTPS with Tailscale Serve](install/install-tailscale)
-- [Expose it over HTTPS with nginx](install/install-nginx)
-- [Expose it over HTTPS with Caddy](install/install-caddy)
+- [Install from npm](install-npm)
+- [Run it in Docker](install-docker)
+- Linux - [Run as a systemd service](install-systemd)
+- macOS - [Run as a launchd agent](install-launchd)
+- [Expose it over HTTPS with Tailscale Serve](install-tailscale)
+- [Expose it over HTTPS with nginx](install-nginx)
+- [Expose it over HTTPS with Caddy](install-caddy)
 - [Protect it with Cloudflare Tunnel and
-  Access](install/install-cloudflare-access)
+  Access](install-cloudflare-access)
 - [Sign in with Cloudflare's
-  workers-oauth-provider](install/install-cloudflare-oauth)
+  workers-oauth-provider](install-cloudflare-oauth)
 
 ### Putting HTTPS in front of the server
 
