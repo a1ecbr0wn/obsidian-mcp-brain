@@ -13,7 +13,7 @@
 # reach the server, and use container-side vault paths (e.g. /vaults/knowledge).
 
 # node:22-alpine, pinned by digest for reproducible builds.
-FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+FROM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202
 
 ARG VERSION=dev
 ARG REVISION=unknown
